@@ -1,0 +1,15 @@
+{
+  "comment": "用于 Phase 2 联网搜索 Mock 的预设响应（仿 Tavily 格式）",
+  "results": [
+    {
+      "title": "示例搜索结果 1",
+      "url": "https://example.com/article-1",
+      "content": "这是一段 Mock 搜索结果的摘要，实际部署时会调用 Tavily / Serper / Bing 等真实搜索 API。"
+    },
+    {
+      "title": "示例搜索结果 2",
+      "url": "https://example.com/article-2",
+      "content": "在 dev 模式下设置 MENGBI_MOCK=1 即可启用 Mock。"
+    }
+  ]
+}

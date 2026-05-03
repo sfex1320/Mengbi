@@ -1,0 +1,159 @@
+.mb-stars {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  overflow: hidden;
+}
+
+/* 闪烁小星 */
+.mb-star {
+  position: absolute;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 0 4px rgba(255, 255, 255, 0.55);
+  animation: mb-star-twinkle 6s ease-in-out infinite;
+}
+
+@keyframes mb-star-twinkle {
+  0%, 100% { opacity: 0.2; transform: scale(0.7); }
+  50%      { opacity: 1;   transform: scale(1.2); }
+}
+
+/* 漂浮的彩色粒子（hue: 28 暖橘 / 270 紫 / 210 蓝） */
+.mb-particle {
+  position: absolute;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    hsla(var(--mb-particle-hue), 90%, 70%, 0.85) 0%,
+    hsla(var(--mb-particle-hue), 90%, 60%, 0.35) 50%,
+    transparent 75%
+  );
+  box-shadow: 0 0 12px hsla(var(--mb-particle-hue), 90%, 60%, 0.4);
+  animation: mb-particle-drift linear infinite;
+  will-change: transform, opacity;
+  filter: blur(0.5px);
+}
+
+@keyframes mb-particle-drift {
+  0% {
+    transform: translate(0, 0) scale(0.6);
+    opacity: 0;
+  }
+  10% {
+    opacity: 0.7;
+  }
+  50% {
+    transform: translate(var(--mb-particle-dx), var(--mb-particle-dy)) scale(1);
+    opacity: 1;
+  }
+  90% {
+    opacity: 0.5;
+  }
+  100% {
+    transform: translate(calc(var(--mb-particle-dx) * 2), calc(var(--mb-particle-dy) * 2)) scale(0.6);
+    opacity: 0;
+  }
+}
+
+/* 流星 */
+.mb-shooting {
+  position: absolute;
+  width: 2px;
+  height: 2px;
+  background: white;
+  border-radius: 50%;
+  box-shadow: 0 0 6px white;
+  transform-origin: 0 0;
+  animation: mb-shooting-fly ease-out infinite;
+  opacity: 0;
+}
+.mb-shooting::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 80px;
+  height: 1px;
+  background: linear-gradient(
+    to left,
+    rgba(255, 255, 255, 0.9),
+    rgba(255, 255, 255, 0.5) 30%,
+    transparent
+  );
+  transform: translateY(-50%);
+}
+
+@keyframes mb-shooting-fly {
+  0% {
+    opacity: 0;
+    transform: rotate(var(--mb-shoot-angle)) translateX(0);
+  }
+  4% {
+    opacity: 1;
+  }
+  20% {
+    opacity: 1;
+    transform: rotate(var(--mb-shoot-angle)) translateX(60vw);
+  }
+  21%, 100% {
+    opacity: 0;
+  }
+}
+
+/* 大型 orb */
+.mb-orbs {
+  position: absolute;
+  inset: 0;
+}
+
+.mb-orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(72px);
+  opacity: 0.55;
+  mix-blend-mode: screen;
+  will-change: transform;
+}
+
+.mb-orb-1 {
+  width: 38vw;
+  height: 38vw;
+  top: -12vw;
+  left: -8vw;
+  background: radial-gradient(circle, var(--mb-accent), transparent 70%);
+  animation: mb-orb-drift-1 26s ease-in-out infinite;
+}
+
+.mb-orb-2 {
+  width: 32vw;
+  height: 32vw;
+  bottom: -10vw;
+  right: -8vw;
+  background: radial-gradient(circle, #a855f7, transparent 70%);
+  animation: mb-orb-drift-2 32s ease-in-out infinite;
+}
+
+.mb-orb-3 {
+  width: 28vw;
+  height: 28vw;
+  top: 30%;
+  left: 60%;
+  background: radial-gradient(circle, #3b82f6, transparent 70%);
+  animation: mb-orb-drift-3 38s ease-in-out infinite;
+  opacity: 0.35;
+}
+
+@keyframes mb-orb-drift-1 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50%      { transform: translate(8vw, 6vh) scale(1.1); }
+}
+@keyframes mb-orb-drift-2 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50%      { transform: translate(-10vw, -8vh) scale(1.15); }
+}
+@keyframes mb-orb-drift-3 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50%      { transform: translate(-6vw, 10vh) scale(1.08); }
+}

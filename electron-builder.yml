@@ -1,0 +1,40 @@
+appId: cn.mengbi.app
+productName: 梦笔
+directories:
+  output: release/${version}
+  buildResources: resources
+files:
+  - out/**
+  - package.json
+  - "!**/{.eslintrc.cjs,.prettierrc,tsconfig*.json,electron.vite.config.ts}"
+  - "!**/{*.map,*.tsbuildinfo}"
+asarUnpack:
+  - resources/**
+  - "**/*.{node,dll}"
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: mengbi-${version}-setup.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false
+mac:
+  target:
+    - target: dmg
+      arch:
+        - universal
+  category: public.app-category.graphics-design
+  artifactName: mengbi-${version}.${ext}
+linux:
+  target:
+    - AppImage
+  category: Graphics
+  artifactName: mengbi-${version}.${ext}
+publish:
+  provider: github
+  owner: mengbi
+  repo: mengbi

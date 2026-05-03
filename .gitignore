@@ -1,0 +1,15 @@
+node_modules
+dist
+out
+release
+*.log
+*.tsbuildinfo
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+.idea
+.env
+.env.local
+*.sqlite
+*.sqlite-journal
+images-dev/

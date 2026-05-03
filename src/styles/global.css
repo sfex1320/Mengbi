@@ -1,0 +1,544 @@
+@import './theme.css';
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+html {
+  font-family: var(--mb-font-display);
+  font-size: var(--mb-text-body);
+  color: var(--mb-text-primary);
+  background: var(--mb-bg-base);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  /* 让原生控件（select 下拉、滚动条等）自动跟随深色主题，
+     避免 Windows 上 native dropdown 出现白底白字、文字看不清 */
+  color-scheme: dark;
+}
+
+body {
+  background: var(--mb-bg-base-aurora);
+  background-attachment: fixed;
+  background-size: cover;
+  user-select: none;
+  /* 平滑流光：极慢的平移给"活物"感 */
+  animation: mb-aurora 60s ease-in-out infinite;
+}
+
+@keyframes mb-aurora {
+  0%, 100% { background-position: 0% 0%; }
+  50% { background-position: 4% 6%; }
+}
+
+input,
+textarea,
+[contenteditable] {
+  user-select: text;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  padding: 0;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+a {
+  color: var(--mb-accent);
+  text-decoration: none;
+  transition: color var(--mb-duration-fast) var(--mb-ease);
+}
+a:hover {
+  color: var(--mb-accent-hover);
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--mb-border-strong);
+  border-radius: 4px;
+  transition: background var(--mb-duration-fast) var(--mb-ease);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--mb-text-muted);
+}
+
+::selection {
+  background: var(--mb-accent-soft);
+  color: var(--mb-text-primary);
+}
+
+/* ────────────────────────── 卡片 ────────────────────────── */
+
+.mb-card {
+  position: relative;
+  background: var(--mb-bg-card);
+  backdrop-filter: blur(28px) saturate(140%);
+  -webkit-backdrop-filter: blur(28px) saturate(140%);
+  border: 1px solid var(--mb-border-soft);
+  border-radius: var(--mb-radius-card);
+  box-shadow: var(--mb-shadow-card);
+  transition:
+    background var(--mb-duration-normal) var(--mb-ease),
+    border-color var(--mb-duration-normal) var(--mb-ease),
+    box-shadow var(--mb-duration-normal) var(--mb-ease),
+    transform var(--mb-duration-normal) var(--mb-ease);
+}
+
+.mb-card-lg {
+  border-radius: var(--mb-radius-card-lg);
+  box-shadow: var(--mb-shadow-card-lg);
+}
+
+.mb-card-interactive {
+  cursor: pointer;
+}
+.mb-card-interactive:hover {
+  background: var(--mb-bg-card-hover);
+  border-color: var(--mb-border);
+  transform: translateY(-1px);
+}
+
+/* ────────────────────────── 按钮 ────────────────────────── */
+
+.mb-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 18px;
+  font-size: 14px;
+  font-weight: 500;
+  border-radius: var(--mb-radius-button);
+  white-space: nowrap;
+  user-select: none;
+  transition:
+    transform var(--mb-duration-fast) var(--mb-ease-snap),
+    background var(--mb-duration-fast) var(--mb-ease),
+    box-shadow var(--mb-duration-fast) var(--mb-ease),
+    border-color var(--mb-duration-fast) var(--mb-ease);
+}
+
+.mb-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.mb-btn-primary {
+  background: var(--mb-accent-gradient);
+  color: var(--mb-text-on-accent);
+  box-shadow: var(--mb-accent-glow);
+  font-weight: 600;
+}
+.mb-btn-primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+}
+
+.mb-btn-secondary {
+  background: var(--mb-bg-hover);
+  color: var(--mb-text-primary);
+  border: 1px solid var(--mb-border);
+}
+.mb-btn-secondary:hover:not(:disabled) {
+  background: var(--mb-bg-active);
+  border-color: var(--mb-border-strong);
+}
+
+.mb-btn-ghost {
+  color: var(--mb-text-secondary);
+}
+.mb-btn-ghost:hover:not(:disabled) {
+  color: var(--mb-text-primary);
+  background: var(--mb-bg-hover);
+}
+
+.mb-btn-danger {
+  color: #fca5a5;
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  background: rgba(248, 113, 113, 0.06);
+}
+.mb-btn-danger:hover:not(:disabled) {
+  background: rgba(248, 113, 113, 0.14);
+  border-color: rgba(248, 113, 113, 0.5);
+}
+
+.mb-btn-sm {
+  padding: 6px 12px;
+  font-size: 13px;
+}
+
+.mb-btn-pill {
+  border-radius: var(--mb-radius-pill);
+}
+
+/* ────────────────────────── 表单 ────────────────────────── */
+
+.mb-input,
+.mb-textarea,
+.mb-select {
+  width: 100%;
+  background: var(--mb-bg-hover);
+  color: var(--mb-text-primary);
+  border: 1px solid var(--mb-border);
+  border-radius: var(--mb-radius-input);
+  padding: 10px 14px;
+  font: inherit;
+  outline: none;
+  transition:
+    border-color var(--mb-duration-fast) var(--mb-ease),
+    background var(--mb-duration-fast) var(--mb-ease),
+    box-shadow var(--mb-duration-fast) var(--mb-ease);
+}
+
+.mb-input:hover,
+.mb-textarea:hover,
+.mb-select:hover {
+  border-color: var(--mb-border-strong);
+}
+
+.mb-input:focus,
+.mb-textarea:focus,
+.mb-select:focus {
+  border-color: var(--mb-accent);
+  background: var(--mb-bg-active);
+  box-shadow: 0 0 0 3px var(--mb-accent-soft);
+}
+
+.mb-input::placeholder,
+.mb-textarea::placeholder {
+  color: var(--mb-text-muted);
+}
+
+/* 兜底：显式设置 option 的颜色，避免某些 Chromium 在 Windows 上出现 disabled 项白底白字。
+   color-scheme: dark 已经处理了大部分场景，这里再显式覆盖一遍。 */
+.mb-select option,
+select option {
+  background-color: #1a1c24;
+  color: #f5f5f7;
+}
+.mb-select option:disabled,
+select option:disabled {
+  color: rgba(245, 245, 247, 0.4);
+}
+
+.mb-textarea {
+  resize: vertical;
+  min-height: 120px;
+  line-height: 1.5;
+}
+
+.mb-label {
+  display: block;
+  font-size: 12px;
+  color: var(--mb-text-secondary);
+  margin-bottom: 6px;
+  letter-spacing: 0.01em;
+}
+
+/* ────────────────────────── 其他 ────────────────────────── */
+
+.mb-divider {
+  height: 1px;
+  background: var(--mb-border-soft);
+  margin: 16px 0;
+}
+
+.mb-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  font-size: 11px;
+  border-radius: var(--mb-radius-pill);
+  background: var(--mb-accent-soft);
+  color: var(--mb-accent);
+  border: 1px solid transparent;
+}
+
+.mb-shimmer {
+  position: relative;
+  overflow: hidden;
+}
+.mb-shimmer::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.06) 50%,
+    transparent 100%
+  );
+  animation: mb-shimmer 1.6s linear infinite;
+}
+@keyframes mb-shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+/* hover 态发光 */
+.mb-glow-on-hover {
+  transition: box-shadow var(--mb-duration-normal) var(--mb-ease);
+}
+.mb-glow-on-hover:hover {
+  box-shadow: var(--mb-accent-glow);
+}
+
+/* ────────────────────────── 跑马灯炫彩边框（hover 触发） ────────────────────────── */
+/* 用法：给可悬停的卡片加 .mb-marquee-glow 即可。
+   原理：用 @property 注册一个角度变量，让 conic-gradient 的 from 角度可被动画。
+   这样 ::before / ::after 整体不旋转，只是渐变在原位转。
+
+   两层渲染：
+     ::before  内层柔光 — 沿边缘的彩色软带（mask + blur）
+     ::after   外层 halo — 大模糊光晕投在卡片外侧（z-index: -1） */
+@property --mb-marquee-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+
+.mb-marquee-glow {
+  position: relative;
+  isolation: isolate;
+}
+
+.mb-marquee-glow::before {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  padding: 4px;
+  border-radius: inherit;
+  background: conic-gradient(
+    from var(--mb-marquee-angle),
+    transparent 0deg,
+    transparent 180deg,
+    color-mix(in srgb, var(--mb-accent) 30%, transparent) 220deg,
+    color-mix(in srgb, var(--mb-accent) 85%, transparent) 270deg,
+    color-mix(in srgb, #c4b5fd 85%, transparent) 315deg,
+    color-mix(in srgb, var(--mb-accent) 30%, transparent) 355deg,
+    transparent 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  filter: blur(3px);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 600ms var(--mb-ease);
+}
+
+.mb-marquee-glow::after {
+  content: '';
+  position: absolute;
+  inset: -16px;
+  border-radius: inherit;
+  background: conic-gradient(
+    from var(--mb-marquee-angle),
+    transparent 0deg,
+    transparent 200deg,
+    color-mix(in srgb, var(--mb-accent) 65%, transparent) 270deg,
+    color-mix(in srgb, #c4b5fd 65%, transparent) 320deg,
+    transparent 360deg
+  );
+  filter: blur(28px);
+  pointer-events: none;
+  opacity: 0;
+  z-index: -1;
+  transition: opacity 600ms var(--mb-ease);
+}
+
+.mb-marquee-glow:hover::before {
+  opacity: 1;
+  animation: mb-marquee-spin 8s linear infinite;
+}
+.mb-marquee-glow:hover::after {
+  opacity: 0.85;
+  animation: mb-marquee-spin 8s linear infinite;
+}
+
+@keyframes mb-marquee-spin {
+  to {
+    --mb-marquee-angle: 360deg;
+  }
+}
+
+/* 列表交错入场，配合 framer-motion 用 */
+.mb-stagger > * {
+  animation: mb-fade-up var(--mb-duration-normal) var(--mb-ease) both;
+}
+@keyframes mb-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ────────────────────────── Toast ────────────────────────── */
+
+.mb-toast-container {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.mb-toast {
+  pointer-events: auto;
+  min-width: 240px;
+  max-width: 380px;
+  padding: 12px 16px;
+  border-radius: 14px;
+  background: var(--mb-bg-card);
+  backdrop-filter: blur(28px) saturate(160%);
+  -webkit-backdrop-filter: blur(28px) saturate(160%);
+  border: 1px solid var(--mb-border);
+  box-shadow: var(--mb-shadow-card-lg);
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--mb-text-primary);
+  line-height: 1.5;
+}
+
+.mb-toast-icon {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-top: 6px;
+  flex-shrink: 0;
+}
+
+.mb-toast-success .mb-toast-icon { background: #10b981; box-shadow: 0 0 8px #10b981; }
+.mb-toast-error   .mb-toast-icon { background: #f43f5e; box-shadow: 0 0 8px #f43f5e; }
+.mb-toast-info    .mb-toast-icon { background: var(--mb-accent); box-shadow: 0 0 8px var(--mb-accent); }
+
+/* ────────────────────────── App Layout ────────────────────────── */
+
+.mb-app {
+  display: flex;
+  height: 100%;
+  width: 100%;
+}
+
+.mb-app-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  position: relative;
+}
+
+.mb-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px 12px 24px;
+  height: 56px;
+  flex-shrink: 0;
+  -webkit-app-region: drag;
+  z-index: 10;
+  position: relative;
+}
+.mb-header > * {
+  -webkit-app-region: no-drag;
+}
+
+.mb-header-brand {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  -webkit-app-region: drag;
+}
+
+.mb-header-logo {
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  /* 系统手书 / 楷体 / 行楷字体栈：macOS 上 Hanzipen / Yuanti / STKaiti，
+     Windows 上华文楷体 / 楷体，Linux 上系统楷体；都拿不到就回 cursive。 */
+  font-family:
+    'Hanzipen SC', 'HanziPenSC-W3', 'Yuanti SC', 'STKaiti', 'KaiTi',
+    '华文楷体', '楷体', cursive;
+  font-style: italic;
+  background: var(--mb-accent-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 0 14px var(--mb-accent-soft));
+  /* 给手书"轻微挤压"：模拟硬笔的运笔倾角 */
+  transform: skewX(-3deg);
+  display: inline-block;
+}
+
+.mb-header-divider {
+  color: var(--mb-text-muted);
+  font-weight: 300;
+}
+
+.mb-header-route {
+  font-size: 14px;
+  color: var(--mb-text-secondary);
+  letter-spacing: 0.02em;
+}
+
+.mb-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  -webkit-app-region: no-drag;
+}
+
+.mb-page-container {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+  z-index: 1;
+}
+
+/* 让 Stars 真正在 z 轴最底层 */
+.mb-app > .mb-stars {
+  z-index: 0;
+}
+.mb-app > main,
+.mb-app > aside {
+  position: relative;
+  z-index: 1;
+}

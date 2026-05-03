@@ -1,0 +1,66 @@
+.mb-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: rgba(8, 8, 12, 0.96);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  user-select: none;
+}
+
+.mb-lightbox-img {
+  max-width: 92vw;
+  max-height: 92vh;
+  object-fit: contain;
+  transition: none; /* 实时响应缩放/拖动；不要 CSS 过渡盖住 transform */
+  will-change: transform;
+  pointer-events: auto;
+  border-radius: 6px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+}
+
+/* 右上角关闭按钮：避开主窗口的 traffic-lights（顶端 12-32px），所以下移到 64px */
+.mb-lightbox-close {
+  position: absolute;
+  top: 64px;
+  right: 22px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: rgba(255, 90, 90, 0.18);
+  border: 1px solid rgba(255, 90, 90, 0.55);
+  color: #fda4af;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 1;
+  transition:
+    background var(--mb-duration-fast) var(--mb-ease),
+    color var(--mb-duration-fast) var(--mb-ease),
+    transform var(--mb-duration-fast) var(--mb-ease-snap);
+}
+.mb-lightbox-close:hover {
+  background: rgba(255, 90, 90, 0.85);
+  color: #fff;
+  transform: scale(1.06);
+}
+
+.mb-lightbox-hint {
+  position: absolute;
+  bottom: 22px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 14px;
+  border-radius: var(--mb-radius-pill);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.65);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+}
