@@ -6,103 +6,130 @@
   overflow: hidden;
 }
 
-/* 闪烁小星 */
-.mb-star {
+/* ──────────────────────────────────────────────
+   银河带：两条斜向渐变条交错铺满屏，营造"银河"
+   ────────────────────────────────────────────── */
+.mb-galaxy-band {
   position: absolute;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.85);
-  box-shadow: 0 0 4px rgba(255, 255, 255, 0.55);
-  animation: mb-star-twinkle 6s ease-in-out infinite;
-}
-
-@keyframes mb-star-twinkle {
-  0%, 100% { opacity: 0.2; transform: scale(0.7); }
-  50%      { opacity: 1;   transform: scale(1.2); }
-}
-
-/* 漂浮的彩色粒子（hue: 28 暖橘 / 270 紫 / 210 蓝） */
-.mb-particle {
-  position: absolute;
-  border-radius: 50%;
-  background: radial-gradient(
-    circle,
-    hsla(var(--mb-particle-hue), 90%, 70%, 0.85) 0%,
-    hsla(var(--mb-particle-hue), 90%, 60%, 0.35) 50%,
-    transparent 75%
+  top: -20%;
+  left: -50%;
+  width: 200%;
+  height: 80%;
+  background: linear-gradient(
+    100deg,
+    transparent 0%,
+    rgba(180, 180, 220, 0.04) 30%,
+    rgba(220, 200, 255, 0.10) 45%,
+    rgba(255, 220, 200, 0.08) 55%,
+    rgba(180, 200, 240, 0.05) 70%,
+    transparent 100%
   );
-  box-shadow: 0 0 12px hsla(var(--mb-particle-hue), 90%, 60%, 0.4);
-  animation: mb-particle-drift linear infinite;
-  will-change: transform, opacity;
-  filter: blur(0.5px);
+  transform: rotate(-18deg);
+  filter: blur(28px);
+  opacity: 0.85;
+  mix-blend-mode: screen;
+  animation: mb-galaxy-shimmer 16s ease-in-out infinite alternate;
+  will-change: opacity, transform;
+}
+.mb-galaxy-band-2 {
+  top: 30%;
+  left: -50%;
+  height: 60%;
+  transform: rotate(12deg);
+  filter: blur(36px);
+  opacity: 0.55;
+  animation-duration: 22s;
+  animation-direction: alternate-reverse;
 }
 
-@keyframes mb-particle-drift {
-  0% {
-    transform: translate(0, 0) scale(0.6);
-    opacity: 0;
-  }
-  10% {
-    opacity: 0.7;
-  }
-  50% {
-    transform: translate(var(--mb-particle-dx), var(--mb-particle-dy)) scale(1);
-    opacity: 1;
-  }
-  90% {
-    opacity: 0.5;
-  }
-  100% {
-    transform: translate(calc(var(--mb-particle-dx) * 2), calc(var(--mb-particle-dy) * 2)) scale(0.6);
-    opacity: 0;
-  }
+@keyframes mb-galaxy-shimmer {
+  0%   { opacity: 0.55; transform: rotate(-18deg) translateY(-2%); }
+  50%  { opacity: 0.95; transform: rotate(-18deg) translateY(2%); }
+  100% { opacity: 0.7;  transform: rotate(-18deg) translateY(-1%); }
 }
 
-/* 流星 */
-.mb-shooting {
+/* ──────────────────────────────────────────────
+   微星：1-2px 闪点，密集铺背景
+   ────────────────────────────────────────────── */
+.mb-microstar {
+  position: absolute;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 0 3px rgba(255, 255, 255, 0.55);
+  animation: mb-microstar-twinkle ease-in-out infinite;
+  will-change: opacity, transform;
+}
+
+@keyframes mb-microstar-twinkle {
+  0%, 100% { opacity: 0.15; transform: scale(0.7); }
+  50%      { opacity: 1;    transform: scale(1.15); }
+}
+
+/* ──────────────────────────────────────────────
+   流星：基点 + 拖尾。
+   - 整体 loop 用 `animation-duration`（38-52s），决定多久来一波
+   - 划过那一瞬间用 `--mb-meteor-stroke`（1-1.8s）控制
+   - opacity / translate 在 [0, stroke / cycle] 这段窗口里发生
+   ────────────────────────────────────────────── */
+.mb-meteor {
   position: absolute;
   width: 2px;
   height: 2px;
-  background: white;
+  background: hsla(var(--mb-meteor-hue, 50), 30%, 95%, 1);
   border-radius: 50%;
-  box-shadow: 0 0 6px white;
+  box-shadow: 0 0 6px hsla(var(--mb-meteor-hue, 50), 50%, 95%, 0.9);
   transform-origin: 0 0;
-  animation: mb-shooting-fly ease-out infinite;
+  animation: mb-meteor-cycle linear infinite;
   opacity: 0;
+  will-change: transform, opacity;
 }
-.mb-shooting::before {
+.mb-meteor::before {
   content: '';
   position: absolute;
   top: 0;
-  left: 0;
-  width: 80px;
-  height: 1px;
+  /* 拖尾从头部向"未旋转的 -X 方向"延伸——经过 135° 旋转后变成"右上方"，
+     正好是流星从右上来的"来时路"，与动画里的头部移动方向（左下）相反。 */
+  right: 0;
+  width: var(--mb-meteor-trail, 100px);
+  height: 1.5px;
   background: linear-gradient(
-    to left,
-    rgba(255, 255, 255, 0.9),
-    rgba(255, 255, 255, 0.5) 30%,
-    transparent
+    to right,
+    transparent,
+    hsla(var(--mb-meteor-hue, 50), 50%, 95%, 0.55) 60%,
+    hsla(var(--mb-meteor-hue, 50), 50%, 95%, 0.95)
   );
   transform: translateY(-50%);
+  filter: drop-shadow(0 0 4px hsla(var(--mb-meteor-hue, 50), 50%, 95%, 0.7));
 }
 
-@keyframes mb-shooting-fly {
+/**
+ * loop 周期由 .mb-meteor 的 animation-duration 决定（32s / 44s / 56s），
+ * 用百分比窗口控制"亮起→划过→隐没"。前 ~5% loop 时间内流星可见，剩下都是黑屏等下一波。
+ *
+ * translateX 距离 160vw —— 流星朝左下，需要走完整个屏幕（高度也算进来），
+ * 因为 transform 的旋转是基于起点，所以 translateX 是沿运动方向走的距离。
+ */
+@keyframes mb-meteor-cycle {
   0% {
     opacity: 0;
-    transform: rotate(var(--mb-shoot-angle)) translateX(0);
+    transform: rotate(var(--mb-meteor-angle, 135deg)) translateX(0);
   }
-  4% {
+  0.4% {
     opacity: 1;
   }
-  20% {
+  4.6% {
     opacity: 1;
-    transform: rotate(var(--mb-shoot-angle)) translateX(60vw);
+    transform: rotate(var(--mb-meteor-angle, 135deg)) translateX(180vmax);
   }
-  21%, 100% {
+  5%, 100% {
     opacity: 0;
+    transform: rotate(var(--mb-meteor-angle, 135deg)) translateX(180vmax);
   }
 }
 
-/* 大型 orb */
+/* ──────────────────────────────────────────────
+   大型 orb 氛围光（保留原效果，与主题色联动）
+   ────────────────────────────────────────────── */
 .mb-orbs {
   position: absolute;
   inset: 0;

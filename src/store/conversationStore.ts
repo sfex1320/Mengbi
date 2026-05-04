@@ -4,6 +4,8 @@ export interface Message {
   id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
+  /** 多模态附图（dataUri 数组）—— 不进入 content 文本，避免巨型 base64 串污染渲染 */
+  attachments?: string[];
   /** 是否仍在流式中 */
   streaming?: boolean;
   /** 是否被取消 */
@@ -29,7 +31,7 @@ interface ConversationState {
   deleteConversation: (id: string) => Promise<void>;
 
   /** 在本地立刻插入用户消息 + 占位 assistant 流式消息 */
-  appendUser: (content: string) => string;
+  appendUser: (content: string, attachments?: string[]) => string;
   appendAssistantPlaceholder: () => string;
   /** 流式追加 */
   appendDelta: (id: string, delta: string) => void;
@@ -78,12 +80,18 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
     if (activeId === id) set({ activeId: null, messages: [] });
   },
 
-  appendUser: (content) => {
+  appendUser: (content, attachments) => {
     const id = `u-${Date.now()}`;
     set((s) => ({
       messages: [
         ...s.messages,
-        { id, role: 'user', content, timestamp: new Date().toISOString() }
+        {
+          id,
+          role: 'user',
+          content,
+          attachments: attachments && attachments.length > 0 ? attachments : undefined,
+          timestamp: new Date().toISOString()
+        }
       ]
     }));
     return id;

@@ -2,15 +2,17 @@ import { useMemo } from 'react';
 import './Stars.css';
 
 /**
- * 背景星空粒子层（纯 CSS 动画 + 随机分布点）。
- * - 80 颗静态闪烁星
- * - 20 颗大颗粒"漂浮"（半透明、缓慢漂移、有 glow）
- * - 5 条流星轨迹（极慢交替触发）
- * - 3 个底部 orb（保留原效果）
- * 不使用 canvas，避免占用渲染主线程。
+ * 银河 / 微星 / 流星雨 背景层（纯 CSS 动画）。
+ *
+ * - 200 颗"微星"，~1-2px，慢速闪烁
+ * - 一条斜向"银河带"，半透明渐变
+ * - 一组定时流星雨（每 ~38s 一波，每波 ~14 条，同方向，错开 0~2s）
+ * - 3 个大型 orb（暖橘 / 紫 / 蓝），与主题色融合
+ *
+ * 不用 canvas，避免占主线程；元素数量虽多，全部走 transform/opacity，浏览器走 GPU。
  */
 
-interface Star {
+interface MicroStar {
   top: string;
   left: string;
   size: number;
@@ -19,82 +21,86 @@ interface Star {
   opacity: number;
 }
 
-interface Particle {
+interface Meteor {
+  /** 起点 — 屏幕的某个上 / 上半屏位置（px：vw / vh） */
   top: string;
   left: string;
-  size: number;
+  /** 整个动画 loop 时长（必须所有流星一致才能保持"一波"）*/
+  cycle: number;
+  /** 在 loop 内的起跳延迟（同一波的延迟集中在 0-2s 内） */
   delay: number;
+  /** 单次划过的时长（多用 1.2-1.8s） */
   duration: number;
-  hue: number;
-  driftX: string;
-  driftY: string;
-}
-
-interface Shooting {
-  top: string;
-  left: string;
-  delay: number;
-  duration: number;
+  /** 角度（同一波保持接近，制造"齐射"效果） */
   angle: number;
+  /** 长度（轨迹长度） */
+  trail: number;
+  /** 色相 */
+  hue: number;
 }
 
-function makeStars(count: number): Star[] {
-  const arr: Star[] = [];
+function makeMicroStars(count: number): MicroStar[] {
+  const arr: MicroStar[] = [];
   for (let i = 0; i < count; i++) {
     arr.push({
       top: `${Math.random() * 100}%`,
       left: `${Math.random() * 100}%`,
-      size: Math.random() < 0.85 ? 1 : Math.random() < 0.6 ? 2 : 3,
-      delay: Math.random() * 8,
-      duration: 4 + Math.random() * 8,
-      opacity: 0.3 + Math.random() * 0.55
+      // 大多数 1px，少数 2px
+      size: Math.random() < 0.82 ? 1 : Math.random() < 0.7 ? 1.5 : 2,
+      delay: Math.random() * 6,
+      duration: 3 + Math.random() * 5,
+      opacity: 0.25 + Math.random() * 0.55
     });
   }
   return arr;
 }
 
-function makeParticles(count: number): Particle[] {
-  const arr: Particle[] = [];
+/**
+ * 一波流星雨：N 条同方向流星，延迟集中在前 2.5 秒（齐射感）。
+ *
+ * 方向：右上 → 左下。
+ *   CSS rotate() 是顺时针：0°=右、90°=下、180°=左、270°=上。
+ *   要 "右上→左下"（向下偏左）就得 ~130°–145°（下与左之间）。
+ *   起点撒在屏幕右上：top 0–40%、left 50–110%（少量出屏外，让流星"从屏外飞来"）。
+ */
+function makeMeteorShower(count: number, cycle: number, delayBase: number): Meteor[] {
+  const baseAngle = 135 + Math.random() * 8; // 一波内角度统一
+  const arr: Meteor[] = [];
   for (let i = 0; i < count; i++) {
     arr.push({
-      top: `${Math.random() * 100}%`,
-      left: `${Math.random() * 100}%`,
-      size: 4 + Math.random() * 6,
-      delay: Math.random() * 12,
-      duration: 18 + Math.random() * 22,
-      hue: Math.random() < 0.5 ? 28 : Math.random() < 0.5 ? 270 : 210,
-      driftX: `${(Math.random() - 0.5) * 30}vw`,
-      driftY: `${(Math.random() - 0.5) * 30}vh`
-    });
-  }
-  return arr;
-}
-
-function makeShootings(count: number): Shooting[] {
-  const arr: Shooting[] = [];
-  for (let i = 0; i < count; i++) {
-    arr.push({
-      top: `${Math.random() * 50}%`,
-      left: `${Math.random() * 80}%`,
-      delay: 4 + Math.random() * 18 + i * 6,
-      duration: 1.2 + Math.random() * 0.8,
-      angle: 200 + Math.random() * 30
+      top: `${Math.random() * 40 - 5}%`,
+      left: `${50 + Math.random() * 60}%`,
+      cycle,
+      delay: delayBase + Math.random() * 2.6,
+      duration: 1.0 + Math.random() * 0.6,
+      // 微小角度抖动，让队形像真流星雨而不是机械整齐
+      angle: baseAngle + (Math.random() - 0.5) * 6,
+      trail: 110 + Math.random() * 120,
+      hue: Math.random() < 0.5 ? 50 : 200
     });
   }
   return arr;
 }
 
 export function Stars(): JSX.Element {
-  const stars = useMemo(() => makeStars(80), []);
-  const particles = useMemo(() => makeParticles(20), []);
-  const shootings = useMemo(() => makeShootings(5), []);
+  const microStars = useMemo(() => makeMicroStars(260), []);
+  // 三波流星雨——错开周期 + 错开延迟基线，让屏幕几乎一直能看到流星
+  // 周期短 = 来得勤；count 大 = 单波更密集
+  const showerA = useMemo(() => makeMeteorShower(28, 32, 0), []);
+  const showerB = useMemo(() => makeMeteorShower(24, 44, 12), []);
+  const showerC = useMemo(() => makeMeteorShower(20, 56, 24), []);
 
   return (
     <div className="mb-stars" aria-hidden="true">
-      {stars.map((s, i) => (
+      {/* 银河带：旋转的渐变条，与微星叠加 */}
+      <div className="mb-galaxy-band" />
+      <div className="mb-galaxy-band mb-galaxy-band-2" />
+
+      {/* 微星层 */}
+      {microStars.map((s, i) => (
         <span
-          key={`s-${i}`}
-          className="mb-star"
+          key={`m-${i}`}
+          className="mb-microstar"
           style={{
             top: s.top,
             left: s.left,
@@ -107,42 +113,64 @@ export function Stars(): JSX.Element {
         />
       ))}
 
-      {particles.map((p, i) => (
+      {/* 流星雨 A */}
+      {showerA.map((m, i) => (
         <span
-          key={`p-${i}`}
-          className="mb-particle"
+          key={`a-${i}`}
+          className="mb-meteor"
           style={
             {
-              top: p.top,
-              left: p.left,
-              width: p.size,
-              height: p.size,
-              animationDelay: `${p.delay}s`,
-              animationDuration: `${p.duration}s`,
-              ['--mb-particle-hue' as string]: String(p.hue),
-              ['--mb-particle-dx' as string]: p.driftX,
-              ['--mb-particle-dy' as string]: p.driftY
+              top: m.top,
+              left: m.left,
+              animationDelay: `${m.delay}s`,
+              animationDuration: `${m.cycle}s`,
+              ['--mb-meteor-angle' as string]: `${m.angle}deg`,
+              ['--mb-meteor-trail' as string]: `${m.trail}px`,
+              ['--mb-meteor-hue' as string]: String(m.hue)
             } as React.CSSProperties
           }
         />
       ))}
 
-      {shootings.map((s, i) => (
+      {/* 流星雨 B */}
+      {showerB.map((m, i) => (
         <span
-          key={`m-${i}`}
-          className="mb-shooting"
+          key={`b-${i}`}
+          className="mb-meteor"
           style={
             {
-              top: s.top,
-              left: s.left,
-              animationDelay: `${s.delay}s`,
-              animationDuration: `${s.duration}s`,
-              ['--mb-shoot-angle' as string]: `${s.angle}deg`
+              top: m.top,
+              left: m.left,
+              animationDelay: `${m.delay}s`,
+              animationDuration: `${m.cycle}s`,
+              ['--mb-meteor-angle' as string]: `${m.angle}deg`,
+              ['--mb-meteor-trail' as string]: `${m.trail}px`,
+              ['--mb-meteor-hue' as string]: String(m.hue)
             } as React.CSSProperties
           }
         />
       ))}
 
+      {/* 流星雨 C */}
+      {showerC.map((m, i) => (
+        <span
+          key={`c-${i}`}
+          className="mb-meteor"
+          style={
+            {
+              top: m.top,
+              left: m.left,
+              animationDelay: `${m.delay}s`,
+              animationDuration: `${m.cycle}s`,
+              ['--mb-meteor-angle' as string]: `${m.angle}deg`,
+              ['--mb-meteor-trail' as string]: `${m.trail}px`,
+              ['--mb-meteor-hue' as string]: String(m.hue)
+            } as React.CSSProperties
+          }
+        />
+      ))}
+
+      {/* 大型 orb 仍保留：与主题色融合的氛围光 */}
       <div className="mb-orbs">
         <div className="mb-orb mb-orb-1" />
         <div className="mb-orb mb-orb-2" />

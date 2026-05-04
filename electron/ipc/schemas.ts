@@ -5,10 +5,20 @@ import { z } from 'zod';
  * 详见 CLAUDE.md §8 与 ARCHITECTURE.md §6（输入校验）。
  */
 
+// 对旧值容错：把已废弃的 kimi/minimax/glm/deepseek 当 openai-compat 处理
 const officialKindSchema = z
-  .enum(['kimi', 'minimax', 'glm', 'deepseek', 'anthropic'])
+  .enum(['openai', 'anthropic', 'gemini', 'openai-compat', 'kimi', 'minimax', 'glm', 'deepseek'])
+  .nullable()
+  .transform((v) => {
+    if (v === 'kimi' || v === 'minimax' || v === 'glm' || v === 'deepseek') {
+      return 'openai-compat' as const;
+    }
+    return v;
+  });
+
+const imageKindSchema = z
+  .enum(['openai', 'grsai', 'gemini', 'openai-compat'])
   .nullable();
-const imageKindSchema = z.enum(['grsai']).nullable();
 
 const apiConfigInputSchema = z.object({
   id: z.number().int().optional(),
@@ -45,7 +55,9 @@ export const PlanUpsertSchema = z.object({
 
 export const ChatSendSchema = z.object({
   conversationId: z.string().min(1),
-  content: z.string().min(1).max(50_000)
+  content: z.string().max(50_000),
+  /** 用户消息附带的图片（data URI / https URL）；提交时由后端拼成多模态消息 */
+  attachedImages: z.array(z.string()).max(8).optional()
 });
 
 export const ImageGenerateSchema = z.object({

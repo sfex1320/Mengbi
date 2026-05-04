@@ -158,3 +158,20 @@ export const CopyIconShape = (p: IconProps) => (
     <path d="M5 15V5a2 2 0 0 1 2-2h10" />
   </Base>
 );
+
+/**
+ * AI 生图图标：调色板 + 数颗闪光，一眼能看出"AI 创作类绘图"
+ * —— 用于 Sidebar 左上"生图"入口；旧的 SparkleIcon 仅画笔，不够"AI"。
+ */
+export const AiBrushIcon = (p: IconProps) => (
+  <Base {...p}>
+    {/* 画笔笔身 */}
+    <path d="M14.5 4.5l5 5L9 20H4v-5z" />
+    {/* 笔头分隔 */}
+    <path d="M13 6l5 5" />
+    {/* 三颗散落的星芒：左上 / 右上 / 中下 */}
+    <path d="M5 4l.5 1.4L7 6l-1.5.6L5 8l-.5-1.4L3 6l1.5-.6z" />
+    <path d="M19.5 14l.4 1.1L21 15.5l-1.1.4L19.5 17l-.4-1.1L18 15.5l1.1-.4z" />
+    <path d="M9.5 9.5l.4 1.1L11 11l-1.1.4L9.5 12.5l-.4-1.1L8 11l1.1-.4z" />
+  </Base>
+);

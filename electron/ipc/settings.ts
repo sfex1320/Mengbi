@@ -24,7 +24,9 @@ export function registerSettingsHandlers(): void {
   register('api:settings:get', null, async () => ok(loadBundle()));
 
   register('api:settings:save', SaveSettingsSchema, async (input) => {
-    saveBundle(input);
+    // zod transform 会把 kimi/minimax/glm/deepseek 归一到 openai-compat，
+    // 但 zod 推导的输入类型是 union，要 cast 到 ApiConfigInput 才能传给 saveBundle
+    saveBundle(input as { configs?: ApiConfigInput[]; prefs?: Record<string, string> });
     return ok(loadBundle());
   });
 

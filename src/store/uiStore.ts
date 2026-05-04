@@ -33,6 +33,25 @@ interface UIState {
   chatMode: ChatPanelMode;
   chatModelId: string;
 
+  // 头像：内置 key 或 'custom'
+  avatarKey: string;
+  /** 用户上传的自定义头像（dataUri）；avatarKey === 'custom' 时使用 */
+  customAvatarDataUri: string;
+  /** 聊天面板的最后滚动位置（像素，从顶部）—— 跨页面切换记住 */
+  chatScrollTop: number;
+  /** 在管家中标记为"快捷"的提示词 ID —— 渲染在对话/生图发送按钮左侧 */
+  shortcutPromptIds: number[];
+  /** 缓存各 shortcut prompt 的 { title, text }，避免每次切页都要重新拉一次 prompt.list */
+  shortcutPromptCache: Record<number, { title: string; text: string }>;
+
+  setAvatarKey: (k: string) => void;
+  setCustomAvatarDataUri: (s: string) => void;
+  setChatScrollTop: (n: number) => void;
+  toggleShortcutPromptId: (id: number) => void;
+  setShortcutPromptIds: (ids: number[]) => void;
+  setShortcutPromptCache: (cache: Record<number, { title: string; text: string }>) => void;
+  upsertShortcutPromptCache: (id: number, value: { title: string; text: string }) => void;
+
   // setter 们
   setManagerMode: (m: ManagerMode) => void;
   setManagerSlug: (s: string) => void;
@@ -65,6 +84,33 @@ export const useUIStore = create<UIState>()(
 
       chatMode: 'chat',
       chatModelId: '',
+
+      avatarKey: 'default',
+      customAvatarDataUri: '',
+      chatScrollTop: 0,
+      shortcutPromptIds: [],
+      shortcutPromptCache: {},
+
+      setAvatarKey: (k) => set({ avatarKey: k }),
+      setCustomAvatarDataUri: (s) => set({ customAvatarDataUri: s }),
+      setChatScrollTop: (n) => set({ chatScrollTop: n }),
+      toggleShortcutPromptId: (id) =>
+        set((s) => {
+          const cur = s.shortcutPromptIds;
+          const next = cur.includes(id)
+            ? cur.filter((x) => x !== id)
+            : [...cur, id].slice(-12); // 最多 12 个，超出则丢最早的
+          // 移除时清缓存
+          const nextCache = { ...s.shortcutPromptCache };
+          if (cur.includes(id)) delete nextCache[id];
+          return { shortcutPromptIds: next, shortcutPromptCache: nextCache };
+        }),
+      setShortcutPromptIds: (ids) => set({ shortcutPromptIds: ids.slice(0, 12) }),
+      setShortcutPromptCache: (cache) => set({ shortcutPromptCache: cache }),
+      upsertShortcutPromptCache: (id, value) =>
+        set((s) => ({
+          shortcutPromptCache: { ...s.shortcutPromptCache, [id]: value }
+        })),
 
       setManagerMode: (m) => set({ managerMode: m }),
       setManagerSlug: (s) => set({ managerSlug: s }),

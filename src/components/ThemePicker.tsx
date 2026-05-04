@@ -9,7 +9,6 @@ import {
   type Atmosphere,
   type Palette
 } from '@shared/theme';
-import { PaletteIcon } from './Icon';
 import './ThemePicker.css';
 
 const PALETTE_PREVIEW: Record<Palette, string> = {
@@ -46,7 +45,14 @@ export function ThemePicker(): JSX.Element {
         className="mb-themepicker-trigger"
         aria-label="配置外观"
       >
-        <PaletteIcon size={16} />
+        <span className="mb-themepicker-icon-wrap">
+          <img
+            src={new URL('../assets/icon-121.svg', import.meta.url).toString()}
+            alt=""
+            className="mb-themepicker-icon"
+            draggable={false}
+          />
+        </span>
         <span>配置外观</span>
       </button>
 

@@ -93,6 +93,13 @@ const api: ElectronAPI = {
     close: () => invoke('api:window:close'),
     state: () => invoke('api:window:state')
   },
+  drag: {
+    // fire-and-forget：必须在 dragstart 同步路径里调用；主进程异步起 startDrag
+    startFromDataUri: (dataUri, suggestedName) =>
+      ipcRenderer.send('api:drag:start-from-data-uri', { dataUri, suggestedName }),
+    startFromPath: (filePath) =>
+      ipcRenderer.send('api:drag:start-from-path', { filePath })
+  },
   on: (channel, handler) => {
     if (!PUSH_CHANNELS.has(channel)) {
       throw new Error(`unsupported push channel: ${channel}`);

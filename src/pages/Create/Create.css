@@ -100,6 +100,246 @@
   font-weight: 500;
 }
 
+/* 长宽反转按钮——夹在两个 input 中间 */
+.mb-gen-swap {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: var(--mb-bg-hover);
+  border: 1px solid var(--mb-border);
+  color: var(--mb-text-secondary);
+  cursor: pointer;
+  font-size: 14px;
+  transition: all var(--mb-duration-fast) var(--mb-ease);
+}
+.mb-gen-swap:hover {
+  background: var(--mb-accent-soft);
+  color: var(--mb-accent);
+  border-color: var(--mb-accent);
+  transform: rotate(180deg);
+}
+
+/* 自动计算开关 */
+.mb-gen-autocalc-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--mb-text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+.mb-gen-autocalc-row input[type='checkbox'] {
+  cursor: pointer;
+}
+
+/* 尺寸计算器（紧凑版：所有控件在一行；字号不变，纯靠 padding/gap 压缩）*/
+.mb-size-calc {
+  margin-top: 8px;
+  border: 1px dashed var(--mb-border-soft);
+  border-radius: 10px;
+  padding: 4px 8px 6px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.mb-size-calc-toggle {
+  width: 100%;
+  text-align: left;
+  padding: 2px 0;
+  font-size: 12px;
+  color: var(--mb-text-secondary);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+.mb-size-calc-toggle:hover {
+  color: var(--mb-text-primary);
+}
+.mb-size-calc-body {
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mb-size-calc-modes {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--mb-bg-hover);
+  border: 1px solid var(--mb-border);
+  border-radius: var(--mb-radius-pill);
+}
+.mb-size-calc-mode {
+  flex: 1;
+  padding: 3px 8px;
+  font-size: 11px;
+  border-radius: var(--mb-radius-pill);
+  background: transparent;
+  color: var(--mb-text-secondary);
+  border: 0;
+  cursor: pointer;
+  transition: all var(--mb-duration-fast) var(--mb-ease);
+}
+.mb-size-calc-mode.is-active {
+  background: var(--mb-accent-gradient);
+  color: var(--mb-text-on-accent);
+}
+
+/* 紧凑布局：每行一对（左右 50/50）"label + 控件" 单元，控件占满列宽 */
+.mb-size-calc-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.mb-size-calc-cell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.mb-size-calc-label {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--mb-text-muted);
+  white-space: nowrap;
+}
+
+.mb-size-calc-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  font-size: 12px;
+  font-family: var(--mb-font-mono);
+  height: 28px;
+  line-height: 1.2;
+}
+
+/* select 单独处理：
+   - Chrome/Electron 下原生 select 的"已选值"文字渲染不太走 line-height，
+     用 mono + height:26px + line-height:1 会被裁成"半截字"；
+   - 改回正常 UI 字体 + 略加 padding，让中文「小于 / 约等于」能完整显示；
+   - padding-right 留出箭头位置 */
+select.mb-size-calc-input {
+  font-family: 'Inter', 'SF Pro Display', system-ui, -apple-system,
+    BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  height: 28px;
+  padding: 0 22px 0 8px;
+  line-height: 28px;
+}
+
+.mb-size-calc-snap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--mb-text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+.mb-size-calc-snap input { cursor: pointer; }
+
+.mb-size-calc-result-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px dashed var(--mb-border-soft);
+}
+.mb-size-calc-result {
+  flex: 1;
+  font-size: 12px;
+  color: var(--mb-text-primary);
+  font-family: var(--mb-font-mono);
+}
+.mb-size-calc-mp {
+  opacity: 0.6;
+  font-weight: 400;
+  margin-left: 4px;
+}
+
+/* 自定义尺寸的预设 chip 列表 */
+.mb-size-presets {
+  margin-top: 8px;
+}
+.mb-size-presets-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.mb-size-preset {
+  position: relative;
+  padding: 4px 12px;
+  border-radius: var(--mb-radius-pill);
+  border: 1px solid var(--mb-border);
+  background: var(--mb-bg-hover);
+  color: var(--mb-text-secondary);
+  font-size: 11px;
+  font-family: var(--mb-font-mono);
+  cursor: pointer;
+  transition: all var(--mb-duration-fast) var(--mb-ease);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+/* 预设 chip 内：左侧名称（粗），右侧 W×H 像素（淡）—— 用户要"既看比例又看像素" */
+.mb-size-preset-label {
+  font-weight: 600;
+  color: inherit;
+}
+.mb-size-preset-dim {
+  font-size: 10px;
+  opacity: 0.6;
+  letter-spacing: 0.02em;
+}
+.mb-size-preset.is-active .mb-size-preset-dim {
+  opacity: 0.8;
+}
+.mb-size-preset:hover {
+  border-color: var(--mb-border-strong);
+  color: var(--mb-text-primary);
+}
+.mb-size-preset.is-active {
+  border-color: var(--mb-accent);
+  background: var(--mb-accent-soft);
+  color: var(--mb-accent);
+}
+.mb-size-preset.is-user {
+  background: rgba(118, 125, 203, 0.12);
+  border-color: rgba(118, 125, 203, 0.3);
+}
+.mb-size-preset-x {
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.2);
+  font-size: 10px;
+  line-height: 1;
+}
+.mb-size-preset-x:hover {
+  background: rgba(248, 113, 113, 0.5);
+  color: #fff;
+}
+.mb-size-preset-add {
+  border-style: dashed;
+  font-family: var(--mb-font-display);
+}
+.mb-size-preset-add:hover {
+  border-color: var(--mb-accent);
+  color: var(--mb-accent);
+  background: var(--mb-accent-soft);
+}
+
 .mb-gen-hint {
   font-size: 11px;
   color: var(--mb-text-muted);
@@ -156,6 +396,48 @@
 }
 .mb-gen-ref-remove:hover {
   background: rgba(248, 113, 113, 0.9);
+  color: #fff;
+}
+
+/* 参考图悬停时出现：编辑 + 删除 双按钮 */
+.mb-gen-ref-actions {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  opacity: 0;
+  transition: opacity 160ms var(--mb-ease);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+.mb-gen-ref-thumb:hover .mb-gen-ref-actions {
+  opacity: 1;
+}
+
+.mb-gen-ref-act {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.94);
+  color: #111;
+  border: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  transition:
+    transform var(--mb-duration-fast) var(--mb-ease-snap),
+    background var(--mb-duration-fast) var(--mb-ease);
+}
+.mb-gen-ref-act:hover {
+  transform: scale(1.08);
+}
+.mb-gen-ref-act-danger {
+  background: rgba(248, 113, 113, 0.95);
   color: #fff;
 }
 
@@ -269,14 +551,22 @@
   padding: 24px 0;
 }
 
+/* 3 卡并排：三列等宽 grid，超出由父级横向 scroll 兜底 */
+.mb-gen-task-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
 .mb-gen-task-card {
-  padding: 14px 16px;
-  border-radius: 14px;
+  padding: 8px;
+  border-radius: 12px;
   background: var(--mb-bg-hover);
   border: 1px solid var(--mb-border);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 6px;
+  min-width: 0;
 }
 
 .mb-gen-task-content {
@@ -286,10 +576,9 @@
 }
 
 .mb-gen-task-thumb {
-  flex-shrink: 0;
-  width: 92px;
-  height: 92px;
-  border-radius: 10px;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  border-radius: 8px;
   overflow: hidden;
   border: 1px solid var(--mb-border);
   background: var(--mb-bg-active);
@@ -297,9 +586,16 @@
   cursor: zoom-in;
   position: relative;
   transition: transform 200ms var(--mb-ease);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
-.mb-gen-task-thumb:hover {
-  transform: scale(1.03);
+.mb-gen-task-thumb.is-empty {
+  cursor: default;
+  color: var(--mb-text-muted);
+}
+.mb-gen-task-thumb:hover:not(.is-empty) {
+  transform: scale(1.02);
   border-color: var(--mb-accent);
 }
 .mb-gen-task-thumb img {
@@ -331,12 +627,12 @@
 }
 
 .mb-gen-task-prompt-full {
-  font-size: 13px;
+  font-size: 11px;
   color: var(--mb-text-primary);
-  line-height: 1.5;
+  line-height: 1.4;
   display: -webkit-box;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 2;
   overflow: hidden;
 }
 
@@ -351,8 +647,12 @@
 
 .mb-gen-task-actions {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
+}
+.mb-gen-task-actions .mb-btn {
+  padding: 4px 8px;
+  min-width: 0;
 }
 
 .mb-gen-status-running .mb-gen-task-status {

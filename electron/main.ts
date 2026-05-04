@@ -45,14 +45,69 @@ if (!app.requestSingleInstanceLock()) {
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 
-function createTray(): void {
-  // 1×1 透明 PNG 占位（base64）。Phase 6 后续替换为真实 16×16 / 32×32 图标。
-  const icon = nativeImage.createFromBuffer(
+/** 在 dev 和 packaged 两种情形下找 resources/ */
+function getResourcePath(...rel: string[]): string {
+  // packaged：resources 在 process.resourcesPath；dev：在项目根
+  const rootCandidates = [
+    process.resourcesPath,
+    path.resolve(__dirname, '..', '..'),
+    path.resolve(__dirname, '..', '..', '..')
+  ];
+  for (const root of rootCandidates) {
+    if (!root) continue;
+    const p = path.join(root, 'resources', ...rel);
+    if (fs.existsSync(p)) return p;
+  }
+  return path.join('resources', ...rel);
+}
+
+/**
+ * 加载托盘 / 窗口图标。优先级：
+ *   1. userData/icon-101.png  —— 用 sharp 把 资源 101.svg 一次性栅格化的缓存
+ *   2. resources/icon.png     —— builder buildResources 兜底
+ *   3. 1×1 透明占位
+ */
+function loadAppIcon(): Electron.NativeImage {
+  const cached = path.join(app.getPath('userData'), 'icon-101.png');
+  for (const p of [cached, getResourcePath('icon.png')]) {
+    try {
+      if (fs.existsSync(p)) {
+        const img = nativeImage.createFromPath(p);
+        if (!img.isEmpty()) return img;
+      }
+    } catch {
+      /* try next */
+    }
+  }
+  return nativeImage.createFromBuffer(
     Buffer.from(
       'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAGUlEQVR42mNkYPhfDwQMjAxQ8B+EAQAFiAH+nW3pmAAAAABJRU5ErkJggg==',
       'base64'
     )
   );
+}
+
+/** 启动时把 资源 101.svg 栅格化成 PNG 缓存到 userData，用于托盘 + 窗口图标 */
+async function rasterizeAppIcon(): Promise<void> {
+  const cached = path.join(app.getPath('userData'), 'icon-101.png');
+  if (fs.existsSync(cached)) return;
+  const svgPath = getResourcePath('icon-101.svg');
+  if (!fs.existsSync(svgPath)) return;
+  try {
+    // sharp 在 electron.vite.config.ts 里 external，运行时直接 require 拿原生模块
+    const sharp = (await import('sharp')).default;
+    const buf = await sharp(svgPath).resize(256, 256).png().toBuffer();
+    fs.writeFileSync(cached, buf);
+    logger.info('app icon rasterized', cached);
+  } catch (e) {
+    logger.warn('rasterize app icon failed, falling back to icon.png', e);
+  }
+}
+
+function createTray(): void {
+  const baseIcon = loadAppIcon();
+  // 托盘要 16×16 / 32×32 范围；resize 一下避免 macOS 上巨大
+  const icon = baseIcon.resize({ width: 18, height: 18 });
 
   try {
     tray = new Tray(icon);
@@ -104,6 +159,7 @@ function createWindow(): void {
     height: 820,
     minWidth: 1024,
     minHeight: 680,
+    icon: loadAppIcon(),
     show: false,
     autoHideMenuBar: true,
     backgroundColor: '#0a0b10',
@@ -115,7 +171,10 @@ function createWindow(): void {
       sandbox: false, // contextBridge 在 sandbox=true 时仍可用，但 better-sqlite3 等需要 false
       contextIsolation: true,
       nodeIntegration: false,
-      webSecurity: true
+      webSecurity: true,
+      // 窗口被遮挡 / 最小化时，让 Chromium 主动节流定时器和 rAF，
+      // 配合渲染层 data-idle 把后台 CPU 压到接近 0
+      backgroundThrottling: true
     }
   });
 
@@ -191,10 +250,11 @@ function applySecurityHeaders(): void {
   });
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   try {
     initDb();
     registerAllIpcHandlers();
+    await rasterizeAppIcon();
   } catch (e) {
     logger.error('boot failed', e);
     app.exit(1);

@@ -7,6 +7,7 @@ import { useUIStore } from '@/store/uiStore';
 import { Modal } from '@/components/Modal';
 import { Lightbox } from '@/components/Lightbox';
 import { openContextMenu } from '@/components/ContextMenu';
+import { confirmDialog } from '@/components/ConfirmDialog';
 import {
   PlusIcon,
   SearchIcon,
@@ -17,6 +18,7 @@ import {
   CopyIconShape
 } from '@/components/Icon';
 import { localPathToImageUrl } from '@/lib/imageUrl';
+import { autoTag } from '@/lib/autoTag';
 import './Manager.css';
 
 interface PromptCategory {
@@ -37,7 +39,10 @@ interface PromptCard {
   tags: string;
   notes: string | null;
   related_image_ids: string | null;
+  /** 服务端 join 出的关联图（v1 路径） */
   thumb_file_path: string | null;
+  /** 服务端列直存的小 dataUri（反推 / 没有关联图时用） */
+  thumb_data_uri: string | null;
 }
 
 interface ImageRow {
@@ -83,6 +88,9 @@ export default function ManagerPage(): JSX.Element {
   const [images, setImages] = useState<ImageRow[]>([]);
   const [editing, setEditing] = useState<Partial<PromptCard> | null>(null);
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+  /** 图库勾选模式 */
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
 
   // 提示词标签筛选——从 ui store 加载，再 wrap 成 Set 保持原 API
   const activeTags = useMemo(() => new Set(ui.managerActiveTags), [ui.managerActiveTags]);
@@ -94,8 +102,11 @@ export default function ManagerPage(): JSX.Element {
   const navigate = useNavigate();
   const imgParams = useImageParamsStore();
 
+  // 打开管家页面时，默认进入图库视图（每次进入都重置一次——用户更习惯先看图）
   useEffect(() => {
+    if (mode !== 'gallery') setMode('gallery');
     refreshCategories();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -128,7 +139,14 @@ export default function ManagerPage(): JSX.Element {
   }
 
   async function deletePrompt(id: number): Promise<void> {
-    if (!confirm('删除这条提示词？（30 天内可恢复）')) return;
+    const ok = await confirmDialog({
+      title: '删除提示词',
+      message: '删除这条提示词？',
+      detail: '会被移入回收站，30 天内可恢复。',
+      okText: '删除',
+      danger: true
+    });
+    if (!ok) return;
     const r = await window.electronAPI.prompt.delete(id);
     if (r.ok) {
       toast.success('已移入回收站');
@@ -138,8 +156,78 @@ export default function ManagerPage(): JSX.Element {
     }
   }
 
+  // ─── 图库批量勾选 ───
+  function toggleSelect(id: number): void {
+    setSelectedIds((cur) => {
+      const next = new Set(cur);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function selectAllInView(): void {
+    setSelectedIds(new Set(filteredImages.map((im) => im.id)));
+  }
+
+  function invertSelectionInView(): void {
+    setSelectedIds((cur) => {
+      const next = new Set<number>();
+      for (const im of filteredImages) {
+        if (!cur.has(im.id)) next.add(im.id);
+      }
+      return next;
+    });
+  }
+
+  function clearSelection(): void {
+    setSelectedIds(new Set());
+  }
+
+  function exitSelectMode(): void {
+    setSelectMode(false);
+    setSelectedIds(new Set());
+  }
+
+  async function batchDeleteSelected(): Promise<void> {
+    if (selectedIds.size === 0) return;
+    const ok = await confirmDialog({
+      title: '批量从图库移除',
+      message: `从图库移除选中的 ${selectedIds.size} 张图？`,
+      detail: '仅在数据库打软删除标记，磁盘上的源文件不会删除。',
+      okText: '全部移除',
+      danger: true
+    });
+    if (!ok) return;
+    const ts = new Date().toISOString();
+    const ids = Array.from(selectedIds);
+    const results = await Promise.all(
+      ids.map((id) =>
+        window.electronAPI.gallery.update({ id, patch: { deleted_at: ts } })
+      )
+    );
+    const failed = results.filter((r) => !r.ok).length;
+    if (failed === 0) {
+      toast.success('已移入回收站', `成功 ${ids.length} 张`);
+    } else {
+      toast.error(
+        '部分失败',
+        `成功 ${ids.length - failed} / 失败 ${failed}`
+      );
+    }
+    exitSelectMode();
+    refreshImages();
+  }
+
   async function softDeleteImage(id: number): Promise<void> {
-    if (!confirm('从图库移除这张图？（仅打标记，源文件保留）')) return;
+    const ok = await confirmDialog({
+      title: '从图库移除',
+      message: '从图库移除这张图？',
+      detail: '仅在数据库打软删除标记，磁盘上的源文件不会删除。',
+      okText: '移除',
+      danger: true
+    });
+    if (!ok) return;
     const r = await window.electronAPI.gallery.update({
       id,
       patch: { deleted_at: new Date().toISOString() }
@@ -166,11 +254,11 @@ export default function ManagerPage(): JSX.Element {
       return;
     }
     const cat = categories.find((c) => c.slug === activeSlug);
-    let tagsArr: string[] = [];
+    let userTagsArr: string[] = [];
     try {
-      tagsArr = (JSON.parse(editing.tags ?? '[]') as string[]) || [];
+      userTagsArr = (JSON.parse(editing.tags ?? '[]') as string[]) || [];
     } catch {
-      tagsArr = [];
+      userTagsArr = [];
     }
     let relatedIds: number[] = [];
     try {
@@ -178,6 +266,17 @@ export default function ManagerPage(): JSX.Element {
     } catch {
       relatedIds = [];
     }
+    // 自动打标：从正文里抽主体/风格/关键词，与用户手填 tags 合并去重
+    // —— 用户手填始终在前，自动标签在后（保持用户优先级）
+    const auto = autoTag(text, null, userTagsArr, 10);
+    // editing.thumb_data_uri 三态：
+    //   - undefined：用户没动它 → 不传给后端，保留原值
+    //   - ''：用户清空了缩略图 → 传空字符串，后端会清掉
+    //   - 数据 URI：用户上传了新图（已缩到 ≤256px）
+    const thumbField =
+      editing.thumb_data_uri === undefined
+        ? undefined
+        : (editing.thumb_data_uri as string);
     const r = await window.electronAPI.prompt.upsert({
       id: editing.id,
       title,
@@ -185,9 +284,10 @@ export default function ManagerPage(): JSX.Element {
       negative_text: editing.negative_text ?? null,
       kind: (editing.kind as 'image') ?? (cat?.slug === 'video' ? 'video' : 'image'),
       category_id: cat && cat.slug !== 'all' ? cat.id : null,
-      tags: tagsArr,
+      tags: auto.merged,
       notes: editing.notes ?? null,
-      related_image_ids: relatedIds
+      related_image_ids: relatedIds,
+      thumb_data_uri: thumbField
     });
     if (r.ok) {
       toast.success(editing.id ? '已更新' : '已添加');
@@ -348,6 +448,80 @@ export default function ManagerPage(): JSX.Element {
     navigate('/');
   }
 
+  /** 提示词卡片：复制文本 */
+  async function copyPromptText(text: string): Promise<void> {
+    if (!text.trim()) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success('提示词已复制');
+    } catch {
+      toast.error('复制失败');
+    }
+  }
+
+  /** 提示词卡片：复制并跳到生图（同时塞剪贴板和 chatDraft） */
+  async function copyAndUseForImage(text: string): Promise<void> {
+    if (!text.trim()) return;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      /* 剪贴板失败不阻塞 */
+    }
+    imgParams.setChatDraft(text);
+    navigate('/');
+    toast.success('提示词已复制并填到生图输入框');
+  }
+
+  /** 提示词卡片：右键菜单 */
+  function showPromptMenu(e: React.MouseEvent, p: PromptCard): void {
+    e.preventDefault();
+    e.stopPropagation();
+    const inShortcuts = ui.shortcutPromptIds.includes(p.id);
+    openContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      items: [
+        {
+          label: '复制提示词',
+          icon: <CopyIconShape size={13} />,
+          onClick: () => copyPromptText(p.text)
+        },
+        {
+          label: '复制并生图',
+          variant: 'accent',
+          icon: <SparkleIcon size={12} />,
+          onClick: () => copyAndUseForImage(p.text)
+        },
+        {
+          label: '只填到生图（不复制）',
+          icon: <SparkleIcon size={12} />,
+          onClick: () => useAsPrompt(p.text)
+        },
+        {
+          label: inShortcuts ? '从快捷栏移除' : '加入对话框快捷栏',
+          icon: <PlusIcon size={12} />,
+          onClick: () => {
+            if (!inShortcuts) {
+              ui.upsertShortcutPromptCache(p.id, { title: p.title, text: p.text });
+            }
+            ui.toggleShortcutPromptId(p.id);
+            toast.success(inShortcuts ? '已从快捷栏移除' : '已加入快捷栏');
+          }
+        },
+        {
+          label: '编辑',
+          onClick: () => setEditing({ ...p, tags: p.tags ?? '[]' })
+        },
+        {
+          label: '删除',
+          variant: 'danger',
+          icon: <TrashIcon size={12} />,
+          onClick: () => deletePrompt(p.id)
+        }
+      ]
+    });
+  }
+
   /** 卡片上右键弹菜单 */
   function showImageMenu(e: React.MouseEvent, im: ImageRow): void {
     e.preventDefault();
@@ -400,12 +574,13 @@ export default function ManagerPage(): JSX.Element {
       toast.error('该图无可归档的提示词');
       return;
     }
+    const auto = autoTag(im.prompt_positive, im.model_used ?? null, [], 10);
     const r = await window.electronAPI.prompt.upsert({
       title: im.prompt_positive.slice(0, 40),
       text: im.prompt_positive,
       negative_text: im.prompt_negative ?? null,
       kind: 'image',
-      tags: im.model_used ? [im.model_used] : [],
+      tags: auto.merged,
       notes: `来自图库 #${im.id}`,
       related_image_ids: [im.id]
     });
@@ -598,67 +773,124 @@ export default function ManagerPage(): JSX.Element {
             ) : (
               <div className="mb-manager-grid">
                 <AnimatePresence>
-                  {filteredPrompts.map((p, i) => (
-                    <motion.div
-                      key={p.id}
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, scale: 0.96 }}
-                      transition={{ delay: i * 0.025, duration: 0.25 }}
-                      className="mb-prompt-card mb-card-interactive mb-marquee-glow"
-                      onClick={() =>
-                        setEditing({
-                          ...p,
-                          tags: p.tags ?? '[]'
-                        })
-                      }
-                    >
-                      {p.thumb_file_path && (
-                        <div className="mb-prompt-card-thumb">
-                          <img
-                            src={localPathToImageUrl(p.thumb_file_path)}
-                            alt=""
-                            draggable={false}
-                          />
+                  {filteredPrompts.map((p, i) => {
+                    const isShortcut = ui.shortcutPromptIds.includes(p.id);
+                    return (
+                      <motion.div
+                        key={p.id}
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, scale: 0.96 }}
+                        transition={{ delay: i * 0.025, duration: 0.25 }}
+                        className={`mb-prompt-card mb-card-interactive mb-marquee-glow ${
+                          isShortcut ? 'is-shortcut' : ''
+                        }`}
+                        onClick={() =>
+                          setEditing({
+                            ...p,
+                            tags: p.tags ?? '[]'
+                          })
+                        }
+                        onContextMenu={(e) => showPromptMenu(e, p)}
+                      >
+                        {(p.thumb_file_path || p.thumb_data_uri) && (
+                          <div className="mb-prompt-card-thumb">
+                            <img
+                              src={
+                                p.thumb_file_path
+                                  ? localPathToImageUrl(p.thumb_file_path)
+                                  : (p.thumb_data_uri ?? '')
+                              }
+                              alt=""
+                              draggable={false}
+                            />
+                          </div>
+                        )}
+                        <div className="mb-prompt-card-body">
+                          <div className="mb-prompt-card-header">
+                            <span className="mb-prompt-card-tag">
+                              {p.kind === 'video' ? '视频' : '图片'}
+                            </span>
+                            {isShortcut && (
+                              <span className="mb-prompt-card-pin" title="已在快捷栏">
+                                ⚡
+                              </span>
+                            )}
+                            <button
+                              className="mb-prompt-card-trash"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                deletePrompt(p.id);
+                              }}
+                            >
+                              <TrashIcon size={13} />
+                            </button>
+                          </div>
+                          <h3>{p.title}</h3>
+                          <p>{p.text.slice(0, 120)}</p>
+                          {p.tags &&
+                            (() => {
+                              try {
+                                const arr = JSON.parse(p.tags) as string[];
+                                return arr.length > 0 ? (
+                                  <div className="mb-prompt-card-tags">
+                                    {arr.slice(0, 4).map((t) => (
+                                      <span key={t} className="mb-tag">
+                                        #{t}
+                                      </span>
+                                    ))}
+                                  </div>
+                                ) : null;
+                              } catch {
+                                return null;
+                              }
+                            })()}
+                          <div className="mb-prompt-card-actions">
+                            <button
+                              type="button"
+                              className="mb-prompt-card-action"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                copyPromptText(p.text);
+                              }}
+                              title="复制提示词到剪贴板"
+                            >
+                              <CopyIconShape size={11} /> 复制
+                            </button>
+                            <button
+                              type="button"
+                              className="mb-prompt-card-action mb-prompt-card-action-accent"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                copyAndUseForImage(p.text);
+                              }}
+                              title="复制 + 填到生图输入框"
+                            >
+                              <SparkleIcon size={11} /> 复制并生图
+                            </button>
+                            <button
+                              type="button"
+                              className={`mb-prompt-card-action ${isShortcut ? 'is-on' : ''}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (!isShortcut) {
+                                  ui.upsertShortcutPromptCache(p.id, {
+                                    title: p.title,
+                                    text: p.text
+                                  });
+                                }
+                                ui.toggleShortcutPromptId(p.id);
+                                toast.success(isShortcut ? '已从快捷栏移除' : '已加入快捷栏');
+                              }}
+                              title={isShortcut ? '从对话框快捷栏移除' : '加到对话框快捷栏'}
+                            >
+                              ⚡ {isShortcut ? '已加快捷' : '加快捷'}
+                            </button>
+                          </div>
                         </div>
-                      )}
-                      <div className="mb-prompt-card-body">
-                        <div className="mb-prompt-card-header">
-                          <span className="mb-prompt-card-tag">
-                            {p.kind === 'video' ? '视频' : '图片'}
-                          </span>
-                          <button
-                            className="mb-prompt-card-trash"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              deletePrompt(p.id);
-                            }}
-                          >
-                            <TrashIcon size={13} />
-                          </button>
-                        </div>
-                        <h3>{p.title}</h3>
-                        <p>{p.text.slice(0, 120)}</p>
-                        {p.tags &&
-                          (() => {
-                            try {
-                              const arr = JSON.parse(p.tags) as string[];
-                              return arr.length > 0 ? (
-                                <div className="mb-prompt-card-tags">
-                                  {arr.slice(0, 4).map((t) => (
-                                    <span key={t} className="mb-tag">
-                                      #{t}
-                                    </span>
-                                  ))}
-                                </div>
-                              ) : null;
-                            } catch {
-                              return null;
-                            }
-                          })()}
-                      </div>
-                    </motion.div>
-                  ))}
+                      </motion.div>
+                    );
+                  })}
                 </AnimatePresence>
               </div>
             )}
@@ -667,6 +899,63 @@ export default function ManagerPage(): JSX.Element {
 
         {mode === 'gallery' && (
           <>
+            {/* 批量操作工具条 */}
+            <div className="mb-gallery-toolbar">
+              {!selectMode ? (
+                <button
+                  type="button"
+                  className="mb-btn mb-btn-secondary mb-btn-sm"
+                  onClick={() => setSelectMode(true)}
+                  disabled={filteredImages.length === 0}
+                >
+                  ✓ 批量选择
+                </button>
+              ) : (
+                <>
+                  <span className="mb-gallery-toolbar-count">
+                    已选 <strong>{selectedIds.size}</strong> / {filteredImages.length}
+                  </span>
+                  <button
+                    type="button"
+                    className="mb-btn mb-btn-secondary mb-btn-sm"
+                    onClick={selectAllInView}
+                  >
+                    全选当前筛选
+                  </button>
+                  <button
+                    type="button"
+                    className="mb-btn mb-btn-secondary mb-btn-sm"
+                    onClick={invertSelectionInView}
+                  >
+                    反选
+                  </button>
+                  <button
+                    type="button"
+                    className="mb-btn mb-btn-secondary mb-btn-sm"
+                    onClick={clearSelection}
+                    disabled={selectedIds.size === 0}
+                  >
+                    清空选择
+                  </button>
+                  <button
+                    type="button"
+                    className="mb-btn mb-btn-danger mb-btn-sm"
+                    onClick={batchDeleteSelected}
+                    disabled={selectedIds.size === 0}
+                  >
+                    <TrashIcon size={12} /> 删除选中（{selectedIds.size}）
+                  </button>
+                  <button
+                    type="button"
+                    className="mb-btn mb-btn-ghost mb-btn-sm"
+                    onClick={exitSelectMode}
+                  >
+                    退出
+                  </button>
+                </>
+              )}
+            </div>
+
             {filteredImages.length === 0 ? (
               <div className="mb-manager-empty">
                 <GalleryIcon size={28} />
@@ -687,6 +976,9 @@ export default function ManagerPage(): JSX.Element {
                       key={im.id}
                       img={im}
                       index={i}
+                      selectMode={selectMode}
+                      selected={selectedIds.has(im.id)}
+                      onToggleSelect={() => toggleSelect(im.id)}
                       onPreview={() => setPreviewSrc(localPathToImageUrl(im.file_path))}
                       onShowFolder={() => showInFolder(im.file_path)}
                       onArchive={() => archiveAsPrompt(im)}
@@ -719,6 +1011,21 @@ export default function ManagerPage(): JSX.Element {
       >
         {editing && (
           <div className="mb-prompt-form">
+            <div>
+              <label className="mb-label">缩略图（可选）</label>
+              <ThumbUploader
+                value={
+                  editing.thumb_data_uri !== undefined
+                    ? (editing.thumb_data_uri as string)
+                    : (editing.thumb_file_path
+                        ? localPathToImageUrl(editing.thumb_file_path)
+                        : '')
+                }
+                onChange={(uri) =>
+                  setEditing({ ...editing, thumb_data_uri: uri })
+                }
+              />
+            </div>
             <div>
               <label className="mb-label">标题</label>
               <input
@@ -789,6 +1096,9 @@ export default function ManagerPage(): JSX.Element {
 function ImageCard({
   img,
   index,
+  selectMode,
+  selected,
+  onToggleSelect,
   onPreview,
   onShowFolder,
   onArchive,
@@ -797,6 +1107,9 @@ function ImageCard({
 }: {
   img: ImageRow;
   index: number;
+  selectMode: boolean;
+  selected: boolean;
+  onToggleSelect: () => void;
   onPreview: () => void;
   onShowFolder: () => void;
   onArchive: () => void;
@@ -828,10 +1141,32 @@ function ImageCard({
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, scale: 0.96 }}
       transition={{ delay: index * 0.02, duration: 0.22 }}
-      className="mb-gallery-card mb-card mb-marquee-glow"
+      className={`mb-gallery-card mb-card mb-marquee-glow ${
+        selectMode ? 'is-select-mode' : ''
+      } ${selected ? 'is-selected' : ''}`}
       onContextMenu={onContextMenu}
+      onClick={selectMode ? onToggleSelect : undefined}
     >
-      <button className="mb-gallery-thumb" onClick={onPreview} title="点击放大预览">
+      {selectMode && (
+        <span
+          className={`mb-gallery-checkbox ${selected ? 'is-checked' : ''}`}
+          aria-label={selected ? '已选中' : '未选中'}
+        >
+          {selected ? '✓' : ''}
+        </span>
+      )}
+      <button
+        className="mb-gallery-thumb"
+        onClick={(e) => {
+          if (selectMode) {
+            e.stopPropagation();
+            onToggleSelect();
+            return;
+          }
+          onPreview();
+        }}
+        title={selectMode ? '点击切换选中' : '点击放大预览'}
+      >
         <img
           src={url}
           alt={img.prompt_positive ?? ''}
@@ -988,6 +1323,161 @@ function TagsEditor({
       </div>
     </div>
   );
+}
+
+// ─────────────────────────────────────────────────────
+// 缩略图上传组件：拖入 / 选择文件 / 粘贴 三种方式都接
+//   - 自动缩到最长边 ≤ 256px webp，控制 dataUri 体积 ~20-40KB
+//   - value === '' 表示无图；value 非空 = data URI 或外部 URL
+//   - onChange('') 表示用户主动清空
+// ─────────────────────────────────────────────────────
+function ThumbUploader({
+  value,
+  onChange
+}: {
+  value: string;
+  onChange: (uri: string) => void;
+}): JSX.Element {
+  const [dragOver, setDragOver] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  async function ingestBlob(blob: Blob): Promise<void> {
+    setBusy(true);
+    try {
+      const uri = await blobToThumbDataUri(blob, 256, 0.8);
+      onChange(uri);
+    } catch (e) {
+      toast.error('读取图片失败', (e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function ingestFile(file: File): Promise<void> {
+    if (!file.type.startsWith('image/')) {
+      toast.error('只支持图片文件');
+      return;
+    }
+    await ingestBlob(file);
+  }
+
+  async function pickFromDialog(): Promise<void> {
+    const r = await window.electronAPI.storage.pickImages();
+    if (!r.ok || r.data.files.length === 0) return;
+    // pickImages 已经返回 dataUri；这里再缩一遍以保证 ≤256px
+    const first = r.data.files[0];
+    try {
+      setBusy(true);
+      const blob = await (await fetch(first.dataUri)).blob();
+      const uri = await blobToThumbDataUri(blob, 256, 0.8);
+      onChange(uri);
+    } catch (e) {
+      toast.error('处理图片失败', (e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function onDragOver(e: React.DragEvent): void {
+    e.preventDefault();
+    setDragOver(true);
+  }
+  function onDragLeave(): void {
+    setDragOver(false);
+  }
+  async function onDrop(e: React.DragEvent): Promise<void> {
+    e.preventDefault();
+    setDragOver(false);
+    const f = e.dataTransfer.files?.[0];
+    if (f) await ingestFile(f);
+  }
+
+  // 在区域内按 Ctrl+V / Cmd+V 粘贴图片
+  async function onPaste(e: React.ClipboardEvent): Promise<void> {
+    const items = e.clipboardData?.items ?? [];
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      if (it.kind === 'file' && it.type.startsWith('image/')) {
+        const f = it.getAsFile();
+        if (f) {
+          e.preventDefault();
+          await ingestFile(f);
+          return;
+        }
+      }
+    }
+  }
+
+  return (
+    <div
+      className={`mb-thumb-uploader ${dragOver ? 'is-over' : ''} ${value ? 'has-image' : ''}`}
+      tabIndex={0}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+      onPaste={onPaste}
+      onClick={value ? undefined : pickFromDialog}
+      title={value ? '已上传缩略图' : '点击选择 · 或拖入图片 · 或聚焦后 Ctrl+V 粘贴'}
+    >
+      {value ? (
+        <>
+          <img src={value} alt="缩略图" draggable={false} />
+          <div className="mb-thumb-uploader-actions">
+            <button
+              type="button"
+              className="mb-btn mb-btn-secondary mb-btn-sm"
+              onClick={(e) => {
+                e.stopPropagation();
+                pickFromDialog();
+              }}
+              disabled={busy}
+            >
+              更换
+            </button>
+            <button
+              type="button"
+              className="mb-btn mb-btn-danger mb-btn-sm"
+              onClick={(e) => {
+                e.stopPropagation();
+                onChange('');
+              }}
+              disabled={busy}
+            >
+              清空
+            </button>
+          </div>
+        </>
+      ) : (
+        <div className="mb-thumb-uploader-tip">
+          <PlusIcon size={16} />
+          <span>{busy ? '处理中…' : '点击 · 拖入 · 粘贴 上传缩略图'}</span>
+          <span className="mb-thumb-uploader-hint">
+            会自动压成 ≤256px 的小图，节省空间
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 把 Blob 缩成最长边 = maxEdge 的 webp dataUri */
+async function blobToThumbDataUri(
+  blob: Blob,
+  maxEdge: number,
+  quality: number
+): Promise<string> {
+  const bm = await createImageBitmap(blob);
+  const ratio = Math.min(maxEdge / bm.width, maxEdge / bm.height, 1);
+  const w = Math.max(1, Math.round(bm.width * ratio));
+  const h = Math.max(1, Math.round(bm.height * ratio));
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('canvas ctx missing');
+  ctx.drawImage(bm, 0, 0, w, h);
+  bm.close?.();
+  return canvas.toDataURL('image/webp', quality);
 }
 
 /** Blob → image/png Blob，用于 navigator.clipboard.write 兼容性 */

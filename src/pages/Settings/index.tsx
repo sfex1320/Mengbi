@@ -5,6 +5,7 @@ import { useSettingsStore } from '@/store/settingsStore';
 import { useUIStore, type SettingsTab } from '@/store/uiStore';
 import { toast } from '@/store/toastStore';
 import { Modal } from '@/components/Modal';
+import { confirmDialog } from '@/components/ConfirmDialog';
 import {
   PlusIcon,
   TrashIcon,
@@ -25,31 +26,55 @@ import {
   type Palette
 } from '@shared/theme';
 import type { ApiConfig, ApiConfigInput, ImageKind, OfficialKind } from '@shared/domain';
+import { detectProtocolFromUrl } from '@shared/protocolDetect';
 import {
   FILENAME_TOKENS,
+  DATETIME_FORMATS,
   parseFilenameTemplate,
   applyFilenameTemplate,
   stringifyFilenameTemplate,
   DEFAULT_FILENAME_TEMPLATE,
   type FilenameTokenKey,
-  type FilenameTemplate
+  type FilenameTemplate,
+  type FilenamePartConfig,
+  type DatetimeFormat
 } from '@shared/filenameTemplate';
 import './Settings.css';
 
-const OFFICIAL_KINDS: Array<{ value: OfficialKind; label: string }> = [
-  { value: null, label: '中转站 / 自定义' },
-  { value: 'kimi', label: 'Kimi (Moonshot)' },
-  { value: 'minimax', label: 'MiniMax' },
-  { value: 'glm', label: '智谱 GLM' },
-  { value: 'deepseek', label: 'DeepSeek' },
-  { value: 'anthropic', label: 'Anthropic（Claude，原生协议）' }
+const OFFICIAL_KINDS: Array<{ value: OfficialKind; label: string; hint: string }> = [
+  { value: null, label: '未指定（按 OpenAI 默认）', hint: '基本等同 openai-compat。' },
+  {
+    value: 'openai',
+    label: 'OpenAI API（事实标准）',
+    hint: 'POST /v1/chat/completions · Authorization: Bearer ...'
+  },
+  {
+    value: 'anthropic',
+    label: 'Anthropic API（Claude messages）',
+    hint: 'POST /v1/messages · x-api-key + anthropic-version: 2023-06-01'
+  },
+  {
+    value: 'gemini',
+    label: 'Google Gemini API',
+    hint: '走 /v1beta/openai/chat/completions 的 OpenAI 兼容入口（key 直接当 Bearer）'
+  },
+  {
+    value: 'openai-compat',
+    label: 'OpenAI 兼容（vLLM / Ollama / 中转站）',
+    hint: '路径同 OpenAI 标准；Kimi / DeepSeek / 智谱 / MiniMax 都归到这一类'
+  }
 ];
 
 const IMAGE_KINDS: Array<{ value: ImageKind; label: string; hint: string }> = [
   {
     value: null,
-    label: 'OpenAI 标准（POST /v1/images/generations）',
-    hint: '柏拉图AI / 大多数中转站'
+    label: '未指定（按 OpenAI 默认）',
+    hint: '与 openai 等价。'
+  },
+  {
+    value: 'openai',
+    label: 'OpenAI API（标准 /v1/images）',
+    hint: 'POST /v1/images/generations；带参考图自动改走 /v1/images/edits（需模型支持图入）'
   },
   {
     value: 'grsai',
@@ -57,6 +82,16 @@ const IMAGE_KINDS: Array<{ value: ImageKind; label: string; hint: string }> = [
     hint:
       'host：api.grsai.com / api.grsai.cn / grsai.dakka.com.cn。' +
       '模型 ID 含 "nano-banana" 走 /v1/draw/nano-banana，其它走 /v1/draw/completions。'
+  },
+  {
+    value: 'gemini',
+    label: 'Google Gemini Image',
+    hint: '/v1beta/models/<id>:generateContent —— 响应里 inline_data 是图（部分中转用 OpenAI 兼容入口直接走 openai-compat 即可）'
+  },
+  {
+    value: 'openai-compat',
+    label: 'OpenAI 兼容（柏拉图AI / 各类中转）',
+    hint: '路径同 OpenAI 标准；上游模型不同会有差异。'
   }
 ];
 
@@ -178,8 +213,14 @@ function PlansTab(): JSX.Element {
   }
 
   async function deleteConfig(cfg: ApiConfig): Promise<void> {
-    if (!confirm(`确认删除模型配置「${cfg.provider_name}」？该配置下的所有模型映射都会一并失效。`))
-      return;
+    const ok = await confirmDialog({
+      title: '删除模型配置',
+      message: `确认删除模型配置「${cfg.provider_name}」？`,
+      detail: '该配置下的所有模型映射都会一并失效。',
+      okText: '删除',
+      danger: true
+    });
+    if (!ok) return;
     const r = await window.electronAPI.plan.configDelete(cfg.id);
     if (r.ok) {
       await load();
@@ -210,9 +251,14 @@ function PlansTab(): JSX.Element {
 
   async function deletePlan(id: number): Promise<void> {
     const target = plans.find((p) => p.id === id);
-    if (!confirm(`确认删除方案「${target?.name}」？该方案下的所有模型配置都会一并删除。`)) {
-      return;
-    }
+    const ok = await confirmDialog({
+      title: '删除方案',
+      message: `确认删除方案「${target?.name ?? ''}」？`,
+      detail: '该方案下的所有模型配置都会一并删除。',
+      okText: '删除',
+      danger: true
+    });
+    if (!ok) return;
     const r = await window.electronAPI.plan.delete(id);
     if (r.ok) {
       await load();
@@ -467,6 +513,25 @@ function ConfigForm({
     setTestResult(null);
   }
 
+  /** 用户敲完 base_url 失焦后猜协议。只在用户没显式设过 kind 时改。 */
+  function onBaseUrlBlur(): void {
+    const detect = detectProtocolFromUrl(draft.base_url);
+    if (!detect) return;
+    setDraft((d) => {
+      const next = { ...d };
+      // 只在协议为空（null）时填上猜测；用户改过的不动
+      if (d.type === 'text' && d.official_kind == null) {
+        next.official_kind = detect.kind;
+        toast.info('猜了下对话协议', detect.label);
+      }
+      if (d.type === 'image' && d.image_kind == null) {
+        next.image_kind = detect.imageKind;
+        if (detect.imageKind) toast.info('猜了下绘画协议', detect.label);
+      }
+      return next;
+    });
+  }
+
   function addMapping(): void {
     if (!mappingDraftKey.trim() || !mappingDraftVal.trim()) {
       toast.error('显示名和实际模型 ID 都不能为空');
@@ -598,8 +663,12 @@ function ConfigForm({
           className="mb-input"
           value={draft.base_url}
           onChange={(e) => update('base_url', e.target.value)}
+          onBlur={onBaseUrlBlur}
           placeholder="https://api.openai.com/v1"
         />
+        <div className="mb-field-hint">
+          失焦后会按域名猜协议；猜得不对手动改下方协议下拉即可。
+        </div>
       </Field>
 
       <Field label="API Key">
@@ -626,7 +695,7 @@ function ConfigForm({
       </Field>
 
       {draft.type === 'text' && (
-        <Field label="官方模型类型（可选 — 自有 SSE 协议时勾选）">
+        <Field label="API 协议">
           <select
             className="mb-select"
             value={draft.official_kind ?? ''}
@@ -638,11 +707,14 @@ function ConfigForm({
               </option>
             ))}
           </select>
+          <div className="mb-field-hint">
+            {OFFICIAL_KINDS.find((k) => k.value === (draft.official_kind ?? null))?.hint}
+          </div>
         </Field>
       )}
 
       {draft.type === 'image' && (
-        <Field label="绘图协议">
+        <Field label="绘图 API 协议">
           <select
             className="mb-select"
             value={draft.image_kind ?? ''}
@@ -948,13 +1020,14 @@ function FilenameTemplateField(): JSX.Element {
   const initial = parseFilenameTemplate(prefs.image_filename_template);
   const [tpl, setTpl] = useState<FilenameTemplate>(initial);
   const [busy, setBusy] = useState(false);
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
 
-  // settings 重新 load 后跟着同步
   useEffect(() => {
     setTpl(parseFilenameTemplate(prefs.image_filename_template));
   }, [prefs.image_filename_template]);
 
-  function move(idx: number, dir: -1 | 1): void {
+  function moveBy(idx: number, dir: -1 | 1): void {
     const next = [...tpl.parts];
     const j = idx + dir;
     if (j < 0 || j >= next.length) return;
@@ -965,11 +1038,19 @@ function FilenameTemplateField(): JSX.Element {
     setTpl({ ...tpl, parts: tpl.parts.filter((_, i) => i !== idx) });
   }
   function add(key: FilenameTokenKey): void {
-    if (tpl.parts.includes(key)) return;
-    setTpl({ ...tpl, parts: [...tpl.parts, key] });
+    const newPart: FilenamePartConfig = { key };
+    if (key === 'datetime') newPart.format = 'yyyymmdd-hhmmss';
+    if (key === 'fixed') newPart.text = 'mengbi';
+    setTpl({ ...tpl, parts: [...tpl.parts, newPart] });
+  }
+  function patchAt(idx: number, patch: Partial<FilenamePartConfig>): void {
+    setTpl({
+      ...tpl,
+      parts: tpl.parts.map((p, i) => (i === idx ? { ...p, ...patch } : p))
+    });
   }
   function reset(): void {
-    setTpl({ ...DEFAULT_FILENAME_TEMPLATE });
+    setTpl(JSON.parse(JSON.stringify(DEFAULT_FILENAME_TEMPLATE)));
   }
   async function save(): Promise<void> {
     if (tpl.parts.length === 0) {
@@ -989,6 +1070,28 @@ function FilenameTemplateField(): JSX.Element {
     }
   }
 
+  // 拖拽排序：HTML5 drag-and-drop
+  function onDragStart(idx: number): void {
+    setDragIdx(idx);
+  }
+  function onDragOver(e: React.DragEvent, idx: number): void {
+    e.preventDefault();
+    if (dragIdx !== null && idx !== dragIdx) setDragOverIdx(idx);
+  }
+  function onDrop(targetIdx: number): void {
+    if (dragIdx === null || dragIdx === targetIdx) {
+      setDragIdx(null);
+      setDragOverIdx(null);
+      return;
+    }
+    const next = [...tpl.parts];
+    const [moved] = next.splice(dragIdx, 1);
+    next.splice(targetIdx, 0, moved);
+    setTpl({ ...tpl, parts: next });
+    setDragIdx(null);
+    setDragOverIdx(null);
+  }
+
   const preview = applyFilenameTemplate(tpl, {
     taskId: 42,
     seq: 1,
@@ -997,53 +1100,99 @@ function FilenameTemplateField(): JSX.Element {
     aspect: '16:9',
     prompt: '一只趴在窗台的橘色猫咪',
     model: 'gpt-image-2',
+    planName: 'work',
+    kind: 'openai',
     createdAt: new Date()
   });
 
-  const used = new Set(tpl.parts);
-
   return (
-    <Field label="图片文件名模板">
+    <Field label="图片文件名模板（拖动重排）">
       <div className="mb-fn-template">
         <div className="mb-fn-parts-row">
-          {tpl.parts.map((k, i) => (
-            <div key={`${k}-${i}`} className="mb-fn-part">
-              <span className="mb-fn-part-label">
-                {FILENAME_TOKENS.find((t) => t.key === k)?.label ?? k}
-              </span>
-              <button
-                type="button"
-                className="mb-fn-part-btn"
-                onClick={() => move(i, -1)}
-                disabled={i === 0}
-                title="左移"
+          {tpl.parts.map((part, i) => {
+            const def = FILENAME_TOKENS.find((t) => t.key === part.key);
+            return (
+              <div
+                key={`${part.key}-${i}`}
+                className={`mb-fn-part ${dragOverIdx === i ? 'is-drop-target' : ''} ${dragIdx === i ? 'is-dragging' : ''}`}
+                draggable
+                onDragStart={() => onDragStart(i)}
+                onDragOver={(e) => onDragOver(e, i)}
+                onDragLeave={() => setDragOverIdx(null)}
+                onDrop={() => onDrop(i)}
+                onDragEnd={() => {
+                  setDragIdx(null);
+                  setDragOverIdx(null);
+                }}
               >
-                ◀
-              </button>
-              <button
-                type="button"
-                className="mb-fn-part-btn"
-                onClick={() => move(i, 1)}
-                disabled={i === tpl.parts.length - 1}
-                title="右移"
-              >
-                ▶
-              </button>
-              <button
-                type="button"
-                className="mb-fn-part-btn mb-fn-part-btn-danger"
-                onClick={() => removeAt(i)}
-                title="移除"
-              >
-                ×
-              </button>
-            </div>
-          ))}
+                <span className="mb-fn-part-grip" title="拖动调整顺序">
+                  ⋮⋮
+                </span>
+                <span className="mb-fn-part-label">{def?.label ?? part.key}</span>
+
+                {/* datetime 子选项：格式 */}
+                {part.key === 'datetime' && (
+                  <select
+                    className="mb-fn-part-select"
+                    value={part.format ?? 'yyyymmdd-hhmmss'}
+                    onChange={(e) =>
+                      patchAt(i, { format: e.target.value as DatetimeFormat })
+                    }
+                    title="日期时间格式"
+                  >
+                    {DATETIME_FORMATS.map((f) => (
+                      <option key={f.value} value={f.value}>
+                        {f.label}
+                      </option>
+                    ))}
+                  </select>
+                )}
+
+                {/* fixed 子选项：文本 */}
+                {part.key === 'fixed' && (
+                  <input
+                    className="mb-fn-part-input"
+                    value={part.text ?? ''}
+                    onChange={(e) => patchAt(i, { text: e.target.value })}
+                    placeholder="固定文本"
+                    maxLength={32}
+                  />
+                )}
+
+                <button
+                  type="button"
+                  className="mb-fn-part-btn"
+                  onClick={() => moveBy(i, -1)}
+                  disabled={i === 0}
+                  title="左移"
+                >
+                  ◀
+                </button>
+                <button
+                  type="button"
+                  className="mb-fn-part-btn"
+                  onClick={() => moveBy(i, 1)}
+                  disabled={i === tpl.parts.length - 1}
+                  title="右移"
+                >
+                  ▶
+                </button>
+                <button
+                  type="button"
+                  className="mb-fn-part-btn mb-fn-part-btn-danger"
+                  onClick={() => removeAt(i)}
+                  title="移除"
+                >
+                  ×
+                </button>
+              </div>
+            );
+          })}
         </div>
 
         <div className="mb-fn-add-row">
           <span className="mb-fn-label">添加字段：</span>
-          {FILENAME_TOKENS.filter((t) => !used.has(t.key)).map((t) => (
+          {FILENAME_TOKENS.map((t) => (
             <button
               key={t.key}
               type="button"
@@ -1054,9 +1203,6 @@ function FilenameTemplateField(): JSX.Element {
               + {t.label}
             </button>
           ))}
-          {used.size === FILENAME_TOKENS.length && (
-            <span className="mb-fn-hint">所有字段都加进去了</span>
-          )}
         </div>
 
         <div className="mb-fn-sep-row">
@@ -1068,7 +1214,7 @@ function FilenameTemplateField(): JSX.Element {
             onChange={(e) => setTpl({ ...tpl, separator: e.target.value })}
             placeholder="-"
           />
-          <span className="mb-fn-hint">常用：- _ . 空格</span>
+          <span className="mb-fn-hint">分辨率内部固定 x，比例内部固定 :，这里只控制字段之间的连接符</span>
         </div>
 
         <div className="mb-fn-preview-row">

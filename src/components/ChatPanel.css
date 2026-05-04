@@ -84,6 +84,88 @@
   /* 包裹一层方便和 actions 区分 */
 }
 
+/* 提示词快捷按钮（来自管家里勾"加快捷"的 prompt） */
+/* 一行 5 个：用 grid 强制 5 列，超出自动换行 */
+.mb-chat-shortcuts {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+  padding: 4px 0 2px;
+}
+.mb-chat-shortcut {
+  display: inline-flex;
+  align-items: center;
+  /* 左对齐：⚡ 在最左边、紧贴 padding；标题跟在后面，溢出省略号——
+     避免短标题时 emoji 浮在按钮正中央显得突兀 */
+  justify-content: flex-start;
+  gap: 5px;
+  width: 100%;
+  min-width: 0;
+  padding: 4px 10px;
+  font-size: 11px;
+  border-radius: var(--mb-radius-pill);
+  background: var(--mb-accent-soft);
+  color: var(--mb-accent);
+  border: 1px solid var(--mb-accent);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: filter var(--mb-duration-fast) var(--mb-ease);
+}
+.mb-chat-shortcut:hover {
+  filter: brightness(1.15);
+}
+.mb-chat-shortcut-icon {
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 1;
+  /* 让 emoji 不要顶到 baseline 上方造成视觉偏移 */
+  display: inline-flex;
+  align-items: center;
+}
+.mb-chat-shortcut-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: left;
+}
+
+/* 多模态气泡的图片缩略图（user 把图发给模型后展示） */
+.mb-chat-bubble-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.mb-chat-bubble-images:last-child {
+  margin-bottom: 0;
+}
+.mb-chat-bubble-img {
+  position: relative;
+  width: 120px;
+  height: 120px;
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.25);
+  cursor: zoom-in;
+  flex-shrink: 0;
+  transition: transform var(--mb-duration-fast) var(--mb-ease);
+}
+.mb-chat-bubble-img:hover {
+  transform: scale(1.04);
+}
+.mb-chat-bubble-img img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  pointer-events: none;
+}
+
 .mb-chat-bubble-actions {
   display: flex;
   gap: 6px;
@@ -166,6 +248,68 @@
   padding: 12px 14px;
   border-top: 1px solid var(--mb-border-soft);
   flex-shrink: 0;
+  position: relative;
+  transition: background 200ms var(--mb-ease);
+}
+.mb-chat-composer.is-dragover {
+  background: var(--mb-accent-soft);
+  box-shadow: inset 0 0 0 2px var(--mb-accent);
+}
+
+.mb-chat-attach-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  margin-bottom: 8px;
+  border: 1px dashed var(--mb-border);
+  border-radius: 10px;
+  background: var(--mb-bg-hover);
+}
+
+.mb-chat-attach-thumb {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--mb-border);
+  background: var(--mb-bg-active);
+  cursor: context-menu;
+}
+.mb-chat-attach-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.mb-chat-attach-x {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fda4af;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  line-height: 1;
+  backdrop-filter: blur(4px);
+}
+.mb-chat-attach-x:hover {
+  background: rgba(248, 113, 113, 0.85);
+  color: #fff;
+}
+
+.mb-chat-attach-hint {
+  font-size: 11px;
+  color: var(--mb-text-muted);
+  margin-left: auto;
 }
 
 .mb-chat-composer .mb-textarea {

@@ -1,0 +1,208 @@
+.mb-refedit {
+  position: fixed;
+  inset: 0;
+  z-index: 10500;
+  background: rgba(8, 8, 12, 0.96);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  user-select: none;
+}
+
+.mb-refedit-stage {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: none; /* 用自绘的画笔圈代替系统光标 */
+}
+
+/* 跟随鼠标的画笔大小指示圈 */
+.mb-refedit-cursor {
+  position: absolute;
+  pointer-events: none;
+  border-radius: 50%;
+  border: 1.5px solid #fff;
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.4),
+    0 0 8px rgba(0, 0, 0, 0.55);
+  transform: translate(-50%, -50%);
+  z-index: 2;
+  background: rgba(255, 255, 255, 0.05);
+  transition: width 80ms ease, height 80ms ease, border-color 80ms ease;
+}
+.mb-refedit-cursor.is-eraser {
+  background: repeating-conic-gradient(
+    rgba(255, 255, 255, 0.18) 0deg 30deg,
+    transparent 30deg 60deg
+  );
+}
+
+.mb-refedit-canvas-wrap {
+  position: relative;
+  display: inline-block;
+  will-change: transform;
+}
+
+.mb-refedit-base {
+  display: block;
+  max-width: 80vw;
+  max-height: 70vh;
+  pointer-events: none;
+}
+
+.mb-refedit-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  /* 让叠加层和底图严格对齐：base 上去给 width/height auto；overlay 撑满父级 */
+}
+
+/* 顶部工具栏 */
+.mb-refedit-topbar {
+  position: absolute;
+  top: 64px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 14px;
+  border-radius: 16px;
+  background: rgba(28, 28, 36, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.5);
+  flex-wrap: wrap;
+  max-width: 92vw;
+  z-index: 1;
+}
+
+.mb-refedit-tools,
+.mb-refedit-colors,
+.mb-refedit-size,
+.mb-refedit-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mb-refedit-tool {
+  padding: 6px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 120ms ease;
+}
+.mb-refedit-tool:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+.mb-refedit-tool.is-active {
+  background: var(--mb-accent-gradient);
+  color: var(--mb-text-on-accent);
+  border-color: transparent;
+  box-shadow: var(--mb-accent-glow);
+}
+
+.mb-refedit-color {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.15);
+  cursor: pointer;
+  transition: transform 120ms ease;
+}
+.mb-refedit-color:hover {
+  transform: scale(1.1);
+}
+.mb-refedit-color.is-active {
+  border-color: #fff;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.2);
+}
+
+.mb-refedit-color-input {
+  width: 28px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.mb-refedit-size label {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.6);
+}
+.mb-refedit-size input[type='range'] {
+  width: 110px;
+  cursor: pointer;
+}
+.mb-refedit-size-num {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.7);
+  font-family: var(--mb-font-mono);
+  width: 36px;
+  text-align: right;
+}
+
+.mb-refedit-btn {
+  padding: 6px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.mb-refedit-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+.mb-refedit-btn-primary {
+  background: var(--mb-accent-gradient);
+  color: var(--mb-text-on-accent);
+  border-color: transparent;
+  font-weight: 500;
+}
+.mb-refedit-btn-primary:hover {
+  filter: brightness(1.08);
+}
+.mb-refedit-btn-danger {
+  color: #fca5a5;
+  border-color: rgba(248, 113, 113, 0.4);
+}
+.mb-refedit-btn-danger:hover {
+  background: rgba(248, 113, 113, 0.16);
+}
+.mb-refedit-btn-x {
+  width: 30px;
+  padding: 6px;
+  justify-content: center;
+}
+
+.mb-refedit-hint {
+  position: absolute;
+  bottom: 22px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 14px;
+  border-radius: var(--mb-radius-pill);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.65);
+  font-size: 12px;
+  pointer-events: none;
+}

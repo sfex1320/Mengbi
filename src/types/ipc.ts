@@ -20,6 +20,7 @@ export interface ElectronAPI {
   storage: StorageAPI;
   exporter: ExporterAPI;
   window: WindowAPI;
+  drag: DragAPI;
   /** 主进程 → 渲染进程 的事件订阅 */
   on(channel: PushChannel, handler: (payload: unknown) => void): () => void;
 }
@@ -105,6 +106,8 @@ export interface ChatAPI {
 export interface ChatSendInput {
   conversationId: string;
   content: string;
+  /** 仅本次发送附带的图片（data URI / https URL），后端拼成多模态消息 */
+  attachedImages?: string[];
 }
 
 // ──────────────────────────────────────────────────────────
@@ -197,6 +200,18 @@ export interface WindowAPI {
   maximizeToggle(): Promise<Result<{ maximized: boolean }>>;
   close(): Promise<Result<true>>;
   state(): Promise<Result<{ maximized: boolean }>>;
+}
+
+/**
+ * OS 级文件拖拽：把渲染进程的图片（dataUri 或本地路径）拖到外部文件夹 / 应用。
+ * 必须从 dragstart 内立即调用；preload 这一层用 ipcRenderer.send（fire-and-forget），
+ * 主进程 startDrag 是 webContents.startDrag（参见 main 端实现）。
+ */
+export interface DragAPI {
+  /** 用 dataUri 启动 OS 拖拽——主进程会先把 dataUri 解码到 OS 临时文件 */
+  startFromDataUri(dataUri: string, suggestedName?: string): void;
+  /** 用现成的文件路径启动 OS 拖拽 */
+  startFromPath(filePath: string): void;
 }
 
 // ──────────────────────────────────────────────────────────

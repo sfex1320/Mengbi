@@ -253,8 +253,133 @@
   margin-top: 10px;
 }
 
+/* 提示词卡片悬停动作行（复制 / 复制并生图 / 加快捷） */
+.mb-prompt-card-actions {
+  display: flex;
+  gap: 5px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+  opacity: 0;
+  transition: opacity var(--mb-duration-fast) var(--mb-ease);
+}
+.mb-prompt-card:hover .mb-prompt-card-actions {
+  opacity: 1;
+}
+.mb-prompt-card-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 8px;
+  font-size: 11px;
+  border-radius: var(--mb-radius-pill);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--mb-text-secondary);
+  border: 1px solid var(--mb-border-soft);
+  cursor: pointer;
+  transition: all var(--mb-duration-fast) var(--mb-ease);
+}
+.mb-prompt-card-action:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--mb-text-primary);
+  border-color: var(--mb-border-strong);
+}
+.mb-prompt-card-action-accent {
+  background: var(--mb-accent-soft);
+  color: var(--mb-accent);
+  border-color: var(--mb-accent);
+}
+.mb-prompt-card-action-accent:hover {
+  background: var(--mb-accent);
+  color: var(--mb-text-on-accent);
+}
+.mb-prompt-card-action.is-on {
+  background: var(--mb-accent-gradient);
+  color: var(--mb-text-on-accent);
+  border-color: transparent;
+}
+
+/* 已加入快捷栏的卡片：左上角发光指示 */
+.mb-prompt-card.is-shortcut {
+  box-shadow:
+    0 0 0 1px var(--mb-accent),
+    var(--mb-shadow-card);
+}
+.mb-prompt-card-pin {
+  font-size: 12px;
+  color: var(--mb-accent);
+  margin-left: 4px;
+  filter: drop-shadow(0 0 4px var(--mb-accent-soft));
+}
+
 .mb-prompt-form > * + * {
   margin-top: 14px;
+}
+
+/* 提示词缩略图上传器 */
+.mb-thumb-uploader {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 110px;
+  padding: 12px;
+  border: 2px dashed var(--mb-border-strong);
+  border-radius: 14px;
+  background: var(--mb-bg-hover);
+  cursor: pointer;
+  outline: none;
+  transition: all var(--mb-duration-fast) var(--mb-ease);
+}
+.mb-thumb-uploader:hover {
+  border-color: var(--mb-accent);
+  background: var(--mb-accent-soft);
+}
+.mb-thumb-uploader:focus {
+  border-color: var(--mb-accent);
+  box-shadow: 0 0 0 3px var(--mb-accent-soft);
+}
+.mb-thumb-uploader.is-over {
+  border-color: var(--mb-accent);
+  background: var(--mb-accent-soft);
+  transform: scale(1.01);
+}
+.mb-thumb-uploader.has-image {
+  cursor: default;
+  padding: 8px;
+}
+.mb-thumb-uploader img {
+  max-width: 100%;
+  max-height: 220px;
+  object-fit: contain;
+  border-radius: 8px;
+  display: block;
+}
+.mb-thumb-uploader-tip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  color: var(--mb-text-secondary);
+  font-size: 12px;
+  text-align: center;
+  pointer-events: none;
+}
+.mb-thumb-uploader-hint {
+  font-size: 11px;
+  color: var(--mb-text-muted);
+}
+.mb-thumb-uploader-actions {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  display: flex;
+  gap: 6px;
+  opacity: 0;
+  transition: opacity var(--mb-duration-fast) var(--mb-ease);
+}
+.mb-thumb-uploader:hover .mb-thumb-uploader-actions,
+.mb-thumb-uploader:focus .mb-thumb-uploader-actions {
+  opacity: 1;
 }
 
 /* ─── 图库模式：模式切换 + 卡片网格 ─── */
@@ -354,6 +479,24 @@
   letter-spacing: 0.02em;
 }
 
+/* 批量操作工具条 */
+.mb-gallery-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0 10px;
+}
+.mb-gallery-toolbar-count {
+  font-size: 12px;
+  color: var(--mb-text-secondary);
+  margin-right: 4px;
+}
+.mb-gallery-toolbar-count strong {
+  color: var(--mb-accent);
+  font-family: var(--mb-font-mono);
+}
+
 .mb-gallery-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -366,6 +509,41 @@
   flex-direction: column;
   overflow: hidden;
   padding: 0;
+  position: relative;
+}
+
+/* 勾选模式 */
+.mb-gallery-card.is-select-mode {
+  cursor: pointer;
+  user-select: none;
+}
+.mb-gallery-card.is-selected {
+  outline: 2px solid var(--mb-accent);
+  outline-offset: -2px;
+  box-shadow: 0 0 0 4px var(--mb-accent-soft);
+}
+.mb-gallery-checkbox {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1.5px solid rgba(255, 255, 255, 0.6);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  z-index: 2;
+  pointer-events: none;
+}
+.mb-gallery-checkbox.is-checked {
+  background: var(--mb-accent);
+  border-color: var(--mb-accent);
+  color: var(--mb-text-on-accent);
 }
 
 .mb-gallery-thumb {

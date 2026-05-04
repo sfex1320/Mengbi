@@ -13,7 +13,9 @@ const PromptUpsertSchema = z.object({
   category_id: z.number().int().optional().nullable(),
   tags: z.array(z.string()).optional(),
   notes: z.string().optional().nullable(),
-  related_image_ids: z.array(z.number().int()).optional()
+  related_image_ids: z.array(z.number().int()).optional(),
+  /** 小尺寸 base64 缩略图，用于反推 / 没有关联图库图的卡片 */
+  thumb_data_uri: z.string().max(500_000).optional().nullable()
 });
 
 const GalleryListSchema = z
@@ -130,30 +132,52 @@ export function registerGalleryHandlers(): void {
     const related = JSON.stringify(input.related_image_ids ?? []);
 
     if (input.id !== undefined) {
-      getDb()
-        .prepare(
-          `UPDATE prompts SET title=?, text=?, negative_text=?, kind=?, category_id=?, tags=?, notes=?, related_image_ids=?, updated_at=?
-            WHERE id = ?`
-        )
-        .run(
-          input.title,
-          input.text,
-          input.negative_text ?? null,
-          input.kind ?? 'image',
-          input.category_id ?? null,
-          tags,
-          input.notes ?? null,
-          related,
-          now,
-          input.id
-        );
+      // 编辑：thumb_data_uri 没显式传时不动它（保留原来的）
+      if (input.thumb_data_uri !== undefined) {
+        getDb()
+          .prepare(
+            `UPDATE prompts SET title=?, text=?, negative_text=?, kind=?, category_id=?, tags=?, notes=?, related_image_ids=?, thumb_data_uri=?, updated_at=?
+              WHERE id = ?`
+          )
+          .run(
+            input.title,
+            input.text,
+            input.negative_text ?? null,
+            input.kind ?? 'image',
+            input.category_id ?? null,
+            tags,
+            input.notes ?? null,
+            related,
+            input.thumb_data_uri,
+            now,
+            input.id
+          );
+      } else {
+        getDb()
+          .prepare(
+            `UPDATE prompts SET title=?, text=?, negative_text=?, kind=?, category_id=?, tags=?, notes=?, related_image_ids=?, updated_at=?
+              WHERE id = ?`
+          )
+          .run(
+            input.title,
+            input.text,
+            input.negative_text ?? null,
+            input.kind ?? 'image',
+            input.category_id ?? null,
+            tags,
+            input.notes ?? null,
+            related,
+            now,
+            input.id
+          );
+      }
       const row = getDb().prepare(`SELECT * FROM prompts WHERE id = ?`).get(input.id);
       return ok(row);
     }
     const r = getDb()
       .prepare(
-        `INSERT INTO prompts(title, text, negative_text, kind, category_id, tags, notes, related_image_ids, created_at, updated_at)
-         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO prompts(title, text, negative_text, kind, category_id, tags, notes, related_image_ids, thumb_data_uri, created_at, updated_at)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         input.title,
@@ -164,6 +188,7 @@ export function registerGalleryHandlers(): void {
         tags,
         input.notes ?? null,
         related,
+        input.thumb_data_uri ?? null,
         now,
         now
       );

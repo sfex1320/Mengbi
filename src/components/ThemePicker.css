@@ -26,6 +26,43 @@
   transform: translateY(-1px);
 }
 
+/* 资源 121.svg + 颜色流光：用 hue-rotate filter 永动循环 */
+.mb-themepicker-icon-wrap {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.mb-themepicker-icon {
+  width: 18px;
+  height: 18px;
+  display: block;
+  /* 让 SVG 自身的颜色被周期性 hue-rotate / brightness 拉动，制造流光感 */
+  animation: mb-themepicker-shift 9s linear infinite;
+  filter: hue-rotate(0deg) saturate(1.2) drop-shadow(0 0 4px rgba(196, 181, 253, 0.5));
+}
+
+@keyframes mb-themepicker-shift {
+  0% {
+    filter: hue-rotate(0deg) saturate(1.2) drop-shadow(0 0 4px rgba(196, 181, 253, 0.45));
+  }
+  25% {
+    filter: hue-rotate(90deg) saturate(1.4) drop-shadow(0 0 6px rgba(110, 231, 183, 0.55));
+  }
+  50% {
+    filter: hue-rotate(180deg) saturate(1.5) drop-shadow(0 0 6px rgba(147, 197, 253, 0.55));
+  }
+  75% {
+    filter: hue-rotate(270deg) saturate(1.4) drop-shadow(0 0 6px rgba(252, 211, 77, 0.5));
+  }
+  100% {
+    filter: hue-rotate(360deg) saturate(1.2) drop-shadow(0 0 4px rgba(196, 181, 253, 0.45));
+  }
+}
+
 .mb-themepicker-panel {
   position: absolute;
   top: calc(100% + 10px);

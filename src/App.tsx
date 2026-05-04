@@ -7,6 +7,7 @@ import { ToastViewport } from '@/components/ToastViewport';
 import { WindowControls } from '@/components/WindowControls';
 import { Stars } from '@/components/Stars';
 import { ContextMenuRoot } from '@/components/ContextMenu';
+import { ConfirmDialogRoot } from '@/components/ConfirmDialog';
 import CreatePage from '@/pages/Create';
 import ManagerPage from '@/pages/Manager';
 import LaboratoryPage from '@/pages/Laboratory';
@@ -38,6 +39,33 @@ function Shell(): JSX.Element {
     applyThemeToDocument();
     load().catch((e) => console.error('settings load failed', e));
   }, [load]);
+
+  // 待机静默模式：窗口失焦 / 最小化 / 切到其它桌面 时，
+  // 在 <html> 上打 data-idle，CSS 把所有 animation-play-state 设为 paused，
+  // 大大降低后台 CPU（流星 / 星辰 / 渐变 logo / orb 全部停转）。
+  // 鼠标点回软件 → focus 事件 → 自动恢复。
+  useEffect(() => {
+    const html = document.documentElement;
+    function setIdle(v: boolean): void {
+      if (v) html.dataset.idle = 'true';
+      else delete html.dataset.idle;
+    }
+    function recompute(): void {
+      const blurred = !document.hasFocus();
+      const hidden = document.hidden;
+      setIdle(blurred || hidden);
+    }
+    window.addEventListener('blur', recompute);
+    window.addEventListener('focus', recompute);
+    document.addEventListener('visibilitychange', recompute);
+    recompute();
+    return () => {
+      window.removeEventListener('blur', recompute);
+      window.removeEventListener('focus', recompute);
+      document.removeEventListener('visibilitychange', recompute);
+      delete html.dataset.idle;
+    };
+  }, []);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent): void {
@@ -75,7 +103,14 @@ function Shell(): JSX.Element {
       <main className="mb-app-main">
         <header className="mb-header">
           <div className="mb-header-brand">
-            <span className="mb-header-logo">梦笔</span>
+            <span className="mb-header-brand-logo">
+              <img
+                src={new URL('./assets/icon-121.svg', import.meta.url).toString()}
+                alt="梦笔 logo"
+                className="mb-header-brand-logo-img"
+                draggable={false}
+              />
+            </span>
             <span className="mb-header-divider">·</span>
             <motion.span
               key={label}
@@ -103,6 +138,7 @@ function Shell(): JSX.Element {
       </main>
       <ToastViewport />
       <ContextMenuRoot />
+      <ConfirmDialogRoot />
     </div>
   );
 }

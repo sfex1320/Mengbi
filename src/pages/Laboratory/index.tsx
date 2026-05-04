@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { toast } from '@/store/toastStore';
@@ -6,6 +6,8 @@ import { useSettingsStore } from '@/store/settingsStore';
 import { useImageParamsStore } from '@/store/imageParamsStore';
 import { Modal } from '@/components/Modal';
 import { openContextMenu } from '@/components/ContextMenu';
+import { useLabStore } from '@/store/labStore';
+import { autoTag } from '@/lib/autoTag';
 import {
   FlaskIcon,
   ZapIcon,
@@ -122,22 +124,80 @@ function ReverseTool({ onClose }: { onClose: () => void }): JSX.Element {
   const { configs, activePlanId } = useSettingsStore();
   const navigate = useNavigate();
   const imgParams = useImageParamsStore();
-  const visionModels = configs
-    .filter((c) => c.plan_id === activePlanId && c.type === 'text' && c.supports_vision)
-    .flatMap((c) => Object.keys(c.model_mapping ?? {}));
+  const labStore = useLabStore();
 
-  const [imagePath, setImagePath] = useState('');
-  const [previewUri, setPreviewUri] = useState('');
-  const [resultType, setResultType] = useState<'description' | 'tags' | 'style'>('description');
+  // 优先列已勾"vision"的模型；若全没勾，退而求其次给所有 text 模型，
+  // 让用户能自己选——很多多模态模型（Qwen-VL / GPT-4o / Gemini ...）即使配置时
+  // 忘记勾 vision 也能跑。
+  const visionConfigs = configs.filter(
+    (c) => c.plan_id === activePlanId && c.type === 'text' && c.supports_vision
+  );
+  const allTextConfigs = configs.filter(
+    (c) => c.plan_id === activePlanId && c.type === 'text'
+  );
+  const useFallback = visionConfigs.length === 0;
+  const visionModels = (useFallback ? allTextConfigs : visionConfigs).flatMap((c) =>
+    Object.keys(c.model_mapping ?? {})
+  );
+
+  // 状态全部走 labStore，跨"开关弹窗"持久化
+  const modelId = labStore.reverseModelId || visionModels[0] || '';
+  const setModelId = labStore.setReverseModelId;
+  const imagePath = labStore.reverseImagePath;
+  const previewUri = labStore.reversePreviewUri;
+  const resultType = labStore.reverseResultType;
+  const setResultType = labStore.setReverseResultType;
+  const result = labStore.reverseResult;
+  const setResult = labStore.setReverseResult;
+
   const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<unknown>(null);
   const [dragOver, setDragOver] = useState(false);
+  const resultPreRef = useRef<HTMLPreElement>(null);
+  const resultBoxRef = useRef<HTMLDivElement>(null);
+
+  // 统一改图入口，避免 path 和 dataUri 分两步覆盖造成的状态错乱
+  const setReverseImage = labStore.setReverseImage;
+
+  // 抓 <pre> 里用户高亮选中的文本
+  function getSelectedFromResult(): string {
+    const pre = resultPreRef.current;
+    if (!pre) return '';
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return '';
+    if (!pre.contains(sel.anchorNode)) return '';
+    const t = sel.toString().trim();
+    return t;
+  }
+
+  // 模型列表变化时，若当前选的不在新列表里 → 重置成第一项
+  useEffect(() => {
+    if (visionModels.length === 0) {
+      if (modelId !== '') setModelId('');
+    } else if (!visionModels.includes(modelId)) {
+      setModelId(visionModels[0]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visionModels.join(',')]);
+
+  // 结果出来时滚进视口，避免用户找不到结果框
+  useEffect(() => {
+    if (result === null) return;
+    const t = setTimeout(() => {
+      resultBoxRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }, 100);
+    return () => clearTimeout(t);
+  }, [result]);
 
   // 把任意结果转回纯文本（description 是字符串，tags/style 可能是数组或对象）
   function resultText(): string {
     if (typeof result === 'string') return result;
     if (Array.isArray(result)) return (result as string[]).join(', ');
-    if (result && typeof result === 'object') return JSON.stringify(result, null, 2);
+    if (result && typeof result === 'object') {
+      const obj = result as Record<string, unknown>;
+      if (typeof obj.text === 'string') return obj.text;
+      if (Array.isArray(obj.tags)) return (obj.tags as string[]).join(', ');
+      return JSON.stringify(result, null, 2);
+    }
     return '';
   }
 
@@ -161,15 +221,54 @@ function ReverseTool({ onClose }: { onClose: () => void }): JSX.Element {
     toast.success('已填到生图输入框', '回车直接生图');
   }
 
+  function useSelectedAsImagePrompt(): void {
+    const t = getSelectedFromResult();
+    if (!t) {
+      toast.info('请先在结果文本里选中要使用的片段');
+      return;
+    }
+    imgParams.setChatDraft(t);
+    onClose();
+    navigate('/');
+    toast.success('已用选中片段填到生图输入框');
+  }
+
+  async function copySelected(): Promise<void> {
+    const t = getSelectedFromResult();
+    if (!t) {
+      toast.info('请先选中要复制的片段');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(t);
+      toast.success('已复制选中片段');
+    } catch {
+      toast.error('复制失败');
+    }
+  }
+
   async function archiveAsPrompt(): Promise<void> {
     const t = resultText().trim();
     if (!t) return;
+    // 用真正反推用的那个 modelId 当模型 tag —— 不是 visionModels[0]（那是列表第一项）
+    // 然后让 autoTag 抽出主体/风格/关键词，再合并去重
+    const auto = autoTag(t, modelId || null, [], 10);
+    // 从 previewUri 缩成小图（最长边 ≤ 256px webp dataUri，单个 ~20-40KB）
+    let thumb: string | null = null;
+    if (previewUri) {
+      try {
+        thumb = await downscaleDataUri(previewUri, 256, 0.78);
+      } catch {
+        thumb = null;
+      }
+    }
     const r = await window.electronAPI.prompt.upsert({
       title: t.slice(0, 40),
       text: t,
       kind: 'image',
-      tags: visionModels[0] ? [visionModels[0]] : [],
-      notes: '由反推工具生成'
+      tags: auto.merged,
+      notes: `由反推工具生成 · 模型 ${modelId || '(mock)'}`,
+      thumb_data_uri: thumb ?? undefined
     });
     if (r.ok) toast.success('已加入提示词管家');
     else toast.error('归档失败', r.error.message);
@@ -179,20 +278,28 @@ function ReverseTool({ onClose }: { onClose: () => void }): JSX.Element {
     e.preventDefault();
     const t = resultText();
     if (!t) return;
+    const sel = getSelectedFromResult();
     openContextMenu({
       x: e.clientX,
       y: e.clientY,
       items: [
         {
-          label: '复制',
+          label: sel ? `复制选中（${sel.length} 字）` : '复制整段',
           icon: <CopyIconShape size={13} />,
-          onClick: copyResult
+          onClick: sel ? copySelected : copyResult
         },
         {
-          label: '用作生图提示词',
+          label: '一键生图（整段）',
           variant: 'accent',
           icon: <SparkleIcon size={12} />,
           onClick: useAsImagePrompt
+        },
+        {
+          label: sel ? `选中生图（${sel.length} 字）` : '选中生图',
+          variant: 'accent',
+          icon: <SparkleIcon size={12} />,
+          disabled: !sel,
+          onClick: useSelectedAsImagePrompt
         },
         {
           label: '加入提示词管家',
@@ -207,8 +314,7 @@ function ReverseTool({ onClose }: { onClose: () => void }): JSX.Element {
     const r = await window.electronAPI.storage.pickImages();
     if (!r.ok || r.data.files.length === 0) return;
     const f = r.data.files[0];
-    setImagePath(f.path);
-    setPreviewUri(f.dataUri);
+    setReverseImage(f.path, f.dataUri);
   }
 
   function onDragOver(e: React.DragEvent<HTMLDivElement>): void {
@@ -229,11 +335,11 @@ function ReverseTool({ onClose }: { onClose: () => void }): JSX.Element {
     }
     // Electron 的 File 对象有 path 属性指向真实磁盘路径
     const droppedPath = (file as File & { path?: string }).path ?? '';
-    if (droppedPath) setImagePath(droppedPath);
-    // 同时生成 dataUri 给预览缩略图
+    // 同时生成 dataUri 给预览缩略图，path + dataUri 一起写入避免覆盖
     const reader = new FileReader();
     reader.onload = () => {
-      if (typeof reader.result === 'string') setPreviewUri(reader.result);
+      const dataUri = typeof reader.result === 'string' ? reader.result : '';
+      setReverseImage(droppedPath, dataUri);
     };
     reader.readAsDataURL(file);
   }
@@ -243,11 +349,15 @@ function ReverseTool({ onClose }: { onClose: () => void }): JSX.Element {
       toast.error('请拖入或选择一张图');
       return;
     }
+    if (!modelId && visionModels.length > 0) {
+      toast.error('请先选一个多模态视觉模型');
+      return;
+    }
     setBusy(true);
     setResult(null);
     const r = await window.electronAPI.lab.reverse({
       imagePaths: [imagePath],
-      modelId: visionModels[0] ?? 'mock',
+      modelId: modelId || 'mock',
       resultType
     });
     setBusy(false);
@@ -262,12 +372,34 @@ function ReverseTool({ onClose }: { onClose: () => void }): JSX.Element {
   return (
     <div className="mb-lab-form">
       <div>
-        <label className="mb-label">支持 vision 的对话模型</label>
-        <input
-          className="mb-input"
-          value={visionModels[0] ?? '(未配置 — 会使用 Mock)'}
-          readOnly
-        />
+        <label className="mb-label">
+          多模态视觉模型（用来做反推）{useFallback && ' · 当前 plan 下没勾过 vision，列出全部 text 模型给你选'}
+        </label>
+        {visionModels.length === 0 ? (
+          <input
+            className="mb-input"
+            value="(未配置任何对话模型 — 会使用 Mock)"
+            readOnly
+          />
+        ) : (
+          <select
+            className="mb-select"
+            value={modelId}
+            onChange={(e) => setModelId(e.target.value)}
+          >
+            {visionModels.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </select>
+        )}
+        {useFallback && (
+          <div className="mb-field-hint">
+            建议把真正支持图片输入的模型（GPT-4o / Claude / Gemini / Qwen-VL ...）
+            在设置里勾上"支持 vision"，下次只列出它们。
+          </div>
+        )}
       </div>
 
       <div>
@@ -317,21 +449,41 @@ function ReverseTool({ onClose }: { onClose: () => void }): JSX.Element {
         </div>
       </div>
 
-      <button className="mb-btn mb-btn-primary" onClick={run} disabled={busy}>
-        {busy ? '反推中…' : '开始反推'}
-      </button>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button
+          className="mb-btn mb-btn-primary"
+          style={{ flex: 1 }}
+          onClick={run}
+          disabled={busy}
+        >
+          {busy ? '反推中…' : '开始反推'}
+        </button>
+        <button
+          className="mb-btn mb-btn-secondary"
+          onClick={() => {
+            labStore.clearReverse();
+            toast.info('已清空');
+          }}
+          disabled={busy || (!previewUri && result === null)}
+          title="清空当前图片和上一次结果"
+        >
+          清空
+        </button>
+      </div>
 
       <AnimatePresence>
         {result !== null && (
           <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: 'auto' }}
-            exit={{ opacity: 0, height: 0 }}
+            ref={resultBoxRef}
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 8 }}
+            transition={{ duration: 0.2 }}
             className="mb-lab-result"
           >
             <div className="mb-lab-result-head">
               <div className="mb-label" style={{ margin: 0 }}>
-                结果（右键有更多）
+                反推结果 <span style={{ opacity: 0.55, fontWeight: 400 }}>（可拖蓝选中片段；右键更多）</span>
               </div>
               <div className="mb-lab-result-actions">
                 <button
@@ -339,14 +491,21 @@ function ReverseTool({ onClose }: { onClose: () => void }): JSX.Element {
                   onClick={copyResult}
                   title="复制提示词到剪贴板"
                 >
-                  <CopyIconShape size={12} /> 复制
+                  <CopyIconShape size={12} /> 复制整段
                 </button>
                 <button
                   className="mb-config-row-btn"
                   onClick={useAsImagePrompt}
-                  title="把这段提示词扔进生图输入框，跳到生图页"
+                  title="把整段提示词扔进生图输入框，跳到生图页"
                 >
                   <SparkleIcon size={12} /> 一键生图
+                </button>
+                <button
+                  className="mb-config-row-btn"
+                  onClick={useSelectedAsImagePrompt}
+                  title="只把你选中的那一段扔进生图输入框；先用鼠标在下方文本里拖蓝"
+                >
+                  <SparkleIcon size={12} /> 选中生图
                 </button>
                 <button
                   className="mb-config-row-btn"
@@ -357,7 +516,11 @@ function ReverseTool({ onClose }: { onClose: () => void }): JSX.Element {
                 </button>
               </div>
             </div>
-            <pre onContextMenu={showResultMenu} style={{ userSelect: 'text', cursor: 'text' }}>
+            <pre
+              ref={resultPreRef}
+              onContextMenu={showResultMenu}
+              style={{ userSelect: 'text', cursor: 'text' }}
+            >
               {resultText()}
             </pre>
           </motion.div>
@@ -443,4 +606,28 @@ function TranslateTool({ onClose: _ }: { onClose: () => void }): JSX.Element {
       )}
     </div>
   );
+}
+
+/**
+ * 把 dataUri 缩成最长边 = maxEdge 的 webp dataUri。
+ * 用 createImageBitmap + OffscreenCanvas（fallback HTMLCanvas）。
+ */
+async function downscaleDataUri(
+  src: string,
+  maxEdge: number,
+  quality: number
+): Promise<string> {
+  const blob = await (await fetch(src)).blob();
+  const bm = await createImageBitmap(blob);
+  const ratio = Math.min(maxEdge / bm.width, maxEdge / bm.height, 1);
+  const w = Math.max(1, Math.round(bm.width * ratio));
+  const h = Math.max(1, Math.round(bm.height * ratio));
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('canvas ctx missing');
+  ctx.drawImage(bm, 0, 0, w, h);
+  bm.close?.();
+  return canvas.toDataURL('image/webp', quality);
 }

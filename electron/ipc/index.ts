@@ -4,6 +4,7 @@ import { registerGenerateHandlers } from './generate';
 import { registerGalleryHandlers } from './gallery';
 import { registerLabHandlers } from './lab';
 import { registerMiscHandlers } from './misc';
+import { registerDragHandlers } from './drag';
 
 export function registerAllIpcHandlers(): void {
   registerSettingsHandlers();
@@ -12,4 +13,5 @@ export function registerAllIpcHandlers(): void {
   registerGalleryHandlers();
   registerLabHandlers();
   registerMiscHandlers();
+  registerDragHandlers();
 }

@@ -585,13 +585,59 @@
 .mb-fn-part {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
-  padding: 4px 4px 4px 10px;
-  border-radius: var(--mb-radius-pill);
+  gap: 4px;
+  padding: 4px 6px 4px 4px;
+  border-radius: 12px;
   background: var(--mb-accent-soft);
   border: 1px solid var(--mb-accent);
   color: var(--mb-accent);
   font-size: 12px;
+  cursor: grab;
+  transition:
+    transform var(--mb-duration-fast) var(--mb-ease),
+    box-shadow var(--mb-duration-fast) var(--mb-ease);
+}
+.mb-fn-part:active {
+  cursor: grabbing;
+}
+.mb-fn-part.is-dragging {
+  opacity: 0.5;
+}
+.mb-fn-part.is-drop-target {
+  transform: translateY(-2px);
+  box-shadow: 0 0 0 2px var(--mb-accent), var(--mb-accent-glow);
+}
+
+.mb-fn-part-grip {
+  width: 14px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(0, 0, 0, 0.35);
+  cursor: grab;
+  font-size: 12px;
+  letter-spacing: -2px;
+  user-select: none;
+}
+
+.mb-fn-part-select,
+.mb-fn-part-input {
+  background: rgba(0, 0, 0, 0.18);
+  border: 1px solid rgba(0, 0, 0, 0.2);
+  color: inherit;
+  font: inherit;
+  padding: 2px 6px;
+  border-radius: 8px;
+  max-width: 200px;
+  outline: none;
+}
+.mb-fn-part-select option {
+  background: #1a1c24;
+  color: #f5f5f7;
+}
+.mb-fn-part-input {
+  width: 100px;
 }
 
 .mb-fn-part-label {

@@ -18,7 +18,10 @@ import {
 } from '@shared/filenameTemplate';
 
 // ─────────────────────────────────────────────────────
-// 任务队列（最小可用：FIFO 顺序执行）
+// 任务队列：FIFO 入队，**最多 3 条并发**
+//   - queue: 等待中
+//   - inflight: 在跑的（taskId → QueueItem）
+//   - drainQueue 每次尽量补满到 MAX_CONCURRENT
 // ─────────────────────────────────────────────────────
 
 interface QueueItem {
@@ -27,28 +30,34 @@ interface QueueItem {
   sender: WebContents;
 }
 
+const MAX_CONCURRENT = 3;
 const queue: QueueItem[] = [];
-let running = false;
+const inflight = new Map<number, QueueItem>();
 
 function enqueue(taskId: number, sender: WebContents): void {
   const ctrl = new AbortController();
   queue.push({ taskId, cancel: ctrl, sender });
-  void drainQueue();
+  drainQueue();
 }
 
-async function drainQueue(): Promise<void> {
-  if (running) return;
-  running = true;
-  while (queue.length > 0) {
+function drainQueue(): void {
+  while (inflight.size < MAX_CONCURRENT && queue.length > 0) {
     const item = queue.shift()!;
-    await executeTask(item).catch((e) => {
-      logger.error('image task fatal', e);
-    });
+    inflight.set(item.taskId, item);
+    void executeTask(item)
+      .catch((e) => {
+        logger.error('image task fatal', e);
+      })
+      .finally(() => {
+        inflight.delete(item.taskId);
+        // 一条结束 → 立刻看看能不能补一条进来
+        drainQueue();
+      });
   }
-  running = false;
 }
 
 function cancelTask(taskId: number): boolean {
+  // 先在等待队列里找
   const idx = queue.findIndex((q) => q.taskId === taskId);
   if (idx >= 0) {
     queue[idx].cancel.abort();
@@ -58,6 +67,12 @@ function cancelTask(taskId: number): boolean {
         `UPDATE generation_tasks SET status = 'cancelled' WHERE id = ? AND status IN ('pending','running')`
       )
       .run(taskId);
+    return true;
+  }
+  // 在跑的也支持取消（abort upstream fetch）
+  const live = inflight.get(taskId);
+  if (live) {
+    live.cancel.abort();
     return true;
   }
   return false;
@@ -328,16 +343,35 @@ function snapToGrid(value: number): number {
   return Math.max(256, Math.min(3840, snapped));
 }
 
-/** 给定比例字符串 + 总像素预算，反推 W×H（snap 到 16） */
+/** 严格向下取到 16 的倍数；用于"必须不超预算"的场景（4K 预算 8.3MP） */
+function snapDown16(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) return 256;
+  const snapped = Math.floor(value / 16) * 16;
+  return Math.max(256, Math.min(3840, snapped));
+}
+
+/**
+ * 给定比例字符串 + 总像素预算，反推 W×H。
+ * 关键约束：snap 后 w*h 必须 **小于等于** totalPx——否则像 GPT Image 2 这种严格 8.3MP 上限的模型会拒绝。
+ * 算法：先用 floor-to-16 取下，得到 w0/h0；若仍 > budget（极端比例下浮点误差），逐步把更长那边 -16 直到合规。
+ */
 function pixelsByAspectAndBudget(aspect: string, totalPx: number): { w: number; h: number } {
   const [aw, ah] = aspect.split(':').map(Number);
   if (!Number.isFinite(aw) || !Number.isFinite(ah) || aw <= 0 || ah <= 0) {
     const side = Math.sqrt(totalPx);
-    return { w: snapToGrid(side), h: snapToGrid(side) };
+    return { w: snapDown16(side), h: snapDown16(side) };
   }
-  const h = Math.sqrt((totalPx * ah) / aw);
-  const w = (h * aw) / ah;
-  return { w: snapToGrid(w), h: snapToGrid(h) };
+  const hExact = Math.sqrt((totalPx * ah) / aw);
+  const wExact = (hExact * aw) / ah;
+  let w = snapDown16(wExact);
+  let h = snapDown16(hExact);
+  // 兜底：极端时再削一档
+  while (w * h > totalPx && (w > 256 || h > 256)) {
+    if (w >= h && w > 256) w -= 16;
+    else if (h > 256) h -= 16;
+    else break;
+  }
+  return { w, h };
 }
 
 /**

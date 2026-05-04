@@ -35,7 +35,13 @@ export function registerChatHandlers(): void {
   register('api:chat:send', ChatSendSchema, async (input, event) => {
     const messageId = randomUUID();
     const sender = event.sender;
-    handleSend(input.conversationId, input.content, messageId, sender).catch((e) => {
+    handleSend(
+      input.conversationId,
+      input.content,
+      input.attachedImages ?? [],
+      messageId,
+      sender
+    ).catch((e) => {
       logger.error('chat.send fatal', e);
     });
     return ok({ messageId });
@@ -236,6 +242,7 @@ async function optimizePromptOnce(opts: {
 async function handleSend(
   conversationId: string,
   content: string,
+  attachedImages: string[],
   messageId: string,
   sender: WebContents
 ): Promise<void> {
@@ -299,6 +306,7 @@ async function handleSend(
         cfg,
         modelId: conv.model_id,
         history,
+        attachedImages,
         send,
         messageId,
         signal: ctrl.signal
@@ -308,6 +316,7 @@ async function handleSend(
         cfg,
         modelId: conv.model_id,
         history,
+        attachedImages,
         send,
         messageId,
         signal: ctrl.signal
@@ -375,6 +384,8 @@ interface StreamCtx {
   cfg: ConfigRow & { actualModelId: string };
   modelId: string;
   history: Array<{ role: string; content: string }>;
+  /** 仅作用于"最后一条 user 消息"——把这些图作为多模态内容附进去 */
+  attachedImages?: string[];
   send: (channel: string, payload: unknown) => void;
   messageId: string;
   signal: AbortSignal;
@@ -384,10 +395,29 @@ async function streamOpenAICompat(ctx: StreamCtx): Promise<string> {
   const url = joinApiUrl(ctx.cfg.base_url, 'chat/completions');
   const apiKey = decryptString(ctx.cfg.api_key_encrypted);
 
-  const messages = ctx.history.map((m) => ({
+  const messages: Array<{ role: string; content: unknown }> = ctx.history.map((m) => ({
     role: m.role,
     content: m.content
   }));
+
+  // 最后一条 user 消息附加图片 → OpenAI 多模态格式
+  if (ctx.attachedImages && ctx.attachedImages.length > 0 && messages.length > 0) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') {
+        const text = String(messages[i].content ?? '');
+        messages[i].content = [
+          ...(text.trim().length > 0
+            ? [{ type: 'text', text }]
+            : [{ type: 'text', text: '请分析这张图片' }]),
+          ...ctx.attachedImages.map((url) => ({
+            type: 'image_url',
+            image_url: { url }
+          }))
+        ];
+        break;
+      }
+    }
+  }
 
   const res = await fetch(url, {
     method: 'POST',
@@ -466,9 +496,37 @@ async function streamAnthropic(ctx: StreamCtx): Promise<string> {
     .filter((m) => m.role === 'system')
     .map((m) => m.content)
     .join('\n\n');
-  const messages = ctx.history
+  const messages: Array<{ role: string; content: unknown }> = ctx.history
     .filter((m) => m.role === 'user' || m.role === 'assistant')
-    .map((m) => ({ role: m.role, content: m.content }));
+    .map((m) => ({ role: m.role, content: m.content as unknown }));
+
+  // 最后一条 user 消息附图 → Anthropic 多模态 content blocks
+  if (ctx.attachedImages && ctx.attachedImages.length > 0 && messages.length > 0) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') {
+        const text = String(messages[i].content ?? '');
+        const blocks: Array<Record<string, unknown>> = [];
+        for (const url of ctx.attachedImages) {
+          // data URI → 拆出 media_type + base64
+          const m = /^data:([^;]+);base64,(.+)$/.exec(url);
+          if (m) {
+            blocks.push({
+              type: 'image',
+              source: { type: 'base64', media_type: m[1], data: m[2] }
+            });
+          } else {
+            blocks.push({ type: 'image', source: { type: 'url', url } });
+          }
+        }
+        blocks.push({
+          type: 'text',
+          text: text.trim().length > 0 ? text : '请分析这张图片'
+        });
+        messages[i].content = blocks;
+        break;
+      }
+    }
+  }
 
   const body: Record<string, unknown> = {
     model: ctx.cfg.actualModelId,

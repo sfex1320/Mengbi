@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { XIcon } from './Icon';
 import './Lightbox.css';
@@ -97,7 +98,8 @@ export function Lightbox({ open, src, alt, onClose }: LightboxProps): JSX.Elemen
     if (e.target === e.currentTarget) onClose();
   }
 
-  return (
+  // 用 portal 挂到 body，免得被 mb-card / mb-marquee-glow 这些有 isolation 的祖先困住
+  return createPortal(
     <AnimatePresence>
       {open && (
         <motion.div
@@ -144,6 +146,7 @@ export function Lightbox({ open, src, alt, onClose }: LightboxProps): JSX.Elemen
           </div>
         </motion.div>
       )}
-    </AnimatePresence>
+    </AnimatePresence>,
+    document.body
   );
 }

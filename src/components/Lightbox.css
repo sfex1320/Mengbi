@@ -13,8 +13,9 @@
 }
 
 .mb-lightbox-img {
-  max-width: 92vw;
-  max-height: 92vh;
+  /* 100vw / 100vh 让"原图小但视口大"时也能尽量利用窗口空间 */
+  max-width: 96vw;
+  max-height: calc(100vh - 96px);
   object-fit: contain;
   transition: none; /* 实时响应缩放/拖动；不要 CSS 过渡盖住 transform */
   will-change: transform;

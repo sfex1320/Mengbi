@@ -11,7 +11,7 @@ import { logger } from './logger';
  * - schema_version 在 settings 表里追踪
  */
 
-const CURRENT_SCHEMA_VERSION = 2;
+const CURRENT_SCHEMA_VERSION = 3;
 
 let _db: Database.Database | null = null;
 
@@ -76,6 +76,21 @@ function applySchema(db: Database.Database): void {
       writeSchemaVersion(db, 2);
     })();
     logger.info('db migrated to v2 (image_kind on api_configs)');
+  }
+
+  if (ver < 3) {
+    db.transaction(() => {
+      // prompts 增加 thumb_data_uri：对于反推 / 用户手填这类没有"已存图库的关联图"的卡片，
+      // 直接存一个小 data URI 作为缩略图。比走 related_image_ids 更轻。
+      const cols = db
+        .prepare(`PRAGMA table_info(prompts)`)
+        .all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === 'thumb_data_uri')) {
+        db.exec(`ALTER TABLE prompts ADD COLUMN thumb_data_uri TEXT`);
+      }
+      writeSchemaVersion(db, 3);
+    })();
+    logger.info('db migrated to v3 (thumb_data_uri on prompts)');
   }
 
   if (ver > CURRENT_SCHEMA_VERSION) {
@@ -208,6 +223,7 @@ CREATE TABLE IF NOT EXISTS prompts (
   tags              TEXT,
   notes             TEXT,
   related_image_ids TEXT,
+  thumb_data_uri    TEXT,
   deleted_at        TEXT,
   created_at        TEXT NOT NULL,
   updated_at        TEXT NOT NULL
