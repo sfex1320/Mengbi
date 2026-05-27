@@ -15,9 +15,7 @@ interface Props {
 const LABEL: Record<VecMode, string> = {
   vtracer: 'Fast · VTracer',
   potrace: 'Crisp · Potrace',
-  autotrace: 'Pro · AutoTrace',
-  starvector: 'AI · StarVector',
-  experimental: 'Lab · 实验精修'
+  autotrace: 'Pro · AutoTrace'
 };
 
 export function FallbackBanner({

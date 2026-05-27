@@ -1,17 +1,17 @@
 /**
- * 图像转矢量 IPC 通道 —— api:vec:* (v3 重构,2026-05-27)。
+ * 图像转矢量 IPC 通道 —— api:vec:*
  *
- * 5 个模式: vtracer / potrace / autotrace / starvector / experimental
- *   - Phase 1 实装 vtracer / potrace
- *   - Phase 2 加 autotrace
- *   - Phase 3 加 starvector
- *   - Phase 4 加 experimental(默认隐藏)
+ * 3 个模式(2026-05-28 AI 清理后): vtracer / potrace / autotrace
+ *   - vtracer:   @neplex/vectorizer Rust NAPI,本身兜底
+ *   - potrace:   potrace npm,失败回退 vtracer
+ *   - autotrace: spawn autotrace.exe,失败回退 vtracer
  *
- * 设计要点(对应用户清单 §3 §10):
+ * 砍除:starvector(AI · 精准) + experimental(Lab · 实验精修)
+ *   理由:VLM 生成 SVG 实测效果差,与 OmniSVG 同质化失败。
+ *
+ * 设计要点:
  *   - 所有引擎调用统一走 batchQueue,即使是单图也包成 1 张的 batch
  *     (这样后处理 / 回退 / debug 报告完全统一,UI 不分单/批)
- *   - run-vtracer / run-potrace 保留为单图便捷调用(返回 batchId + taskId)
- *   - 新增 detect-type / report-get / debug-open 通道
  *   - 进度通过 'vec:progress' / 'vec:batch-progress' broadcast
  */
 import { z } from 'zod';
@@ -26,25 +26,11 @@ import { listVecHistory, clearVecHistory } from '../services/vectorize/vecHistor
 import { detectImageType } from '../services/vectorize/preprocess/imageTypeDetect';
 import { validateOutputDir } from '../services/vectorize/outputNaming';
 import { resolveAutotracePath } from '../services/vectorize/engines/autotraceEngine';
-import { getSidecarManager } from '../services/ai-platform/sidecarManager';
-import { STARVECTOR_FEATURE_ID } from '../services/ai-features/starvector';
-import { getDb } from '../services/db';
 import type { VecMode, VecParams } from '../services/vectorize/types';
-
-function readUserStarVectorPath(): string {
-  try {
-    const row = getDb()
-      .prepare(`SELECT value FROM settings WHERE key = 'vec_starvector_path'`)
-      .get() as { value: string } | undefined;
-    return (row?.value ?? '').trim();
-  } catch {
-    return '';
-  }
-}
 
 // ── schemas ─────────────────────────────────────────────────
 
-const VecModeEnum = z.enum(['vtracer', 'potrace', 'autotrace', 'starvector', 'experimental']);
+const VecModeEnum = z.enum(['vtracer', 'potrace', 'autotrace']);
 
 const VTracerParamsSchema = z
   .object({
@@ -84,29 +70,10 @@ const AutotraceParamsSchema = z
   })
   .strict();
 
-const StarVectorParamsSchema = z
-  .object({
-    maxNewTokens: z.number().int().min(64).max(16384).optional(),
-    temperature: z.number().min(0).max(2).optional(),
-    doSample: z.boolean().optional()
-  })
-  .strict();
-
-const ExperimentalParamsSchema = z
-  .object({
-    numPaths: z.number().int().min(1).max(2048).optional(),
-    iters: z.number().int().min(10).max(10000).optional(),
-    timeoutSeconds: z.number().int().min(10).max(3600).optional(),
-    initFrom: z.enum(['random', 'vtracer']).optional()
-  })
-  .strict();
-
 const AnyParamsSchema = z.union([
   VTracerParamsSchema,
   PotraceParamsSchema,
-  AutotraceParamsSchema,
-  StarVectorParamsSchema,
-  ExperimentalParamsSchema
+  AutotraceParamsSchema
 ]);
 
 const VecBatchOptionsSchema = z.object({
@@ -321,52 +288,6 @@ export function registerVecHandlers(): void {
   register('api:vec:autotrace-probe', null, async () => {
     const exe = resolveAutotracePath();
     return ok({ available: exe !== null, exePath: exe });
-  });
-
-  // ── StarVector 探测(model path + sidecar reachable) ──
-  register('api:vec:starvector-probe', null, async () => {
-    const modelPath = readUserStarVectorPath();
-    const modelPathConfigured = modelPath.length > 0;
-    const modelPathExists = modelPathConfigured && existsSync(modelPath);
-    const status = await getSidecarManager().getServerStatus(STARVECTOR_FEATURE_ID);
-    return ok({
-      modelPathConfigured,
-      modelPathExists,
-      sidecarReachable: status.reachable,
-      available: modelPathExists && status.reachable,
-      modelPath: modelPath || null
-    });
-  });
-
-  // ── StarVector sidecar lifecycle ──
-  register('api:vec:starvector-start-server', null, async () => {
-    const modelPath = readUserStarVectorPath();
-    if (modelPath) {
-      // 通过 env 传给 start_starvector.bat
-      process.env.MENGBI_STARVECTOR_MODEL_PATH = modelPath;
-    }
-    try {
-      const r = await getSidecarManager().start(STARVECTOR_FEATURE_ID);
-      return ok(r);
-    } catch (e) {
-      return err(
-        makeError('CONFIG_INVALID', `StarVector 启动失败: ${(e as Error).message}`, {
-          severity: 'toast',
-          hint: '查看 logs/starvector.log 或 install_starvector_extras.bat 是否跑过。'
-        })
-      );
-    }
-  });
-
-  register('api:vec:starvector-stop-server', null, async () => {
-    try {
-      const r = await getSidecarManager().stop(STARVECTOR_FEATURE_ID);
-      return ok(r);
-    } catch (e) {
-      return err(
-        makeError('UNKNOWN', `StarVector 停止失败: ${(e as Error).message}`, { severity: 'toast' })
-      );
-    }
   });
 
   // ── 打开 debug 目录(空 reportDir = 打开根目录) ──

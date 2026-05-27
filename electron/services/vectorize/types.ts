@@ -1,27 +1,31 @@
 /**
  * 图像转矢量共享类型 —— Node 侧 (electron/) 内部用,跨进程的版本在 src/types/ipc.ts。
  *
- * v3 重构(2026-05-27):
- *   - 砍 OmniSVG,新增 5 模式架构(vtracer / potrace / autotrace / starvector / experimental)
- *   - 引入 EngineRunner 统一接口
+ * v3 重构 + AI 清理(2026-05-28):
+ *   - 3 模式架构(vtracer / potrace / autotrace),AI(StarVector)+ Lab(实验精修)已砍
+ *   - EngineRunner 统一接口
  *   - 所有引擎输出过 svg 后处理流水线
- *   - report.json + quality_score + 回退机制
+ *   - report.json + quality_score + 回退机制保留(产品化收益)
  */
 import type { AppErrorCode } from '@shared/error';
 
 /**
- * 5 个矢量化模式。Phase 1 实装 vtracer / potrace;Phase 2 加 autotrace;
- * Phase 3 加 starvector;Phase 4 加 experimental(默认隐藏)。
+ * 3 个矢量化模式(2026-05-28 AI 模式整体砍除)。
+ *   - vtracer:  Fast · 快速彩色,本身兜底
+ *   - potrace:  Crisp · 黑白线稿
+ *   - autotrace: Pro · 高级描摹(显式色数量化 spawn exe)
+ *
+ * 砍掉的:
+ *   - starvector(AI · 精准):VLM 生成 SVG 本质不能跑稳,与 OmniSVG 同质化失败
+ *   - experimental(Lab · 实验精修):自渲染拟合,投入产出不成正比
  */
-export type VecMode = 'vtracer' | 'potrace' | 'autotrace' | 'starvector' | 'experimental';
+export type VecMode = 'vtracer' | 'potrace' | 'autotrace';
 
 /** 所有引擎对外暴露的统一标签 */
 export const VEC_MODE_LABELS: Record<VecMode, string> = {
   vtracer: 'Fast · 快速彩色',
   potrace: 'Crisp · 黑白线稿',
-  autotrace: 'Pro · 高级描摹',
-  starvector: 'AI · 精准',
-  experimental: 'Lab · 实验精修'
+  autotrace: 'Pro · 高级描摹'
 };
 
 export type VecTaskStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled';
@@ -87,32 +91,7 @@ export interface AutotraceParams {
   lineThreshold?: number;
 }
 
-export interface StarVectorParams {
-  /** 最大生成 token 数 */
-  maxNewTokens?: number;
-  /** 温度 */
-  temperature?: number;
-  /** 是否采样;false = greedy */
-  doSample?: boolean;
-}
-
-export interface ExperimentalParams {
-  /** 贝塞尔路径数 */
-  numPaths?: number;
-  /** 最大迭代步数 */
-  iters?: number;
-  /** 最大运行时间(秒) */
-  timeoutSeconds?: number;
-  /** 初始化来源: 'random' | 'vtracer' */
-  initFrom?: 'random' | 'vtracer';
-}
-
-export type VecParams =
-  | VTracerParams
-  | PotraceParams
-  | AutotraceParams
-  | StarVectorParams
-  | ExperimentalParams;
+export type VecParams = VTracerParams | PotraceParams | AutotraceParams;
 
 // ── 引擎统一接口 ──────────────────────────────────────────────────
 

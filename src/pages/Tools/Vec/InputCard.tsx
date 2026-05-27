@@ -21,7 +21,6 @@ import { toast } from '@/store/toastStore';
 import { UploadIcon, FolderIcon, XIcon } from '@/components/Icon';
 import { Collapsible } from './components/Collapsible';
 import { ImageTypeHint } from './components/ImageTypeHint';
-import { AiSidecarStrip } from './components/AiSidecarStrip';
 import type {
   VecMode,
   VecParams,
@@ -151,10 +150,7 @@ export function InputCard({ onSubmit, submitting }: Props): JSX.Element {
         )}
       </div>
 
-      {/* 2a. AI 模式时的 sidecar 状态条 */}
-      <AiSidecarStrip />
-
-      {/* 2b. 识别提示(只在有文件后才出) */}
+      {/* 2. 识别提示(只在有文件后才出) */}
       {pendingInputs.length > 0 && <ImageTypeHint />}
 
       {/* 3. 折叠:高级参数 */}
@@ -418,7 +414,7 @@ function ParamSlider({
 // ── 工具函数 ──────────────────────────────────────────────
 
 function modeLabel(m: VecMode): string {
-  return { vtracer: 'Fast', potrace: 'Crisp', autotrace: 'Pro', starvector: 'AI', experimental: 'Lab' }[m];
+  return { vtracer: 'Fast', potrace: 'Crisp', autotrace: 'Pro' }[m];
 }
 function namingLabel(n: 'original' | 'suffix'): string {
   return n === 'suffix' ? '加后缀' : '保留原名';

@@ -1,12 +1,10 @@
 /**
  * FallbackManager —— 决定一个引擎调用失败后,要不要回退到哪里。
  *
- * 策略(用户清单 §12):
- *   - 用户选 vtracer:     失败 → 直接 fail(本身是兜底)
- *   - 用户选 potrace:     失败 → 回退 vtracer
- *   - 用户选 autotrace:   失败 → 回退 vtracer
- *   - 用户选 starvector:  失败 / 无效 SVG → 回退 vtracer
- *   - 用户选 experimental:失败 / 超时 → 回退 vtracer 初始化结果
+ * 策略(3 模式,2026-05-28 AI 清理后):
+ *   - 用户选 vtracer:   失败 → 直接 fail(本身是兜底)
+ *   - 用户选 potrace:   失败 → 回退 vtracer
+ *   - 用户选 autotrace: 失败 → 回退 vtracer
  *
  * 关键守则:
  *   - 用户选了 X 但实际跑了 Y → UI 必须显示"已回退",report 必须记原因
@@ -21,8 +19,6 @@ export function getFallbackTarget(requestedMode: VecMode): VecMode | null {
       return null; // 本身就是兜底,没有更兜底了
     case 'potrace':
     case 'autotrace':
-    case 'starvector':
-    case 'experimental':
       return 'vtracer';
     default:
       return 'vtracer';

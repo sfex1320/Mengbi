@@ -126,10 +126,7 @@ const api: ElectronAPI = {
     detectType: (input) => invoke('api:vec:detect-type', input),
     reportGet: (input) => invoke('api:vec:report-get', input),
     debugOpen: (input) => invoke('api:vec:debug-open', input),
-    autotraceProbe: () => invoke('api:vec:autotrace-probe'),
-    starvectorProbe: () => invoke('api:vec:starvector-probe'),
-    starvectorStartServer: () => invoke('api:vec:starvector-start-server'),
-    starvectorStopServer: () => invoke('api:vec:starvector-stop-server')
+    autotraceProbe: () => invoke('api:vec:autotrace-probe')
   },
   upscale: {
     status: () => invoke('api:upscale:status'),

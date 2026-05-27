@@ -22,9 +22,7 @@ const TAG_LABEL: Record<ImageTypeTag, string> = {
 const MODE_LABEL: Record<VecMode, string> = {
   vtracer: 'Fast',
   potrace: 'Crisp',
-  autotrace: 'Pro',
-  starvector: 'AI',
-  experimental: 'Lab'
+  autotrace: 'Pro'
 };
 
 export function ImageTypeHint(): JSX.Element | null {

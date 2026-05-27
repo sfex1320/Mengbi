@@ -1,19 +1,18 @@
 /**
- * 图像转矢量批量队列(v3 重构,2026-05-27)。
+ * 图像转矢量批量队列(3 模式,2026-05-28)。
  *
- * 5 个模式 + 统一流水线:
+ * 模式 + 统一流水线:
  *   imagePreprocess → engineRunner.run() → svgPostprocess (cleaner/repair/simplify/score)
  *   → fallbackManager → debugWriter → vecHistory → 落盘 SVG → 进度事件
  *
  * 并发规则:
- *   - vtracer / potrace / autotrace: CPU 模式,并发 = max(1, os.cpus() - 1)
- *   - starvector / experimental: sidecar 模式,串行(Python 进程显存独占)
+ *   - vtracer / potrace / autotrace 均 CPU 模式,并发 = max(1, os.cpus() - 1)
  *   - 各模式队列独立,互不阻塞
  *
  * 关键守则:
  *   - 引擎调用失败 → fallback 接管,UI 显示 actualEngine != requestedMode
  *   - VTracer 是绝对兜底;它失败时不再回退,直接 failed
- *   - cancel batch:pause + 丢掉 pending(运行中的 CPU/sidecar 任务尽量打断)
+ *   - cancel batch:pause + 丢掉 pending(运行中的 CPU 任务跑完不可打断)
  *   - 单任务失败不中断批次
  *
  * 事件发送:统一调 broadcast(channel, payload) → 所有 BrowserWindow
@@ -61,13 +60,8 @@ function broadcast(channel: 'vec:progress' | 'vec:batch-progress', payload: unkn
   }
 }
 
-// ── 并发分组 ─────────────────────────────────────────────────
-
-/** sidecar 模式(Python 进程显存独占) → 串行 */
-const SIDECAR_MODES: ReadonlySet<VecMode> = new Set(['starvector', 'experimental']);
-
 // ── 单例 ─────────────────────────────────────────────────────
-
+// 2026-05-28: 砍 AI 模式后,所有模式都是 CPU spawn / 同步 NAPI,统一并发
 class BatchQueueImpl {
   private readonly cpuConcurrency = Math.max(1, os.cpus().length - 1);
 
@@ -80,16 +74,12 @@ class BatchQueueImpl {
   private readonly pendingByMode: Record<VecMode, string[]> = {
     vtracer: [],
     potrace: [],
-    autotrace: [],
-    starvector: [],
-    experimental: []
+    autotrace: []
   };
   private readonly runningByMode: Record<VecMode, Set<string>> = {
     vtracer: new Set(),
     potrace: new Set(),
-    autotrace: new Set(),
-    starvector: new Set(),
-    experimental: new Set()
+    autotrace: new Set()
   };
 
   // 暂停的批次 (batchId set)
@@ -251,7 +241,7 @@ class BatchQueueImpl {
   // ── 内部 dispatch ────────────────────────────────────────
 
   private dispatch(mode: VecMode): void {
-    const concurrency = SIDECAR_MODES.has(mode) ? 1 : this.cpuConcurrency;
+    const concurrency = this.cpuConcurrency;
     while (this.runningByMode[mode].size < concurrency) {
       const taskId = this.popNextRunnable(mode);
       if (!taskId) break;

@@ -52,7 +52,7 @@ const WRITE_CHANNELS: ReadonlySet<string> = new Set<string>([
   // tools box
   'api:tools:save-output',
   'api:gallery:import-from-buffer',
-  // 图像转矢量 v3(5 模式: vtracer / potrace / autotrace / starvector / experimental)
+  // 图像转矢量(3 模式: vtracer / potrace / autotrace) — AI 已于 2026-05-28 砍除
   'api:vec:run-vtracer',
   'api:vec:run-potrace',
   'api:vec:run-batch',
@@ -62,8 +62,6 @@ const WRITE_CHANNELS: ReadonlySet<string> = new Set<string>([
   'api:vec:cancel-task',
   'api:vec:history-clear',
   'api:vec:debug-open',
-  'api:vec:starvector-start-server',
-  'api:vec:starvector-stop-server',
   // 放大引擎（Real-ESRGAN ncnn）
   'api:upscale:install-engine',
   'api:upscale:install-engine-from-zip',

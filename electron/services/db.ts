@@ -485,12 +485,8 @@ const DEFAULT_PREFS: Array<[string, string]> = [
   ['ai_torch_compile_mode', 'off'],
   // 图像转矢量输出目录;'' 时回退到 tools_storage_path / vec / 或 image_storage_path / vec /
   ['vec_output_path', ''],
-  // v3 重构(2026-05-27):是否展示「Lab · 实验精修」模式按钮(默认隐藏)
-  ['vec_show_experimental', 'false'],
   // userData/vec-debug/ 目录保留天数,过期由 sweepStaleDebugDirs 清理
   ['vec_debug_retain_days', '7'],
-  // StarVector 模型本地路径(用户手动配置;空 = AI 模式不可用)
-  ['vec_starvector_path', ''],
   // AutoTrace exe 路径覆盖(空 = 用内置 resources/autotrace-portable/autotrace.exe)
   ['vec_autotrace_path', '']
 ];

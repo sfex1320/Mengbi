@@ -1,9 +1,0 @@
-{
-  "host": "127.0.0.1",
-  "port": 7867,
-  "starvector_model_dir": "models/starvector-1b-im2svg",
-  "default_max_new_tokens": 8192,
-  "default_temperature": 0.1,
-  "default_do_sample": false,
-  "eager_load_models": false
-}

@@ -72,9 +72,7 @@ function modeLabel(m: string): string {
     {
       vtracer: 'Fast (彩色)',
       potrace: 'Crisp (单色)',
-      autotrace: 'Pro (高级描摹)',
-      starvector: 'AI (精准)',
-      experimental: 'Lab (实验精修)'
+      autotrace: 'Pro (高级描摹)'
     }[m] ?? m
   );
 }

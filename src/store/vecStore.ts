@@ -58,8 +58,6 @@ export interface VecTaskView {
 
 interface VecState {
   selectedMode: VecMode;
-  /** 是否展示「Lab · 实验精修」模式按钮 (受 settings:vec_show_experimental 同步) */
-  showExperimental: boolean;
   /** 每个模式的可用性(由 probe 异步填充) */
   modeAvailability: Partial<Record<VecMode, boolean>>;
   pendingInputs: string[];
@@ -73,7 +71,6 @@ interface VecState {
   lastImageHint: ImageTypeDetection | null;
 
   setSelectedMode: (m: VecMode) => void;
-  setShowExperimental: (v: boolean) => void;
   setModeAvailability: (mode: VecMode, available: boolean) => void;
   setPendingInputs: (paths: string[]) => void;
   addPendingInputs: (paths: string[]) => void;
@@ -93,7 +90,6 @@ interface VecState {
 
 export const useVecStore = create<VecState>((set, get) => ({
   selectedMode: 'vtracer',
-  showExperimental: false,
   modeAvailability: { vtracer: true, potrace: true },
   pendingInputs: [],
   outputDir: '',
@@ -105,7 +101,6 @@ export const useVecStore = create<VecState>((set, get) => ({
   lastImageHint: null,
 
   setSelectedMode: (m) => set({ selectedMode: m }),
-  setShowExperimental: (v) => set({ showExperimental: v }),
   setModeAvailability: (mode, available) =>
     set((s) => ({ modeAvailability: { ...s.modeAvailability, [mode]: available } })),
   setPendingInputs: (paths) => set({ pendingInputs: paths }),

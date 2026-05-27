@@ -36,15 +36,10 @@ export function VecPanel(): JSX.Element {
   const onConflict = useVecStore((s) => s.onConflict);
   const registerBatch = useVecStore((s) => s.registerBatch);
   const clearPending = useVecStore((s) => s.clearPendingInputs);
-  const setShowExperimental = useVecStore((s) => s.setShowExperimental);
   const setModeAvailability = useVecStore((s) => s.setModeAvailability);
 
   const [submitting, setSubmitting] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
-
-  useEffect(() => {
-    setShowExperimental(prefs.vec_show_experimental === 'true');
-  }, [prefs.vec_show_experimental, setShowExperimental]);
 
   // 探测每个模式的本地可用性
   useEffect(() => {
@@ -55,11 +50,6 @@ export function VecPanel(): JSX.Element {
     void window.electronAPI.vec.autotraceProbe().then((r) => {
       if (r.ok) setModeAvailability('autotrace', r.data.available);
     });
-    // AI: 模型路径存在即激活按钮(具体是否能跑由 sidecar 状态在 InputCard 提示)
-    void window.electronAPI.vec.starvectorProbe().then((r) => {
-      if (r.ok) setModeAvailability('starvector', r.data.modelPathExists);
-    });
-    // Lab: Phase 4 时补
   }, [setModeAvailability]);
 
   const effectiveOutputDir = outputDir.trim() || resolveDefaultOutputDir(prefs);

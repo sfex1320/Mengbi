@@ -1,17 +1,17 @@
 /**
- * 矢量化模式选择器(v3 重设计,2026-05-27)。
+ * 矢量化模式选择器(v3 + AI 清理,2026-05-28)。
  *
- * 紧凑 pill 行,单行 5 模式。
- *   - Fast / Crisp / Pro / AI:统一 pill,激活态 = 高亮底色 + 加粗
- *   - Pro / AI 未实装时:小淡灰 chip + "待上线" 角标,点击给出 toast 提示
- *   - Lab(实验精修):受 useVecStore.showExperimental 控制是否渲染
+ * 紧凑 pill 行,单行 3 模式。
+ *   - Fast / Crisp:CPU 算法,永远可用
+ *   - Pro:AutoTrace spawn exe,需用户安装(probe 判断)
  *
- * 不再使用大块按钮 + 描述卡;描述塞 title(hover 看)。视觉权重让位给 dropzone。
+ * 砍除:AI · 精准(StarVector)+ Lab · 实验精修
+ * 理由:VLM 生成 SVG 实测效果差,产品价值低于工程化的 3 模式。
  */
 import { useVecStore } from '@/store/vecStore';
 import { toast } from '@/store/toastStore';
 import type { VecMode } from '@/types/ipc';
-import { ZapIcon, PencilIcon, ToolboxIcon, SparkleIcon, FlaskIcon } from '@/components/Icon';
+import { ZapIcon, PencilIcon, ToolboxIcon } from '@/components/Icon';
 
 interface ModeInfo {
   key: VecMode;
@@ -19,7 +19,6 @@ interface ModeInfo {
   shortLabel: string;
   hint: string;
   icon: typeof ZapIcon;
-  experimental?: boolean;
 }
 
 const MODES: ModeInfo[] = [
@@ -43,35 +42,17 @@ const MODES: ModeInfo[] = [
     shortLabel: 'Pro',
     hint: 'AutoTrace · 显式色数量化 · 适合 logo 重绘 / 印刷 EPS',
     icon: ToolboxIcon
-  },
-  {
-    key: 'starvector',
-    label: 'AI',
-    shortLabel: 'AI',
-    hint: 'StarVector-1B · 本地 AI 推理 · 适合图标 / 简单 logo / UI 图形',
-    icon: SparkleIcon
-  },
-  {
-    key: 'experimental',
-    label: 'Lab',
-    shortLabel: 'Lab',
-    hint: '实验精修 · 自渲染拟合 · 慢但路径少 · 需在设置开启',
-    icon: FlaskIcon,
-    experimental: true
   }
 ];
 
 export function VecModeSelector(): JSX.Element {
   const selected = useVecStore((s) => s.selectedMode);
   const setSelected = useVecStore((s) => s.setSelectedMode);
-  const showExperimental = useVecStore((s) => s.showExperimental);
   const modeAvailability = useVecStore((s) => s.modeAvailability);
-
-  const visibleModes = MODES.filter((m) => !m.experimental || showExperimental);
 
   return (
     <div className="mb-vec-mode-pillrow" role="tablist" aria-label="矢量化模式">
-      {visibleModes.map((m) => {
+      {MODES.map((m) => {
         const Icon = m.icon;
         const active = m.key === selected;
         const disabled = modeAvailability[m.key] !== true;
@@ -85,7 +66,7 @@ export function VecModeSelector(): JSX.Element {
             className={`mb-vec-mode-pill ${active ? 'is-active' : ''} ${disabled ? 'is-disabled' : ''}`}
             onClick={() => {
               if (disabled) {
-                toast.info(`${m.label} 模式待上线`, m.hint);
+                toast.info(`${m.label} 未就绪`, m.hint);
                 return;
               }
               setSelected(m.key);
@@ -94,7 +75,7 @@ export function VecModeSelector(): JSX.Element {
           >
             <Icon size={13} />
             <span className="mb-vec-mode-pill-label">{m.shortLabel}</span>
-            {disabled && <span className="mb-vec-mode-pill-soon">待上线</span>}
+            {disabled && <span className="mb-vec-mode-pill-soon">未就绪</span>}
           </button>
         );
       })}

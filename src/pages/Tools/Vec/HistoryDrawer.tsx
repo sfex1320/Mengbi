@@ -68,8 +68,6 @@ export function VecHistoryDrawer({ open, onClose }: Props): JSX.Element | null {
           <option value="vtracer">VTracer</option>
           <option value="potrace">Potrace</option>
           <option value="autotrace">AutoTrace</option>
-          <option value="starvector">StarVector</option>
-          <option value="experimental">实验精修</option>
         </select>
         <select value={status} onChange={(e) => setStatus(e.target.value as typeof status)}>
           <option value="">所有状态</option>

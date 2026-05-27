@@ -765,21 +765,22 @@ export interface SupirAPI {
 }
 
 // ──────────────────────────────────────────────────────────
-// 图像转矢量（api:vec:*） v3 重构(2026-05-27)
-// 5 个模式:
-//   - vtracer:    Fast 彩色 (本身就是兜底,失败不回退)
-//   - potrace:    Crisp 黑白线稿
-//   - autotrace:  Pro 高级描摹  (Phase 2)
-//   - starvector: AI 精准      (Phase 3)
-//   - experimental: Lab 实验精修 (Phase 4,默认隐藏)
+// 图像转矢量（api:vec:*） v3 重构 + AI 清理 (2026-05-28)
+// 3 个模式:
+//   - vtracer:    Fast 彩色(本身就是兜底,失败不回退)
+//   - potrace:    Crisp 黑白线稿(失败 → vtracer)
+//   - autotrace:  Pro 高级描摹(失败 → vtracer)
+//
+// 砍除:starvector(AI · 精准) + experimental(Lab · 实验精修)
+// 理由:VLM 生成 SVG 实际效果差,与 OmniSVG 同质化失败;
+//      实验精修自渲染拟合投入产出不成正比。
 //
 // 所有引擎输出统一过 svg postprocess 流水线;任何模式失败
-// 自动回退到 vtracer(UI 必须显示"用户选择 vs 实际引擎",
-// 不允许把回退结果伪装成原模式输出)。
+// 自动回退到 vtracer(UI 必须显示"用户选择 vs 实际引擎")。
 // 每次任务在 userData/vec-debug/<ts>/ 下落 30+ 字段 report.json + 12 个调试文件。
 // ──────────────────────────────────────────────────────────
 
-export type VecMode = 'vtracer' | 'potrace' | 'autotrace' | 'starvector' | 'experimental';
+export type VecMode = 'vtracer' | 'potrace' | 'autotrace';
 export type VecTaskStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 export type VecBatchStatus = 'idle' | 'running' | 'paused' | 'completed' | 'aborted';
 export type VecQualityTier = 'excellent' | 'good' | 'fair' | 'poor' | 'invalid';
@@ -826,25 +827,7 @@ export interface AutotraceParams {
   lineThreshold?: number;
 }
 
-export interface StarVectorParams {
-  maxNewTokens?: number;
-  temperature?: number;
-  doSample?: boolean;
-}
-
-export interface ExperimentalParams {
-  numPaths?: number;
-  iters?: number;
-  timeoutSeconds?: number;
-  initFrom?: 'random' | 'vtracer';
-}
-
-export type VecParams =
-  | VTracerParams
-  | PotraceParams
-  | AutotraceParams
-  | StarVectorParams
-  | ExperimentalParams;
+export type VecParams = VTracerParams | PotraceParams | AutotraceParams;
 
 export interface VecBatchOptions {
   outputDir: string;
@@ -1035,20 +1018,6 @@ export interface VecAPI {
   debugOpen(input: { reportDir?: string }): Promise<Result<{ ok: boolean }>>;
   /** AutoTrace exe 探测 — 用于 UI 判断 Pro 模式是否可用 */
   autotraceProbe(): Promise<Result<{ available: boolean; exePath: string | null }>>;
-  /** StarVector 完整状态(模型路径 + sidecar 是否在线) */
-  starvectorProbe(): Promise<
-    Result<{
-      modelPathConfigured: boolean;
-      modelPathExists: boolean;
-      sidecarReachable: boolean;
-      available: boolean;
-      modelPath: string | null;
-    }>
-  >;
-  /** 启动 StarVector sidecar */
-  starvectorStartServer(): Promise<Result<{ alreadyRunning: boolean; pid: number | null; port: number }>>;
-  /** 停止 StarVector sidecar */
-  starvectorStopServer(): Promise<Result<{ stopped: boolean }>>;
 }
 
 // ──────────────────────────────────────────────────────────

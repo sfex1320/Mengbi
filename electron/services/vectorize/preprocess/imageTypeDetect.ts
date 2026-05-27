@@ -109,8 +109,8 @@ export async function detectImageType(inputPath: string): Promise<ImageTypeDetec
     reasonZh = '扁平插画,推荐 Fast(VTracer)';
   } else if (distinctColors < 500 && edgeDensity > 0.08) {
     tag = 'icon';
-    recommendedModes = ['vtracer', 'autotrace', 'starvector'];
-    reasonZh = '图标,推荐 Fast(VTracer);也可试 AI 精准';
+    recommendedModes = ['vtracer', 'autotrace'];
+    reasonZh = '图标,推荐 Fast(VTracer)或 Pro(AutoTrace)';
   } else if (satStd > 60 && edgeDensity < 0.04) {
     tag = 'gradient-photo';
     recommendedModes = ['vtracer'];

@@ -2161,75 +2161,7 @@ function ToolsTab(): JSX.Element {
         </div>
       </Field>
 
-      <Field label="StarVector 模型路径(AI · 精准矢量化)">
-        <div className="mb-storage-path-row">
-          <div
-            className="mb-input"
-            style={{ flex: 1, display: 'flex', alignItems: 'center' }}
-          >
-            <FolderIcon size={16} />
-            <span
-              style={{
-                marginLeft: 8,
-                flex: 1,
-                whiteSpace: 'nowrap',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis'
-              }}
-            >
-              {prefs.vec_starvector_path || '(未设置 — AI 模式按钮置灰)'}
-            </span>
-          </div>
-          <button
-            className="mb-btn mb-btn-ghost"
-            onClick={async () => {
-              const r = await window.electronAPI.storage.selectFolder();
-              if (!r.ok || !r.data) return;
-              const save = await window.electronAPI.settings.save({
-                prefs: { vec_starvector_path: r.data.path }
-              });
-              if (save.ok) {
-                await load();
-                toast.success('StarVector 模型路径已更新', r.data.path);
-              } else {
-                toast.error('保存失败', save.error.message);
-              }
-            }}
-            disabled={busy}
-          >
-            选择
-          </button>
-          <button
-            className="mb-btn mb-btn-ghost"
-            onClick={async () => {
-              const save = await window.electronAPI.settings.save({
-                prefs: { vec_starvector_path: '' }
-              });
-              if (save.ok) await load();
-            }}
-            disabled={busy || !prefs.vec_starvector_path}
-          >
-            清除
-          </button>
-        </div>
-        <div className="mb-field-hint" style={{ marginTop: 4 }}>
-          指向 starvector-1b-im2svg 模型目录(含 config.json + 权重)。
-          模型 ~4 GB,可从 huggingface.co/starvector/starvector-1b-im2svg 或 hf-mirror 下载。
-        </div>
-      </Field>
-
-      <Field label="实验功能">
-        <Toggle
-          label="显示「Lab · 实验精修」矢量化模式(默认隐藏)"
-          value={prefs.vec_show_experimental === 'true'}
-          onChange={async (v) => {
-            const save = await window.electronAPI.settings.save({
-              prefs: { vec_show_experimental: v ? 'true' : 'false' }
-            });
-            if (save.ok) await load();
-          }}
-        />
-      </Field>
+      {/* AI 矢量化(StarVector / 实验精修)已于 2026-05-28 整体砍除 */}
     </div>
   );
 }
