@@ -19,7 +19,7 @@ import { useVecStore } from '@/store/vecStore';
 import { useSettingsStore } from '@/store/settingsStore';
 import { toast } from '@/store/toastStore';
 import { UploadIcon, FolderIcon, XIcon } from '@/components/Icon';
-import { Collapsible } from './components/Collapsible';
+import { Collapsible } from '@/components/Collapsible';
 import { ImageTypeHint } from './components/ImageTypeHint';
 import type {
   VecMode,

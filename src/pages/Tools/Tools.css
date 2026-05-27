@@ -1,0 +1,2029 @@
+﻿.mb-tools-root {
+  height: 100%;
+  padding: 18px 24px;
+  overflow-y: auto;
+}
+
+.mb-tools-shell {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 16px 20px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ── 顶部一条紧凑 header：标题 + 输出目录徽章 ────────── */
+
+.mb-tools-header-row {
+  display: flex;
+  align-items: center;
+  /* 不用 space-between:cleanup-bar 用 margin-left:auto 自己把"清理 + 输出"两块推到右边 */
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.mb-tools-header-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--mb-text-primary);
+}
+
+.mb-tools-header-tagline {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--mb-text-muted);
+  margin-left: 6px;
+}
+
+/* 可点击的输出目录徽章 —— 一眼看到产出落到哪里 */
+.mb-tools-output-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 60%;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--mb-border-soft);
+  background: var(--mb-bg-hover);
+  cursor: pointer;
+  color: var(--mb-text-secondary);
+  font-size: 11px;
+  transition: all var(--mb-duration-fast) var(--mb-ease);
+}
+
+.mb-tools-output-pill:hover {
+  border-color: var(--mb-accent);
+  color: var(--mb-text-primary);
+}
+
+.mb-tools-output-pill-label {
+  font-weight: 600;
+  color: var(--mb-accent);
+}
+
+.mb-tools-output-pill-path {
+  font-family: Consolas, ui-monospace, monospace;
+  font-size: 11px;
+  max-width: 480px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: transparent;
+  padding: 0;
+}
+
+/* ── 一键清理栏:内嵌进 header,贴在"输出 pill"左侧 ─── */
+
+.mb-tools-cleanup-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  /* 占满 header 中间剩余空间 → 把自己推到 output pill 旁边右对齐 */
+  margin-left: auto;
+  font-size: 11px;
+}
+
+.mb-tools-cleanup-btn {
+  white-space: nowrap;
+}
+
+.mb-tools-cleanup-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  user-select: none;
+  color: var(--mb-text-secondary);
+  white-space: nowrap;
+  font-size: 11px;
+}
+
+.mb-tools-cleanup-checkbox input[type='checkbox'] {
+  margin: 0;
+  accent-color: var(--mb-accent);
+}
+
+/* ── 紧凑 Tab 栏 —— 横向胶囊 ──────────────────────── */
+
+.mb-tools-tabbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  border-radius: 12px;
+  background: var(--mb-bg-hover);
+  border: 1px solid var(--mb-border-soft);
+  align-self: flex-start;
+}
+
+.mb-tools-tabpill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border: none;
+  background: transparent;
+  border-radius: 8px;
+  color: var(--mb-text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--mb-duration-fast) var(--mb-ease);
+}
+
+.mb-tools-tabpill:hover {
+  color: var(--mb-text-primary);
+  background: var(--mb-bg-card-hover);
+}
+
+.mb-tools-tabpill.is-active {
+  background: var(--mb-accent);
+  color: white;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.05);
+}
+
+.mb-tools-tabpill-label {
+  white-space: nowrap;
+}
+
+/* 持久 mount：用 hidden 隐藏非激活的，保持各自状态 */
+
+.mb-tools-body-multi {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+.mb-tools-body-slot {
+  /* hidden 属性已经设了 display:none，无需 CSS */
+}
+
+/* ─── pane（左右分栏） ───────────────────── */
+
+.mb-tools-pane {
+  display: grid;
+  grid-template-columns: minmax(360px, 1fr) minmax(320px, 1.5fr);
+  gap: 18px;
+  align-items: stretch;
+}
+
+.mb-tools-pane-left,
+.mb-tools-pane-right {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.mb-tools-pane-section {
+  margin: 0;
+  font-size: 11px;
+  color: var(--mb-text-muted);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.mb-tools-pane-section:not(:first-child) {
+  margin-top: 4px;
+}
+
+.mb-tools-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mb-tools-pane {
+  gap: 14px;
+}
+
+.mb-tools-pane-left,
+.mb-tools-pane-right {
+  gap: 8px;
+}
+
+.mb-tools-engine-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.mb-tools-engine-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--mb-border);
+  background: var(--mb-bg-hover);
+  color: var(--mb-text-primary);
+  cursor: pointer;
+  transition: all var(--mb-duration-fast) var(--mb-ease);
+}
+
+.mb-tools-engine-chip:hover {
+  border-color: var(--mb-border-strong);
+}
+
+.mb-tools-engine-chip.is-active {
+  border-color: var(--mb-accent);
+  background: var(--mb-accent-soft);
+  color: var(--mb-accent);
+}
+
+.mb-tools-engine-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.mb-tools-engine-desc {
+  font-size: 11px;
+  opacity: 0.78;
+}
+
+.mb-tools-switch-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--mb-text-secondary);
+}
+
+.mb-tools-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mb-tools-field-label {
+  font-size: 12px;
+  color: var(--mb-text-secondary);
+}
+
+.mb-tools-field-hint {
+  font-size: 11px;
+  color: var(--mb-text-muted);
+}
+
+.mb-tools-action-row {
+  margin-top: 8px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.mb-tools-row-buttons {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.mb-tools-link {
+  color: var(--mb-accent);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.mb-tools-details {
+  border: 1px solid var(--mb-border-soft);
+  border-radius: 10px;
+  padding: 10px 14px;
+  background: var(--mb-bg-hover);
+  font-size: 12px;
+  color: var(--mb-text-secondary);
+}
+
+.mb-tools-details summary {
+  cursor: pointer;
+  user-select: none;
+}
+
+/* ─── 右侧结果区 ───────────────────── */
+
+.mb-tools-placeholder {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--mb-border-soft);
+  border-radius: 12px;
+  min-height: 280px;
+  padding: 28px;
+  color: var(--mb-text-muted);
+  font-size: 13px;
+}
+
+.mb-tools-busy {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  max-width: 320px;
+}
+
+.mb-tools-progress-bar {
+  width: 100%;
+  height: 6px;
+  background: var(--mb-bg-active);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.mb-tools-progress-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--mb-accent), var(--mb-accent-strong));
+  transition: width 0.18s ease;
+}
+
+.mb-tools-progress-phase {
+  font-size: 12px;
+  color: var(--mb-text-secondary);
+}
+
+.mb-tools-progress-pct {
+  font-size: 11px;
+  color: var(--mb-text-muted);
+}
+
+.mb-result-actions-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.mb-result-actions-wrap {
+  border: 1px solid var(--mb-border-soft);
+  border-radius: 12px;
+  background: var(--mb-bg-hover);
+  padding: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+}
+
+.mb-tools-svg-preview {
+  width: 100%;
+  max-height: 480px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mb-tools-svg-preview svg {
+  max-width: 100%;
+  max-height: 460px;
+  display: block;
+}
+
+.mb-tools-result-img {
+  max-width: 100%;
+  max-height: 480px;
+  object-fit: contain;
+  display: block;
+}
+
+.mb-tools-result-meta {
+  font-size: 11px;
+  color: var(--mb-text-muted);
+}
+
+/* ─── 模型管理 ───────────────────── */
+
+.mb-tools-empty-models {
+  border: 1px dashed var(--mb-border-soft);
+  border-radius: 12px;
+  padding: 18px;
+  background: var(--mb-bg-hover);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mb-tools-empty-models-title {
+  margin: 0;
+  font-size: 13px;
+  color: var(--mb-text-primary);
+}
+
+.mb-tools-empty-models-hint {
+  margin: 0;
+  font-size: 11px;
+  color: var(--mb-text-muted);
+}
+
+.mb-tools-model-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mb-tools-model-cards-compact {
+  margin-top: 10px;
+}
+
+.mb-tools-model-card {
+  text-align: left;
+  border: 1px solid var(--mb-border-soft);
+  background: var(--mb-bg-card);
+  padding: 10px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: all var(--mb-duration-fast) var(--mb-ease);
+  color: var(--mb-text-primary);
+}
+
+.mb-tools-model-card:hover:not(:disabled) {
+  border-color: var(--mb-accent);
+  background: var(--mb-bg-card-hover);
+}
+
+.mb-tools-model-card:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.mb-tools-model-card-title {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.mb-tools-model-card-desc {
+  font-size: 11px;
+  color: var(--mb-text-muted);
+}
+
+.mb-tools-model-card-size {
+  font-size: 11px;
+  color: var(--mb-text-secondary);
+}
+
+.mb-tools-download-progress {
+  position: relative;
+  height: 4px;
+  background: var(--mb-bg-active);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: 4px;
+}
+
+.mb-tools-download-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--mb-accent), var(--mb-accent-strong));
+  transition: width 0.2s ease;
+}
+
+.mb-tools-download-progress span {
+  position: absolute;
+  right: 0;
+  top: -16px;
+  font-size: 10px;
+  color: var(--mb-text-muted);
+}
+
+/* 已废弃：旧版"绝对定位遮罩"方案在 right pane 高度不确定时会塌成一半。
+   新版用流内卡片 .mb-tools-busy-card 替代。这个 class 保留只是为了旧代码不报错。 */
+.mb-tools-busy-overlay {
+  display: none;
+}
+
+.mb-tools-pane-right {
+  position: relative;
+  min-height: 420px;
+}
+
+/* 新版：流内进度卡片 —— 不依赖父容器高度，自己 flex:1 撑开 */
+.mb-tools-busy-card {
+  flex: 1;
+  min-height: 320px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 32px 28px;
+  background: linear-gradient(
+    135deg,
+    rgba(59, 130, 246, 0.08),
+    rgba(168, 85, 247, 0.06)
+  );
+  border: 1px solid var(--mb-border-soft);
+  border-radius: 12px;
+  position: relative;
+  overflow: hidden;
+}
+
+.mb-tools-busy-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    circle at 50% 50%,
+    rgba(59, 130, 246, 0.05),
+    transparent 70%
+  );
+  pointer-events: none;
+  animation: mb-busy-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes mb-busy-pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+.mb-tools-busy-card .mb-tools-progress-bar {
+  width: 100%;
+  max-width: 360px;
+}
+
+.mb-tools-busy-card .mb-tools-progress-phase {
+  font-size: 13px;
+  color: var(--mb-text-primary);
+  text-align: center;
+  z-index: 1;
+}
+
+.mb-tools-busy-card .mb-tools-progress-pct {
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--mb-accent);
+  z-index: 1;
+}
+
+/* ─── Real-ESRGAN：引擎已装条（默认折叠） ────────── */
+
+.mb-tools-engine-installed-fold {
+  border: 1px solid var(--mb-border-soft);
+  border-radius: 8px;
+  background: var(--mb-bg-hover);
+}
+
+.mb-tools-engine-installed-summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--mb-text-secondary);
+  user-select: none;
+}
+
+.mb-tools-engine-installed-summary::-webkit-details-marker {
+  display: none;
+}
+
+.mb-tools-engine-installed-summary:hover {
+  background: var(--mb-bg-card-hover);
+  border-radius: 8px;
+}
+
+.mb-tools-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.mb-tools-status-dot.is-ok {
+  background: rgb(34, 197, 94);
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.18);
+}
+
+.mb-tools-summary-spacer {
+  flex: 1;
+}
+
+.mb-tools-summary-toggle {
+  font-size: 10px;
+  color: var(--mb-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.mb-tools-engine-installed-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--mb-border-soft);
+}
+
+.mb-tools-engine-installed-path {
+  font-size: 10px;
+  color: var(--mb-text-muted);
+  font-family: Consolas, ui-monospace, monospace;
+  word-break: break-all;
+  background: transparent;
+  padding: 0;
+}
+
+/* ─── 批量输入列表 ───────────────────── */
+
+.mb-tools-batch-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mb-tools-batch-files {
+  list-style: none;
+  padding: 8px 10px;
+  margin: 0;
+  background: var(--mb-bg-hover);
+  border: 1px solid var(--mb-border-soft);
+  border-radius: 10px;
+  font-size: 11px;
+  color: var(--mb-text-secondary);
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.mb-tools-batch-files li {
+  padding: 2px 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mb-tools-batch-more {
+  color: var(--mb-text-muted);
+  font-style: italic;
+}
+
+/* ─── 批量结果列表 ───────────────────── */
+
+.mb-tools-batch-results {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mb-tools-batch-results-list {
+  list-style: none;
+  padding: 8px 10px;
+  margin: 0;
+  background: var(--mb-bg-hover);
+  border: 1px solid var(--mb-border-soft);
+  border-radius: 10px;
+  font-size: 11px;
+  color: var(--mb-text-secondary);
+  max-height: 360px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mb-tools-batch-results-list li {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 6px;
+  align-items: center;
+  padding: 4px 6px;
+  border-radius: 6px;
+}
+
+.mb-tools-batch-results-list li:hover {
+  background: var(--mb-bg-active);
+}
+
+.mb-tools-batch-results-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--mb-text-primary);
+}
+
+.mb-tools-batch-results-dim {
+  color: var(--mb-text-muted);
+  font-size: 10px;
+}
+
+/* ─── HYPIR 依赖检查 ───────────────────── */
+
+.mb-tools-hypir-intro {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mb-tools-hypir-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mb-tools-hypir-check {
+  display: grid;
+  grid-template-columns: auto 160px 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--mb-border-soft);
+  background: var(--mb-bg-hover);
+  font-size: 12px;
+}
+
+.mb-tools-hypir-check.is-ok {
+  border-color: rgba(34, 197, 94, 0.45);
+}
+
+.mb-tools-hypir-check.is-fail {
+  border-color: rgba(239, 68, 68, 0.45);
+}
+
+.mb-tools-hypir-check-icon {
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.mb-tools-hypir-check.is-ok .mb-tools-hypir-check-icon {
+  background: rgba(34, 197, 94, 0.18);
+  color: rgb(34, 197, 94);
+}
+
+.mb-tools-hypir-check.is-fail .mb-tools-hypir-check-icon {
+  background: rgba(239, 68, 68, 0.18);
+  color: rgb(239, 68, 68);
+}
+
+.mb-tools-hypir-check-label {
+  font-weight: 600;
+  color: var(--mb-text-primary);
+}
+
+.mb-tools-hypir-check-detail {
+  color: var(--mb-text-muted);
+  font-size: 11px;
+  font-family: Consolas, ui-monospace, monospace;
+  word-break: break-all;
+}
+
+.mb-tools-hypir-check-actions {
+  justify-self: end;
+}
+
+.mb-tools-hypir-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  margin-top: 4px;
+}
+
+.mb-tools-hypir-summary.is-ok {
+  background: rgba(34, 197, 94, 0.12);
+  color: rgb(34, 197, 94);
+}
+
+.mb-tools-hypir-summary.is-block {
+  background: rgba(239, 68, 68, 0.12);
+  color: rgb(239, 68, 68);
+}
+
+/* ─── HYPIR 状态机横幅 ───────────────────── */
+
+.mb-hypir-banner {
+  border: 1px solid var(--mb-border-soft);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: var(--mb-bg-hover);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mb-hypir-banner.is-server-ready,
+.mb-hypir-banner.is-completed {
+  border-color: rgba(34, 197, 94, 0.45);
+  background: rgba(34, 197, 94, 0.06);
+}
+
+.mb-hypir-banner.is-processing {
+  border-color: rgba(59, 130, 246, 0.45);
+  background: rgba(59, 130, 246, 0.06);
+}
+
+.mb-hypir-banner.is-failed,
+.mb-hypir-banner.is-not-installed,
+.mb-hypir-banner.is-gpu-unavailable {
+  border-color: rgba(239, 68, 68, 0.45);
+  background: rgba(239, 68, 68, 0.06);
+}
+
+.mb-hypir-banner.is-missing-runtime,
+.mb-hypir-banner.is-missing-models,
+.mb-hypir-banner.is-server-stopped {
+  border-color: rgba(251, 146, 60, 0.45);
+  background: rgba(251, 146, 60, 0.06);
+}
+
+.mb-hypir-banner-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mb-hypir-banner-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--mb-text-primary);
+}
+
+.mb-hypir-banner-spacer {
+  flex: 1;
+}
+
+.mb-hypir-banner-path {
+  font-size: 10px;
+  color: var(--mb-text-muted);
+  font-family: Consolas, ui-monospace, monospace;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: transparent;
+  padding: 0;
+}
+
+.mb-hypir-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.mb-hypir-dot.is-gray {
+  background: var(--mb-text-muted);
+}
+
+.mb-hypir-dot.is-green {
+  background: rgb(34, 197, 94);
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.22);
+}
+
+.mb-hypir-dot.is-blue {
+  background: rgb(59, 130, 246);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.22);
+  animation: mb-hypir-pulse 1.4s ease-in-out infinite;
+}
+
+.mb-hypir-dot.is-amber {
+  background: rgb(251, 146, 60);
+  box-shadow: 0 0 0 3px rgba(251, 146, 60, 0.22);
+}
+
+.mb-hypir-dot.is-red {
+  background: rgb(239, 68, 68);
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.22);
+}
+
+@keyframes mb-hypir-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.mb-hypir-banner-body {
+  font-size: 12px;
+  color: var(--mb-text-secondary);
+  line-height: 1.55;
+}
+
+.mb-hypir-banner-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+  align-items: center;
+}
+
+.mb-hypir-server-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--mb-text-secondary);
+}
+
+.mb-hypir-server-info code {
+  font-size: 11px;
+  color: var(--mb-text-primary);
+}
+
+/* ─── 提示词预设选择器 ───────────────────── */
+
+.mb-textarea {
+  resize: vertical;
+  min-height: 44px;
+  font-family: inherit;
+  line-height: 1.5;
+}
+
+.mb-prompt-presets {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background: var(--mb-bg-hover);
+  border: 1px solid var(--mb-border-soft);
+  border-radius: 10px;
+}
+
+.mb-prompt-presets-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--mb-border-soft);
+  padding-bottom: 6px;
+}
+
+.mb-prompt-presets-tab {
+  border: none;
+  background: transparent;
+  color: var(--mb-text-muted);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 4px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all var(--mb-duration-fast) var(--mb-ease);
+}
+
+.mb-prompt-presets-tab:hover:not(:disabled) {
+  color: var(--mb-text-primary);
+  background: var(--mb-bg-card-hover);
+}
+
+.mb-prompt-presets-tab.is-active {
+  color: var(--mb-accent);
+  background: var(--mb-accent-soft);
+}
+
+.mb-prompt-presets-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.mb-prompt-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--mb-border);
+  background: var(--mb-bg-card);
+  color: var(--mb-text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all var(--mb-duration-fast) var(--mb-ease);
+  user-select: none;
+  white-space: nowrap;
+}
+
+.mb-prompt-chip:hover:not(:disabled) {
+  border-color: var(--mb-border-strong);
+  color: var(--mb-text-primary);
+  background: var(--mb-bg-card-hover);
+}
+
+.mb-prompt-chip.is-selected {
+  background: var(--mb-accent);
+  color: white;
+  border-color: var(--mb-accent);
+}
+
+/* tone 标记：让强锐化 / 弱锐化的 chip 用不同视觉提示 */
+.mb-prompt-chip.is-sharper:not(.is-selected) {
+  border-color: rgba(251, 146, 60, 0.4);
+  color: rgba(251, 146, 60, 0.95);
+}
+
+.mb-prompt-chip.is-softer:not(.is-selected) {
+  border-color: rgba(34, 197, 94, 0.4);
+  color: rgba(34, 197, 94, 0.95);
+}
+
+.mb-prompt-chip-check {
+  font-size: 10px;
+  opacity: 0.8;
+}
+
+.mb-prompt-chip:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ─── mengbi v1.2 ：AI 修复放大新组件（强度预设 / 批量 / 卸载 / 结果信息） ─── */
+
+/* 警示卡 —— 反过度锐化教育 */
+.mb-tools-warn-card {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: var(--mb-bg-card-hover);
+  border: 1px solid var(--mb-border-soft);
+  border-left: 3px solid var(--mb-accent-warm, #f59e0b);
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--mb-text-secondary);
+}
+.mb-tools-warn-card strong {
+  color: var(--mb-text-primary);
+}
+
+/* 单图 / 批量切换 tabs */
+.mb-tools-mode-tabs {
+  display: inline-flex;
+  gap: 4px;
+  margin: 14px 0 0;
+  padding: 4px;
+  background: var(--mb-bg-card-hover);
+  border-radius: 12px;
+  width: fit-content;
+}
+.mb-tools-mode-tab {
+  border: none;
+  background: transparent;
+  color: var(--mb-text-secondary);
+  font-size: 12px;
+  padding: 6px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s var(--mb-ease-default), color 0.15s var(--mb-ease-default);
+}
+.mb-tools-mode-tab:hover:not(:disabled) {
+  color: var(--mb-text-primary);
+}
+.mb-tools-mode-tab.is-active {
+  background: var(--mb-bg-elev);
+  color: var(--mb-text-primary);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+.mb-tools-mode-tab:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* 批量文件选择器 */
+.mb-tools-batch-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+}
+.mb-tools-batch-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.mb-tools-batch-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--mb-bg-card-hover);
+  border: 1px solid var(--mb-border-soft);
+  border-radius: 10px;
+}
+.mb-tools-batch-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+.mb-tools-batch-list li:hover {
+  background: var(--mb-bg-elev);
+}
+.mb-tools-batch-idx {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--mb-text-secondary);
+  background: var(--mb-bg-elev);
+  border-radius: 6px;
+}
+.mb-tools-batch-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--mb-text-primary);
+}
+.mb-tools-batch-status,
+.mb-tools-batch-meta,
+.mb-tools-batch-err {
+  font-size: 11px;
+  color: var(--mb-text-muted);
+  font-family: Consolas, ui-monospace, monospace;
+  white-space: nowrap;
+}
+.mb-tools-batch-list.is-status li.is-running {
+  background: var(--mb-bg-elev);
+  outline: 1px solid var(--mb-border-emphasis, rgba(99, 102, 241, 0.25));
+}
+.mb-tools-batch-list.is-status li.is-done .mb-tools-batch-status,
+.mb-tools-batch-list.is-status li.is-done .mb-tools-batch-meta {
+  color: rgb(22, 163, 74);
+}
+.mb-tools-batch-list.is-status li.is-failed .mb-tools-batch-status,
+.mb-tools-batch-list.is-status li.is-failed .mb-tools-batch-err {
+  color: rgb(220, 38, 38);
+}
+.mb-tools-batch-list.is-status li.is-cancelled {
+  opacity: 0.55;
+}
+
+/* 批量进度区（右侧） */
+.mb-tools-batch-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1;
+  min-height: 320px;
+}
+.mb-tools-batch-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--mb-bg-card-hover);
+  border: 1px solid var(--mb-border-soft);
+  border-radius: 10px;
+  font-size: 12px;
+}
+.mb-tools-batch-header strong {
+  color: var(--mb-text-primary);
+}
+
+/* 强度 / 高光保护 toggle row */
+.mb-tools-toggle-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+@media (max-width: 980px) {
+  .mb-tools-toggle-row { grid-template-columns: 1fr; }
+}
+.mb-tools-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--mb-border-soft);
+  border-radius: 10px;
+  cursor: pointer;
+  background: var(--mb-bg-card-hover);
+  transition: border-color 0.15s var(--mb-ease-default), background 0.15s var(--mb-ease-default);
+}
+.mb-tools-toggle:hover:not(.is-disabled) {
+  background: var(--mb-bg-elev);
+}
+.mb-tools-toggle.is-on {
+  border-color: var(--mb-accent-default, var(--mb-text-link, rgba(99, 102, 241, 0.55)));
+  background: var(--mb-bg-elev);
+}
+.mb-tools-toggle.is-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.mb-tools-toggle input[type="checkbox"] {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.mb-tools-toggle-box {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 1.5px solid var(--mb-border-strong, var(--mb-border-soft));
+  border-radius: 5px;
+  color: var(--mb-bg-elev);
+  background: var(--mb-bg-elev);
+  margin-top: 1px;
+  transition: all 0.15s var(--mb-ease-default);
+}
+.mb-tools-toggle.is-on .mb-tools-toggle-box {
+  background: var(--mb-accent-default, currentColor);
+  border-color: var(--mb-accent-default, currentColor);
+  color: white;
+}
+.mb-tools-toggle-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.mb-tools-toggle-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--mb-text-primary);
+}
+.mb-tools-toggle-hint {
+  font-size: 11px;
+  color: var(--mb-text-muted);
+  line-height: 1.4;
+}
+
+/* 默认 negative prompt 展示 */
+.mb-tools-hint-box {
+  margin-top: 4px;
+  padding: 8px 10px;
+  background: var(--mb-bg-card-hover);
+  border: 1px dashed var(--mb-border-soft);
+  border-radius: 8px;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--mb-text-muted);
+}
+.mb-tools-hint-box code {
+  display: block;
+  margin-top: 4px;
+  font-family: Consolas, ui-monospace, monospace;
+  font-size: 10.5px;
+  color: var(--mb-text-secondary);
+  word-break: break-word;
+  white-space: normal;
+}
+
+/* 结果信息卡 */
+.mb-tools-result-info {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--mb-bg-card-hover);
+  border: 1px solid var(--mb-border-soft);
+  border-radius: 10px;
+}
+.mb-tools-result-info-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 14px;
+  margin-bottom: 8px;
+}
+@media (max-width: 980px) {
+  .mb-tools-result-info-grid { grid-template-columns: 1fr; }
+}
+.mb-tools-result-info-grid > div {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+}
+.mb-tools-result-info-k {
+  flex-shrink: 0;
+  color: var(--mb-text-muted);
+  min-width: 56px;
+}
+.mb-tools-result-info-v {
+  color: var(--mb-text-primary);
+  font-weight: 500;
+  word-break: break-word;
+}
+.mb-tools-result-info-sub {
+  margin-left: 6px;
+  color: var(--mb-text-muted);
+  font-weight: 400;
+  font-size: 11px;
+}
+
+/* HYPIR 修复深度警告：当用户选了与显存里不一致的深度，弹出提示 */
+.mb-tools-depth-warn {
+  display: inline;
+  color: rgb(244, 162, 97);
+  font-weight: 500;
+}
+.mb-tools-depth-warn code {
+  padding: 1px 5px;
+  margin: 0 2px;
+  background: rgba(244, 162, 97, 0.12);
+  border-radius: 4px;
+  font-family: Consolas, ui-monospace, monospace;
+  font-size: 11px;
+}
+
+/* ──────────────────────────────────────────────────────────────────
+ * mb-tlx-* —— ToolsPanelLayout 新视觉系统(2026-05-28)
+ * 3 个面板共用:Real-ESRGAN / HYPIR / SUPIR
+ * 跟矢量化(mb-vec-*)视觉风格一致,但保留各自的标识色
+ * ──────────────────────────────────────────────────────────────────*/
+
+.mb-tlx {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  height: 100%;
+  min-height: 600px;
+}
+
+/* ── Header ───────────────────────────────────────────── */
+
+.mb-tlx-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 14px;
+  border-radius: var(--mb-radius-card, 20px);
+  background: var(--mb-color-surface-1, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--mb-color-border-soft, rgba(255, 255, 255, 0.06));
+}
+.mb-tlx-header-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--mb-color-text-1, #e6e6e6);
+}
+.mb-tlx-header-subtitle {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--mb-color-text-muted, #888);
+  margin-left: 6px;
+}
+.mb-tlx-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 顶栏 chip(就绪 / 未装 / 错误) */
+.mb-tlx-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  border: 1px solid transparent;
+}
+.mb-tlx-chip.is-ok {
+  background: rgba(34, 197, 94, 0.16);
+  border-color: rgba(34, 197, 94, 0.35);
+  color: #86efac;
+}
+.mb-tlx-chip.is-warn {
+  background: color-mix(in srgb, var(--mb-color-warn, #f59e0b) 16%, transparent);
+  border-color: color-mix(in srgb, var(--mb-color-warn, #f59e0b) 35%, transparent);
+  color: var(--mb-color-warn, #f59e0b);
+}
+.mb-tlx-chip.is-err {
+  background: color-mix(in srgb, var(--mb-color-danger, #ef4444) 14%, transparent);
+  border-color: color-mix(in srgb, var(--mb-color-danger, #ef4444) 35%, transparent);
+  color: var(--mb-color-danger, #ef4444);
+}
+
+/* ── Main grid ───────────────────────────────────────── */
+
+.mb-tlx-main {
+  display: grid;
+  grid-template-columns: minmax(380px, 460px) 1fr;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+}
+.mb-tlx-left,
+.mb-tlx-right {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* ── Input card ──────────────────────────────────────── */
+
+.mb-tlx-input-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border-radius: var(--mb-radius-card, 20px);
+  background: var(--mb-color-surface-1, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--mb-color-border-soft, rgba(255, 255, 255, 0.06));
+  overflow-y: auto;
+  flex: 1;
+}
+
+/* ── Output card ─────────────────────────────────────── */
+
+.mb-tlx-output-card {
+  display: flex;
+  flex-direction: column;
+  padding: 14px;
+  border-radius: var(--mb-radius-card, 20px);
+  background: var(--mb-color-surface-1, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--mb-color-border-soft, rgba(255, 255, 255, 0.06));
+  overflow: hidden;
+  flex: 1;
+  min-height: 0;
+}
+.mb-tlx-output-card.is-progress,
+.mb-tlx-output-card.is-empty {
+  align-items: center;
+  justify-content: center;
+}
+
+/* ── Banner ──────────────────────────────────────────── */
+
+.mb-tlx-banner {
+  padding: 8px 12px;
+  border-radius: var(--mb-radius-input, 12px);
+  font-size: 12.5px;
+  border: 1px solid transparent;
+}
+.mb-tlx-banner.is-info {
+  background: color-mix(in srgb, var(--mb-color-primary, #f59e0b) 8%, transparent);
+  border-color: color-mix(in srgb, var(--mb-color-primary, #f59e0b) 22%, transparent);
+  color: var(--mb-color-text-1, #e6e6e6);
+}
+.mb-tlx-banner.is-warn {
+  background: color-mix(in srgb, var(--mb-color-warn, #f59e0b) 12%, transparent);
+  border-color: color-mix(in srgb, var(--mb-color-warn, #f59e0b) 28%, transparent);
+  color: var(--mb-color-warn, #f59e0b);
+}
+.mb-tlx-banner.is-error {
+  background: color-mix(in srgb, var(--mb-color-danger, #ef4444) 12%, transparent);
+  border-color: var(--mb-color-danger, #ef4444);
+  color: var(--mb-color-danger, #ef4444);
+}
+.mb-tlx-banner.is-ok {
+  background: rgba(34, 197, 94, 0.14);
+  border-color: rgba(34, 197, 94, 0.32);
+  color: #86efac;
+}
+
+/* ── Section title (左卡内部小标题) ──────────────────── */
+
+.mb-tlx-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--mb-color-text-muted, #888);
+  padding-bottom: 4px;
+}
+
+/* ── 模式选择 grid (Real-ESRGAN 7 模式) ──────────────── */
+
+.mb-tlx-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 6px;
+}
+.mb-tlx-mode-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--mb-color-surface-2, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--mb-color-border-soft, rgba(255, 255, 255, 0.06));
+  cursor: pointer;
+  text-align: left;
+  color: var(--mb-color-text-1, #e6e6e6);
+  position: relative;
+  transition: border-color 120ms, background 120ms;
+}
+.mb-tlx-mode-card:hover {
+  background: var(--mb-color-surface-3, rgba(255, 255, 255, 0.07));
+}
+.mb-tlx-mode-card.is-active {
+  border-color: var(--mb-color-primary, #f59e0b);
+  background: color-mix(in srgb, var(--mb-color-primary, #f59e0b) 14%, transparent);
+}
+.mb-tlx-mode-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+.mb-tlx-mode-tagline {
+  font-size: 10.5px;
+  color: var(--mb-color-text-muted, #888);
+  line-height: 1.3;
+}
+.mb-tlx-mode-flag {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--mb-color-warn, #f59e0b) 18%, transparent);
+  color: var(--mb-color-warn, #f59e0b);
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.3px;
+}
+/* 不同类别淡色边带 */
+.mb-tlx-mode-card.is-cat-general {
+  border-left: 3px solid rgba(34, 197, 94, 0.55);
+}
+.mb-tlx-mode-card.is-cat-anime {
+  border-left: 3px solid rgba(168, 85, 247, 0.55);
+}
+.mb-tlx-mode-card.is-cat-sharp {
+  border-left: 3px solid rgba(244, 114, 182, 0.55);
+}
+.mb-tlx-mode-card.is-cat-custom {
+  border-left: 3px solid rgba(180, 180, 180, 0.5);
+}
+
+/* ── 模式详情卡 ──────────────────────────────────────── */
+
+.mb-tlx-mode-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--mb-color-surface-2, rgba(255, 255, 255, 0.03));
+  font-size: 12px;
+}
+.mb-tlx-mode-detail-desc {
+  color: var(--mb-color-text-2, #b8b8b8);
+  line-height: 1.5;
+}
+.mb-tlx-mode-detail-mapping {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 10px;
+  align-items: center;
+  padding-top: 4px;
+  font-size: 11px;
+}
+.mb-tlx-mode-detail-mapping .mb-tlx-key {
+  color: var(--mb-color-text-muted, #888);
+}
+.mb-tlx-mode-detail-mapping .mb-tlx-val {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11px;
+  color: var(--mb-color-text-1, #e6e6e6);
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--mb-color-surface-3, rgba(255, 255, 255, 0.04));
+}
+.mb-tlx-mode-detail-mapping .mb-tlx-val.is-warn {
+  color: var(--mb-color-warn, #f59e0b);
+  background: color-mix(in srgb, var(--mb-color-warn, #f59e0b) 10%, transparent);
+}
+.mb-tlx-mode-detail-mapping .mb-tlx-val.is-ok {
+  color: #86efac;
+  background: rgba(34, 197, 94, 0.12);
+}
+.mb-tlx-mode-detail-unavailable {
+  color: var(--mb-color-danger, #ef4444);
+  font-size: 11px;
+}
+.mb-tlx-mode-detail-custom {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 4px;
+}
+
+/* ── Fields ──────────────────────────────────────────── */
+
+.mb-tlx-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mb-tlx-field-label {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--mb-color-text-2, #b8b8b8);
+}
+.mb-tlx-field-body {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.mb-tlx-field-hint {
+  font-size: 10.5px;
+  color: var(--mb-color-text-muted, #888);
+  line-height: 1.4;
+}
+
+.mb-tlx-input,
+.mb-tlx-select {
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: var(--mb-color-surface-3, rgba(255, 255, 255, 0.06));
+  border: 1px solid var(--mb-color-border-soft, rgba(255, 255, 255, 0.08));
+  color: var(--mb-color-text-1, #e6e6e6);
+  font-size: 12px;
+  width: 100%;
+}
+.mb-tlx-input:focus,
+.mb-tlx-select:focus {
+  outline: none;
+  border-color: var(--mb-color-primary, #f59e0b);
+}
+
+/* ── Segmented control ───────────────────────────────── */
+
+.mb-tlx-seg {
+  display: inline-flex;
+  border-radius: 8px;
+  background: var(--mb-color-surface-3, rgba(255, 255, 255, 0.05));
+  padding: 2px;
+  gap: 2px;
+}
+.mb-tlx-seg-item {
+  padding: 4px 12px;
+  border-radius: 6px;
+  background: transparent;
+  border: none;
+  color: var(--mb-color-text-2, #b8b8b8);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+.mb-tlx-seg-item:hover {
+  color: var(--mb-color-text-1, #e6e6e6);
+}
+.mb-tlx-seg-item.is-active {
+  background: var(--mb-color-primary, #f59e0b);
+  color: #1a1108;
+  font-weight: 600;
+}
+
+/* ── Primary settings group ──────────────────────────── */
+
+.mb-tlx-primary-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ── Advanced settings group ─────────────────────────── */
+
+.mb-tlx-advanced {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* CheckRow */
+.mb-tlx-check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--mb-color-text-1, #e6e6e6);
+  cursor: pointer;
+}
+.mb-tlx-check-row.is-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.mb-tlx-check-row input[type='checkbox'] {
+  accent-color: var(--mb-color-primary, #f59e0b);
+}
+
+/* ── Submit bar ──────────────────────────────────────── */
+
+.mb-tlx-submit-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--mb-color-border-soft, rgba(255, 255, 255, 0.06));
+}
+.mb-tlx-submit-btn {
+  font-size: 13px;
+  padding: 8px 16px;
+  flex: 1;
+  max-width: 200px;
+}
+.mb-tlx-submit-hint {
+  font-size: 11px;
+  color: var(--mb-color-text-muted, #888);
+  flex: 1;
+  line-height: 1.4;
+}
+
+/* ── Batch input ─────────────────────────────────────── */
+
+.mb-tlx-row-buttons {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.mb-tlx-batch-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mb-tlx-batch-files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 120px;
+  overflow-y: auto;
+  font-size: 11.5px;
+  color: var(--mb-color-text-2, #b8b8b8);
+}
+.mb-tlx-batch-files li {
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+.mb-tlx-batch-files li:hover {
+  background: var(--mb-color-surface-3, rgba(255, 255, 255, 0.04));
+}
+.mb-tlx-batch-more {
+  font-style: italic;
+  color: var(--mb-color-text-muted, #888);
+}
+.mb-tlx-placeholder {
+  padding: 14px;
+  border: 1px dashed var(--mb-color-border-soft, rgba(255, 255, 255, 0.1));
+  border-radius: 10px;
+  color: var(--mb-color-text-muted, #888);
+  font-size: 12px;
+  text-align: center;
+}
+
+/* ── Output panes ────────────────────────────────────── */
+
+.mb-tlx-empty {
+  margin: auto;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 280px;
+  color: var(--mb-color-text-2, #b8b8b8);
+}
+.mb-tlx-empty-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--mb-color-text-1, #e6e6e6);
+}
+.mb-tlx-empty-sub {
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.mb-tlx-progress {
+  margin: auto;
+  width: 75%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.mb-tlx-progress-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--mb-color-text-1, #e6e6e6);
+}
+.mb-tlx-progress-bar {
+  width: 100%;
+  height: 6px;
+  background: var(--mb-color-surface-3, rgba(255, 255, 255, 0.08));
+  border-radius: 999px;
+  overflow: hidden;
+}
+.mb-tlx-progress-fill {
+  height: 100%;
+  background: var(--mb-color-primary, #f59e0b);
+  transition: width 200ms;
+}
+.mb-tlx-progress-pct {
+  font-variant-numeric: tabular-nums;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--mb-color-primary, #f59e0b);
+}
+.mb-tlx-progress-detail {
+  color: var(--mb-color-text-muted, #888);
+  font-size: 11.5px;
+}
+
+/* ── Single result ───────────────────────────────────── */
+
+.mb-tlx-result-single {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.mb-tlx-result-img {
+  max-width: 100%;
+  border-radius: 10px;
+  display: block;
+  background:
+    linear-gradient(45deg, rgba(255, 255, 255, 0.04) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(255, 255, 255, 0.04) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(255, 255, 255, 0.04) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(255, 255, 255, 0.04) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+.mb-tlx-result-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--mb-color-surface-2, rgba(255, 255, 255, 0.04));
+  font-size: 12px;
+  color: var(--mb-color-text-1, #e6e6e6);
+}
+.mb-tlx-result-meta em {
+  font-style: normal;
+  color: var(--mb-color-text-muted, #888);
+  font-size: 10.5px;
+  margin-right: 3px;
+}
+
+/* ── Batch result ────────────────────────────────────── */
+
+.mb-tlx-result-batch {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+}
+.mb-tlx-result-batch-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--mb-color-text-1, #e6e6e6);
+}
+.mb-tlx-result-batch-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11.5px;
+}
+.mb-tlx-result-batch-list li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--mb-color-surface-2, rgba(255, 255, 255, 0.03));
+}
+
+/* ── Installer (引擎引导) ──────────────────────────── */
+
+.mb-tlx-installer {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 12px;
+  background: var(--mb-color-surface-2, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--mb-color-border-soft, rgba(255, 255, 255, 0.06));
+}
+.mb-tlx-installer-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--mb-color-text-1, #e6e6e6);
+}
+.mb-tlx-installer-sub {
+  font-size: 12px;
+  color: var(--mb-color-text-2, #b8b8b8);
+  line-height: 1.6;
+  margin: 0;
+}
+.mb-tlx-installer-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 4px;
+}
+.mb-tlx-installer-progress-bar {
+  height: 4px;
+  background: var(--mb-color-primary, #f59e0b);
+  border-radius: 999px;
+  transition: width 200ms;
+}
+.mb-tlx-installer-error {
+  font-size: 11px;
+  color: var(--mb-color-danger, #ef4444);
+}
+.mb-tlx-installer-error pre {
+  margin: 4px 0 0;
+  padding: 8px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 6px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 200px;
+  overflow-y: auto;
+  font-size: 10.5px;
+}
+
+/* ── Collapsible(共享,vec 也用) ───────────────────── */
+
+.mb-collapsible {
+  border: 1px solid var(--mb-color-border-soft, rgba(255, 255, 255, 0.06));
+  border-radius: 10px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--mb-color-surface-2, rgba(255, 255, 255, 0.04)) 50%, transparent);
+}
+.mb-collapsible-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--mb-color-text-1, #e6e6e6);
+  text-align: left;
+}
+.mb-collapsible-head:hover {
+  background: var(--mb-color-surface-3, rgba(255, 255, 255, 0.04));
+}
+.mb-collapsible-title {
+  flex: 1;
+  font-weight: 500;
+}
+.mb-collapsible-badge {
+  font-size: 11px;
+  color: var(--mb-color-text-muted, #888);
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--mb-color-surface-3, rgba(255, 255, 255, 0.06));
+}
+.mb-collapsible.is-open .mb-collapsible-head {
+  border-bottom: 1px solid var(--mb-color-border-soft, rgba(255, 255, 255, 0.06));
+}
+.mb-collapsible-body {
+  padding: 12px;
+}
+
+/* ── 响应式 ─────────────────────────────────────────── */
+
+@media (max-width: 1280px) {
+  .mb-tlx-main {
+    grid-template-columns: minmax(340px, 400px) 1fr;
+  }
+}
+@media (max-width: 1024px) {
+  .mb-tlx-main {
+    grid-template-columns: 1fr;
+  }
+  .mb-tlx-right {
+    min-height: 380px;
+  }
+}
+
