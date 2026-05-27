@@ -21,6 +21,7 @@ import {
 import { EngineBadge } from './components/EngineBadge';
 import { QualityScoreBadge } from './components/QualityScoreBadge';
 import { FallbackBanner } from './components/FallbackBanner';
+import { localPathToImageUrl } from '@/lib/imageUrl';
 import type { VecReport } from '@/types/ipc';
 
 export function TaskDetail(): JSX.Element {
@@ -45,7 +46,7 @@ export function TaskDetail(): JSX.Element {
     setSvgText('');
     setReport(null);
     if (!task || task.status !== 'succeeded' || !task.outputPath) return;
-    const url = filePathToUrl(task.outputPath);
+    const url = localPathToImageUrl(task.outputPath);
     fetch(url)
       .then((r) => r.text())
       .then(setSvgText)
@@ -135,13 +136,13 @@ export function TaskDetail(): JSX.Element {
             <div className="mb-vec-detail-pane">
               <div className="mb-vec-detail-pane-label">原图</div>
               <div className="mb-vec-detail-pane-frame">
-                <img src={filePathToUrl(task.inputPath)} alt="原图" />
+                <img src={localPathToImageUrl(task.inputPath)} alt="原图" />
               </div>
             </div>
             <div className="mb-vec-detail-pane">
               <div className="mb-vec-detail-pane-label">矢量结果</div>
               <div className="mb-vec-detail-pane-frame is-checker">
-                <object data={filePathToUrl(task.outputPath)} type="image/svg+xml" aria-label="SVG 预览" />
+                <object data={localPathToImageUrl(task.outputPath)} type="image/svg+xml" aria-label="SVG 预览" />
               </div>
             </div>
           </div>
@@ -199,7 +200,9 @@ export function TaskDetail(): JSX.Element {
             <button
               type="button"
               className="mb-btn mb-btn-ghost mb-btn-sm"
-              onClick={() => void window.electronAPI.storage.openUrl(filePathToUrl(task.outputPath!))}
+              onClick={() =>
+                void window.electronAPI.storage.openPath({ targetPath: task.outputPath! })
+              }
             >
               浏览器打开
             </button>
@@ -241,9 +244,4 @@ export function TaskDetail(): JSX.Element {
       )}
     </div>
   );
-}
-
-function filePathToUrl(p: string): string {
-  const normalized = p.replace(/\\/g, '/');
-  return normalized.startsWith('/') ? `file://${normalized}` : `file:///${normalized}`;
 }
