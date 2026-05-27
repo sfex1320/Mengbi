@@ -2011,6 +2011,378 @@
   padding: 12px;
 }
 
+/* ──────────────────────────────────────────────────────
+ * CustomSelect(自定义深色下拉,替代 native <select>)
+ * ──────────────────────────────────────────────────────*/
+
+.mb-cs-head {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--mb-color-surface-3, rgba(255, 255, 255, 0.06));
+  border: 1px solid var(--mb-color-border-soft, rgba(255, 255, 255, 0.08));
+  color: var(--mb-color-text-1, #e6e6e6);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 120ms;
+}
+.mb-cs-head:hover {
+  border-color: var(--mb-color-border, rgba(255, 255, 255, 0.16));
+}
+.mb-cs-head.is-open {
+  border-color: var(--mb-color-primary, #f59e0b);
+}
+.mb-cs-head.is-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.mb-cs-head-content {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mb-cs-placeholder {
+  color: var(--mb-color-text-muted, #888);
+}
+
+.mb-cs-popover {
+  z-index: 999;
+  background: var(--mb-color-surface-1, rgba(28, 28, 32, 0.98));
+  border: 1px solid var(--mb-color-border, rgba(255, 255, 255, 0.12));
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.5),
+    0 2px 6px rgba(0, 0, 0, 0.3);
+  overflow-y: auto;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--mb-color-text-1, #e6e6e6);
+  /* 应对 backdrop-filter 不可用的浏览器(Electron 28 OK) */
+  backdrop-filter: blur(8px);
+}
+.mb-cs-group {
+  display: flex;
+  flex-direction: column;
+}
+.mb-cs-group + .mb-cs-group {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--mb-color-border-soft, rgba(255, 255, 255, 0.05));
+}
+.mb-cs-group-title {
+  padding: 4px 10px 2px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--mb-color-text-muted, #888);
+}
+
+.mb-cs-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  background: transparent;
+  border-radius: 5px;
+  text-align: left;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--mb-color-text-1, #e6e6e6);
+  cursor: pointer;
+  transition: background 80ms;
+}
+.mb-cs-item.is-hover,
+.mb-cs-item:hover:not(.is-disabled) {
+  background: var(--mb-color-surface-3, rgba(255, 255, 255, 0.06));
+}
+.mb-cs-item.is-active {
+  background: color-mix(in srgb, var(--mb-color-primary, #f59e0b) 22%, transparent);
+  color: var(--mb-color-primary, #f59e0b);
+  font-weight: 600;
+}
+.mb-cs-item.is-disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.mb-cs-item-content {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+.mb-cs-item-label {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mb-cs-item-meta {
+  font-size: 10.5px;
+  color: var(--mb-color-text-muted, #888);
+  font-family: ui-monospace, Consolas, monospace;
+}
+
+/* ──────────────────────────────────────────────────────
+ * ImageCompareViewer(原图 / 结果对比,缩放 / 拖动 / 滑条)
+ * ──────────────────────────────────────────────────────*/
+
+.mb-icv {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  height: 100%;
+  min-height: 280px;
+}
+.mb-icv-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: var(--mb-color-surface-2, rgba(255, 255, 255, 0.04));
+  border-radius: 8px;
+  font-size: 11px;
+}
+.mb-icv-toolbar-info {
+  flex: 1;
+  color: var(--mb-color-text-muted, #888);
+}
+.mb-icv-toolbar-zoom {
+  font-variant-numeric: tabular-nums;
+  min-width: 50px;
+  text-align: center;
+}
+.mb-icv-stage {
+  position: relative;
+  flex: 1;
+  overflow: hidden;
+  border-radius: 10px;
+  background:
+    linear-gradient(45deg, rgba(255, 255, 255, 0.04) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(255, 255, 255, 0.04) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(255, 255, 255, 0.04) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(255, 255, 255, 0.04) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  cursor: grab;
+  user-select: none;
+}
+.mb-icv-stage.is-dragging {
+  cursor: grabbing;
+}
+.mb-icv-canvas {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform-origin: 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.mb-icv-img {
+  display: block;
+  max-width: none;
+  max-height: none;
+  pointer-events: none;
+  user-select: none;
+}
+/* 上下层叠用于"切换"模式;wipe 模式用 clip-path */
+.mb-icv-layer {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.mb-icv-layer.is-wipe {
+  /* clip-path 由 inline style 动态控制 */
+}
+.mb-icv-wipe-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--mb-color-primary, #f59e0b);
+  pointer-events: none;
+  box-shadow: 0 0 6px var(--mb-color-primary, #f59e0b);
+}
+.mb-icv-wipe-handle {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--mb-color-primary, #f59e0b);
+  color: #1a1108;
+  font-size: 14px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: ew-resize;
+  pointer-events: auto;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+.mb-icv-mode-toggle {
+  display: inline-flex;
+  border-radius: 6px;
+  background: var(--mb-color-surface-3, rgba(255, 255, 255, 0.06));
+  padding: 2px;
+  gap: 2px;
+}
+.mb-icv-mode-toggle button {
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: transparent;
+  border: none;
+  color: var(--mb-color-text-2, #b8b8b8);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.mb-icv-mode-toggle button.is-active {
+  background: var(--mb-color-primary, #f59e0b);
+  color: #1a1108;
+  font-weight: 600;
+}
+
+/* ──────────────────────────────────────────────────────
+ * 任务列表 / 列表式结果 (像 vec 的 BatchProgressList)
+ * ──────────────────────────────────────────────────────*/
+
+.mb-tlx-task-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex-shrink: 0;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.mb-tlx-task-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--mb-color-surface-2, rgba(255, 255, 255, 0.03));
+  font-size: 11.5px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+.mb-tlx-task-row:hover {
+  background: var(--mb-color-surface-3, rgba(255, 255, 255, 0.05));
+}
+.mb-tlx-task-row.is-selected {
+  border-color: var(--mb-color-primary, #f59e0b);
+  background: color-mix(in srgb, var(--mb-color-primary, #f59e0b) 8%, transparent);
+}
+.mb-tlx-task-row.is-failed .mb-tlx-task-name {
+  color: var(--mb-color-danger, #ef4444);
+}
+.mb-tlx-task-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  color: var(--mb-color-text-1, #e6e6e6);
+}
+.mb-tlx-task-mode-chip {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--mb-color-surface-3, rgba(255, 255, 255, 0.06));
+  color: var(--mb-color-text-2, #b8b8b8);
+  font-size: 10px;
+}
+.mb-tlx-task-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--mb-color-text-muted, #888);
+}
+.mb-tlx-task-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--mb-color-text-muted, #888);
+}
+.mb-tlx-task-dot.is-running {
+  background: var(--mb-color-primary, #f59e0b);
+  animation: vec-pulse 1.4s ease-in-out infinite;
+}
+.mb-tlx-task-dot.is-done {
+  background: rgb(34, 197, 94);
+}
+.mb-tlx-task-dot.is-failed {
+  background: var(--mb-color-danger, #ef4444);
+}
+.mb-tlx-task-bar {
+  grid-column: 1 / -1;
+  height: 2px;
+  background: var(--mb-color-surface-3, rgba(255, 255, 255, 0.08));
+  border-radius: 999px;
+  overflow: hidden;
+}
+.mb-tlx-task-bar-fill {
+  height: 100%;
+  background: var(--mb-color-primary, #f59e0b);
+  transition: width 200ms;
+}
+
+/* 待处理输入区(在右上,可滚的 thumb 行) */
+.mb-tlx-input-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border-radius: 10px;
+  background: var(--mb-color-surface-2, rgba(255, 255, 255, 0.04));
+}
+.mb-tlx-input-strip-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--mb-color-text-1, #e6e6e6);
+  flex-shrink: 0;
+}
+.mb-tlx-input-strip-thumbs {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  flex: 1;
+  min-width: 0;
+}
+.mb-tlx-input-thumb {
+  width: 44px;
+  height: 44px;
+  border-radius: 6px;
+  object-fit: cover;
+  border: 1px solid var(--mb-color-border-soft, rgba(255, 255, 255, 0.08));
+  flex-shrink: 0;
+}
+.mb-tlx-input-strip-empty {
+  flex: 1;
+  font-size: 11px;
+  color: var(--mb-color-text-muted, #888);
+}
+
 /* ── 响应式 ─────────────────────────────────────────── */
 
 @media (max-width: 1280px) {

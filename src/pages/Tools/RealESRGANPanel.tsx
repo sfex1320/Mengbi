@@ -1,18 +1,25 @@
 /**
- * Real-ESRGAN 面板(2026-05-28 全新设计):
- *   - 7 模式系统(智能推荐 / 通用高清 / 通用快速 / 动漫插画 / 动漫视频 / 清晰增强 / 自定义)
- *   - 普通设置 + 高级设置折叠区
- *   - ToolsPanelLayout 左右双卡布局,与 vec / hypir / supir 视觉统一
+ * Real-ESRGAN 面板(2026-05-28 第二轮重设计):
  *
- * 后端能力当前为 ncnn-vulkan v0.2.0(4 个内置模型 + 用户导入 .bin/.param)。
- * spec 里需要 PyTorch 后端的模式(清晰增强 / 通用快速 .pth / face_enhance / .pth 自定义)
- * 在 UI 上明确标"需 PyTorch 后端",运行时回退到能用的近似模型并 toast 提示。
+ * 布局:
+ *   - 左:纯设置(模式 / 模式详情 / 普通参数 / 高级折叠 / 提交)
+ *   - 右:输入区(添加图) + 任务列表(像 vec) + 选中任务的对比预览
+ *
+ * 输入模型统一:不分单/批,用户拖入 N 张就处理 N 张
+ *   - N=1 走 run-single(有 token 级进度)
+ *   - N>=2 走 run-batch(整批跑完一次返回)
+ *
+ * 结果支持:
+ *   - 任务列表点击查看
+ *   - ImageCompareViewer:原图 / 结果 对比 + 缩放 + 拖动
+ *   - 右键菜单 复制 / 另存为 / 入库
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
 import { ImportPanel } from '@/components/ImportPanel';
 import { ResultActions, ResultActionsBar } from '@/components/ResultActions';
 import { Collapsible } from '@/components/Collapsible';
-import { useToolsStore } from '@/store/toolsStore';
+import { CustomSelect } from '@/components/CustomSelect';
+import { ImageCompareViewer } from '@/components/ImageCompareViewer';
 import { useToolsEngineStore } from '@/store/toolsEngineStore';
 import { toast } from '@/store/toastStore';
 import { confirmDialog } from '@/components/ConfirmDialog';
@@ -22,7 +29,8 @@ import {
   TrashIcon,
   CheckIcon,
   ZapIcon,
-  PlusIcon
+  PlusIcon,
+  UploadIcon
 } from '@/components/Icon';
 import { localPathToImageUrl } from '@/lib/imageUrl';
 import {
@@ -55,24 +63,36 @@ import type {
   UpscaleInstallProgressPayload
 } from '@shared/ipc';
 
-type Mode = 'single' | 'batch';
+interface UpscaleTask {
+  id: string;
+  /** 输入图 file 路径(没有就用 dataUri 落临时盘后取回的路径) */
+  inputPath: string;
+  /** 用于预览展示 */
+  inputDisplayUrl: string;
+  outputPath: string | null;
+  inputW: number;
+  inputH: number;
+  outputW: number;
+  outputH: number;
+  modelName: string;
+  modeId: UpscaleModeId;
+  scale: 2 | 3 | 4;
+  elapsedMs: number;
+  status: 'running' | 'done' | 'failed';
+  progress?: number;
+  errorMessage?: string;
+  ts: number;
+}
 
 const SCALES: Array<2 | 3 | 4> = [2, 3, 4];
 
 export function RealESRGANPanel(): JSX.Element {
-  // ─── 现有 store 状态(全部保留,不改) ──────────────────
-  const inputDataUri = useToolsStore((s) => s.inputDataUri);
-  const setInputDataUri = useToolsStore((s) => s.setInputDataUri);
-  const batchInputs = useToolsStore((s) => s.batchInputs);
-  const setBatchInputs = useToolsStore((s) => s.setBatchInputs);
-  const lastUpscale = useToolsStore((s) => s.lastUpscale);
-  const setLastUpscale = useToolsStore((s) => s.setLastUpscale);
-
+  // ─── 引擎状态(共享 store) ────────────────────────
   const status = useToolsEngineStore((s) => s.upscaleStatus);
   const statusBusy = useToolsEngineStore((s) => s.upscaleStatusLoading);
   const refreshUpscaleStatus = useToolsEngineStore((s) => s.refreshUpscaleStatus);
 
-  // ─── 现有引擎安装 / 运行状态 ──────────────────────────
+  // ─── 安装 / 引擎管理 ──────────────────────────────
   const [installBusy, setInstallBusy] = useState(false);
   const [installSource, setInstallSource] = useState<UpscaleSource>('auto');
   const [installProgress, setInstallProgress] = useState<{
@@ -82,34 +102,40 @@ export function RealESRGANPanel(): JSX.Element {
   } | null>(null);
   const [installError, setInstallError] = useState<string | null>(null);
 
-  const [inputMode, setInputMode] = useState<Mode>('single');
+  // ─── 输入(统一,不分单/批) ───────────────────────
+  /** 待处理输入路径(全是绝对文件路径,粘贴的 dataUri 会被先 saveTempImage 转盘) */
+  const [pendingInputs, setPendingInputs] = useState<string[]>([]);
+  /** 单图粘贴/拖入临时 dataUri(还未存盘);粘贴后会一并 saveTempImage 进 pendingInputs */
+  const [pasteUri, setPasteUri] = useState<string | null>(null);
+
+  // ─── 任务列表 ─────────────────────────────────────
+  const [tasks, setTasks] = useState<UpscaleTask[]>([]);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const selectedTask = tasks.find((t) => t.id === selectedTaskId) ?? null;
+
+  // ─── 设置 ─────────────────────────────────────────
+  const [selectedMode, setSelectedMode] = useState<UpscaleModeId>('smart');
   const [scale, setScale] = useState<2 | 3 | 4>(4);
   const [format, setFormat] = useState<UpscaleFormat>('png');
+  const [detailLevel, setDetailLevel] = useState<DetailLevel>('standard');
+  const [denoiseLevel, setDenoiseLevel] = useState<DenoiseLevel>('mid');
   const [tile, setTile] = useState<number>(0);
   const [gpuId, setGpuId] = useState<'auto' | number>('auto');
   const [tta, setTta] = useState<boolean>(false);
-
-  const [running, setRunning] = useState(false);
-  const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);
-  const [progress, setProgress] = useState<UpscaleProgressPayload | null>(null);
-  const [batchResults, setBatchResults] = useState<
-    Array<{ inputPath: string; outputPath: string; outputW: number; outputH: number; elapsedMs: number }>
-  >([]);
-
-  // ─── 新 spec 字段 ──────────────────────────────────
-  const [selectedMode, setSelectedMode] = useState<UpscaleModeId>('smart');
-  const [detailLevel, setDetailLevel] = useState<DetailLevel>('standard');
-  const [denoiseLevel, setDenoiseLevel] = useState<DenoiseLevel>('mid');
   const [faceEnhance, setFaceEnhance] = useState(false);
   const [keepAlpha, setKeepAlpha] = useState(true);
   const [keepOriginalName, setKeepOriginalName] = useState(true);
   const [customModel, setCustomModel] = useState<string | null>(null);
 
+  // ─── 运行态 ───────────────────────────────────────
+  const [running, setRunning] = useState(false);
+  const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);
+  const [progress, setProgress] = useState<UpscaleProgressPayload | null>(null);
+
   // ─── 计算 ─────────────────────────────────────────
   const noEngine = !status || !status.installed;
   const platformBlocked = status?.platform === 'unsupported';
 
-  /** 当前后端能力(目前只有 ncnn) */
   const caps: BackendCapabilities = useMemo(
     () => ({ ncnn: !!status?.installed, pytorch: false }),
     [status?.installed]
@@ -120,7 +146,6 @@ export function RealESRGANPanel(): JSX.Element {
     [status?.models]
   );
 
-  /** 根据选中的模式 + 后端能力 → 解析出真正用的 ncnn 模型名 */
   const resolvedTarget = useMemo(() => {
     if (selectedMode === 'smart') {
       const rec = recommendModeFromImageType({});
@@ -136,10 +161,11 @@ export function RealESRGANPanel(): JSX.Element {
     );
   }, [selectedMode, caps, availableModelsLower, customModel]);
 
-  /** 实际即将提交的 ncnn 模型名(没解析出 → 空,UI 用于禁用提交) */
   const effectiveModelName: string | null = resolvedTarget?.model ?? null;
 
-  // ─── 现有 effects ─────────────────────────────────
+  const totalInputs = pendingInputs.length + (pasteUri ? 1 : 0);
+
+  // ─── effects ──────────────────────────────────────
   useEffect(() => {
     void refreshUpscaleStatus(false);
   }, [refreshUpscaleStatus]);
@@ -150,6 +176,14 @@ export function RealESRGANPanel(): JSX.Element {
       const p = raw as UpscaleProgressPayload;
       if (currentTaskId && p.taskId !== currentTaskId) return;
       setProgress(p);
+      // 同步更新对应任务的进度
+      setTasks((arr) =>
+        arr.map((t) =>
+          t.status === 'running'
+            ? { ...t, progress: p.percent ?? t.progress }
+            : t
+        )
+      );
     });
     const offInstall = window.electronAPI.on('upscale:install-progress', (raw) => {
       const p = raw as UpscaleInstallProgressPayload;
@@ -161,7 +195,7 @@ export function RealESRGANPanel(): JSX.Element {
     };
   }, [currentTaskId]);
 
-  // ─── 现有 handlers (全部保留,不改) ──────────────────
+  // ─── handlers ─────────────────────────────────────
   async function refreshStatus(): Promise<void> {
     await refreshUpscaleStatus(true);
   }
@@ -174,15 +208,14 @@ export function RealESRGANPanel(): JSX.Element {
       const r = await window.electronAPI.upscale.installEngine({ source: installSource });
       if (!r.ok) {
         setInstallError(r.error.message);
-        toast.error('引擎安装失败', '展开下方诊断查看每个源的失败原因');
+        toast.error('引擎安装失败', '展开下方诊断查看详情');
         return;
       }
       toast.success('引擎已安装', `内置 ${r.data.modelsInstalled.length} 个模型`);
       await refreshStatus();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      setInstallError(`未预期错误:${msg}\n常见原因:preload 未热更新,完全停掉 dev 重启。`);
-      toast.error('引擎安装失败', msg);
+      setInstallError(`未预期错误:${msg}`);
     } finally {
       setInstallBusy(false);
       setInstallProgress(null);
@@ -191,8 +224,7 @@ export function RealESRGANPanel(): JSX.Element {
 
   async function installFromLocalZip(): Promise<void> {
     if (typeof window.electronAPI.upscale.installEngineFromZip !== 'function') {
-      setInstallError('需重启 dev:preload 脚本不参与 HMR,新加的 IPC 方法只能在重启后生效。');
-      toast.error('需重启 dev');
+      setInstallError('需重启 dev:preload 不参与 HMR');
       return;
     }
     const pick = await window.electronAPI.storage.pickFile({
@@ -201,17 +233,15 @@ export function RealESRGANPanel(): JSX.Element {
     });
     if (!pick.ok || !pick.data.filePath) return;
     setInstallBusy(true);
-    setInstallError(null);
     try {
       const r = await window.electronAPI.upscale.installEngineFromZip({
         zipPath: pick.data.filePath
       });
       if (!r.ok) {
         setInstallError(r.error.message);
-        toast.error('本地安装失败', r.error.message);
         return;
       }
-      toast.success('引擎已安装', `内置 ${r.data.modelsInstalled.length} 个模型`);
+      toast.success('引擎已安装');
       await refreshStatus();
     } finally {
       setInstallBusy(false);
@@ -222,7 +252,7 @@ export function RealESRGANPanel(): JSX.Element {
     const ok = await confirmDialog({
       title: '卸载放大引擎',
       message: '确定卸载 Real-ESRGAN ncnn Vulkan 引擎吗?',
-      detail: '会删除引擎二进制 + 所有已装模型;HYPIR / 矢量化不受影响。',
+      detail: '会删除引擎二进制 + 所有已装模型。',
       okText: '卸载',
       danger: true
     });
@@ -238,7 +268,7 @@ export function RealESRGANPanel(): JSX.Element {
 
   async function importLocalModels(): Promise<void> {
     if (typeof window.electronAPI.upscale.importLocalModelFiles !== 'function') {
-      toast.error('需重启 dev', '本地模型导入是新增方法,preload 需重启才能生效');
+      toast.error('需重启 dev');
       return;
     }
     const pick = await window.electronAPI.storage.pickFiles({
@@ -246,17 +276,14 @@ export function RealESRGANPanel(): JSX.Element {
       filters: [{ name: 'NCNN 模型', extensions: ['bin', 'param'] }]
     });
     if (!pick.ok || pick.data.filePaths.length === 0) return;
-
-    // 友好提示:用户选了 .pth/.safetensors 等
     const nonNcnn = pick.data.filePaths.filter((p) => !/\.(bin|param)$/i.test(p));
     if (nonNcnn.length > 0) {
       toast.error(
         '不支持的格式',
-        `${nonNcnn.length} 个文件不是 .bin/.param。.pth/.safetensors 等需要 PyTorch 后端,暂未启用。`
+        `${nonNcnn.length} 个文件不是 .bin/.param。.pth/.safetensors 需要 PyTorch 后端。`
       );
       return;
     }
-
     const r = await window.electronAPI.upscale.importLocalModelFiles({
       filePaths: pick.data.filePaths
     });
@@ -268,97 +295,185 @@ export function RealESRGANPanel(): JSX.Element {
     await refreshStatus();
   }
 
-  async function pickBatch(): Promise<void> {
+  // ─── 输入管理 ─────────────────────────────────────
+  const addFilesFromPicker = useCallback(async (): Promise<void> => {
     const r = await window.electronAPI.storage.pickImages();
-    if (!r.ok) {
-      toast.error('选图失败', r.error.message);
-      return;
-    }
-    if (r.data.files.length === 0) return;
-    setBatchInputs(r.data.files.map((f) => f.path));
+    if (!r.ok || r.data.files.length === 0) return;
+    setPendingInputs((prev) => [...new Set([...prev, ...r.data.files.map((f) => f.path)])]);
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    const files = Array.from(e.dataTransfer.files);
+    const paths = files
+      .map((f) => (f as File & { path?: string }).path)
+      .filter((p): p is string => !!p && /\.(png|jpe?g|webp|bmp|gif|tiff?)$/i.test(p));
+    if (paths.length === 0) return;
+    setPendingInputs((prev) => [...new Set([...prev, ...paths])]);
+  }, []);
+
+  function removePending(p: string): void {
+    setPendingInputs((arr) => arr.filter((x) => x !== p));
+  }
+  function clearPending(): void {
+    setPendingInputs([]);
+    setPasteUri(null);
   }
 
-  function commonParams(modelToUse: string): {
-    modelName: string;
-    scale: 2 | 3 | 4;
-    format: UpscaleFormat;
-    tile: number;
-    gpuId: 'auto' | number;
-    tta: boolean;
-  } {
-    return { modelName: modelToUse, scale, format, tile, gpuId, tta };
-  }
-
-  async function runSingle(): Promise<void> {
-    if (!inputDataUri) {
-      toast.error('请先载入图片');
-      return;
-    }
-    if (!effectiveModelName) {
-      toast.error('当前模式无可用模型', '后端不支持理想模型;尝试切换为「通用高清」或「动漫插画」');
-      return;
-    }
-    setRunning(true);
-    setProgress(null);
-    setBatchResults([]);
-    const reqId = makeTempId();
-    setCurrentTaskId(reqId);
-    const r = await window.electronAPI.upscale.runSingle({
-      inputDataUri,
-      ...commonParams(effectiveModelName)
-    });
-    setRunning(false);
-    setCurrentTaskId(null);
-    if (!r.ok) {
-      if (r.error.code !== 'CANCELLED') toast.error('放大失败', r.error.message);
-      return;
-    }
-    setLastUpscale({
-      outputDataUri: r.data.outputDataUri ?? '',
-      outputPath: r.data.outputPath,
-      inputW: r.data.inputW,
-      inputH: r.data.inputH,
-      outputW: r.data.outputW,
-      outputH: r.data.outputH,
-      engineLabel: 'Real-ESRGAN ncnn',
-      modelName: effectiveModelName,
-      scale,
-      elapsedMs: r.data.elapsedMs,
-      ts: Date.now()
-    });
-    const fb = resolvedTarget?.usedFallback ? ' · 已用近似模型代替' : '';
-    toast.success(
-      '放大完成',
-      `${r.data.inputW}×${r.data.inputH} → ${r.data.outputW}×${r.data.outputH}(${(r.data.elapsedMs / 1000).toFixed(1)}s)${fb}`
-    );
-  }
-
-  async function runBatch(): Promise<void> {
-    if (batchInputs.length === 0) {
-      toast.error('请先选择要批量放大的文件');
+  // ─── 提交 ─────────────────────────────────────────
+  async function handleSubmit(): Promise<void> {
+    if (totalInputs === 0) {
+      toast.error('请先添加图片');
       return;
     }
     if (!effectiveModelName) {
       toast.error('当前模式无可用模型');
       return;
     }
+
+    // 处理 pasteUri:转盘成 path 然后并入 pending
+    let finalPaths: string[] = [...pendingInputs];
+    if (pasteUri) {
+      const saved = await window.electronAPI.storage.saveTempImage({
+        dataUri: pasteUri,
+        suggestedName: `upscale-in-${Date.now()}`
+      });
+      if (!saved.ok) {
+        toast.error('粘贴的图保存失败', saved.error.message);
+        return;
+      }
+      finalPaths.unshift(saved.data.filePath);
+    }
+
+    const submittedTaskIds: string[] = [];
+    const seedTime = Date.now();
+    // 给每张图建一条 running 任务
+    const newTasks: UpscaleTask[] = finalPaths.map((p, i) => {
+      const id = `t-${seedTime}-${i}`;
+      submittedTaskIds.push(id);
+      return {
+        id,
+        inputPath: p,
+        inputDisplayUrl: localPathToImageUrl(p),
+        outputPath: null,
+        inputW: 0,
+        inputH: 0,
+        outputW: 0,
+        outputH: 0,
+        modelName: effectiveModelName!,
+        modeId: selectedMode,
+        scale,
+        elapsedMs: 0,
+        status: 'running',
+        progress: 0,
+        ts: seedTime + i
+      };
+    });
+    setTasks((arr) => [...newTasks, ...arr]);
+    setSelectedTaskId(submittedTaskIds[0]);
     setRunning(true);
     setProgress(null);
-    setBatchResults([]);
-    const reqId = makeTempId();
+    const reqId = `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     setCurrentTaskId(reqId);
-    const r = await window.electronAPI.upscale.runBatch({
-      inputPaths: batchInputs,
-      ...commonParams(effectiveModelName)
-    });
-    setRunning(false);
-    setCurrentTaskId(null);
-    if (!r.ok) {
-      if (r.error.code !== 'CANCELLED') toast.error('批量放大失败', r.error.message);
-      return;
+
+    const params = {
+      modelName: effectiveModelName!,
+      scale,
+      format,
+      tile,
+      gpuId,
+      tta
+    };
+
+    try {
+      if (finalPaths.length === 1) {
+        const r = await window.electronAPI.upscale.runSingle({
+          inputPath: finalPaths[0],
+          ...params
+        });
+        if (!r.ok) {
+          markTasksFailed(submittedTaskIds, r.error.message);
+          if (r.error.code !== 'CANCELLED') toast.error('放大失败', r.error.message);
+        } else {
+          markTaskDone(submittedTaskIds[0], {
+            outputPath: r.data.outputPath,
+            inputW: r.data.inputW,
+            inputH: r.data.inputH,
+            outputW: r.data.outputW,
+            outputH: r.data.outputH,
+            elapsedMs: r.data.elapsedMs
+          });
+          toast.success(
+            '放大完成',
+            `${r.data.inputW}×${r.data.inputH} → ${r.data.outputW}×${r.data.outputH}(${(r.data.elapsedMs / 1000).toFixed(1)}s)`
+          );
+        }
+      } else {
+        const r = await window.electronAPI.upscale.runBatch({
+          inputPaths: finalPaths,
+          ...params
+        });
+        if (!r.ok) {
+          markTasksFailed(submittedTaskIds, r.error.message);
+          if (r.error.code !== 'CANCELLED') toast.error('批量放大失败', r.error.message);
+        } else {
+          r.data.results.forEach((res, i) => {
+            const tid = submittedTaskIds[i];
+            if (!tid) return;
+            markTaskDone(tid, {
+              outputPath: res.outputPath,
+              inputW: 0,
+              inputH: 0,
+              outputW: res.outputW,
+              outputH: res.outputH,
+              elapsedMs: res.elapsedMs
+            });
+          });
+          toast.success('批量完成', `${r.data.results.length} 张已输出`);
+        }
+      }
+    } finally {
+      setRunning(false);
+      setCurrentTaskId(null);
+      clearPending();
     }
-    setBatchResults(r.data.results);
-    toast.success('批量完成', `${r.data.results.length} 张已输出`);
+  }
+
+  function markTaskDone(
+    id: string,
+    info: {
+      outputPath: string;
+      inputW: number;
+      inputH: number;
+      outputW: number;
+      outputH: number;
+      elapsedMs: number;
+    }
+  ): void {
+    setTasks((arr) =>
+      arr.map((t) =>
+        t.id === id
+          ? {
+              ...t,
+              status: 'done',
+              outputPath: info.outputPath,
+              inputW: info.inputW || t.inputW,
+              inputH: info.inputH || t.inputH,
+              outputW: info.outputW,
+              outputH: info.outputH,
+              elapsedMs: info.elapsedMs,
+              progress: 100
+            }
+          : t
+      )
+    );
+  }
+  function markTasksFailed(ids: string[], message: string): void {
+    setTasks((arr) =>
+      arr.map((t) =>
+        ids.includes(t.id) ? { ...t, status: 'failed', errorMessage: message } : t
+      )
+    );
   }
 
   async function cancel(): Promise<void> {
@@ -366,7 +481,7 @@ export function RealESRGANPanel(): JSX.Element {
     if (r.ok) toast.info('已请求取消');
   }
 
-  // ─── 渲染 ─────────────────────────────────────────
+  // ─── 渲染:头部 / 平台不支持 / 引擎未装 / 正常 ─────
   const header = (
     <RealEsrganHeader
       status={status}
@@ -382,7 +497,7 @@ export function RealESRGANPanel(): JSX.Element {
         header={header}
         left={
           <PanelBanner tone="error">
-            当前平台不受支持 — Real-ESRGAN ncnn 仅提供 Windows / macOS / Linux 三平台二进制。
+            当前平台不受支持 — Real-ESRGAN ncnn 仅 Windows / macOS / Linux 三平台二进制。
           </PanelBanner>
         }
         right={<OutputCardShell state="empty"><div className="mb-tlx-empty">不可用</div></OutputCardShell>}
@@ -395,8 +510,7 @@ export function RealESRGANPanel(): JSX.Element {
       header={header}
       left={
         <InputCardShell>
-          {/* 引擎未装:大块引导 */}
-          {noEngine && (
+          {noEngine ? (
             <EngineInstaller
               installBusy={installBusy}
               installSource={installSource}
@@ -408,41 +522,16 @@ export function RealESRGANPanel(): JSX.Element {
               onRefresh={refreshStatus}
               statusBusy={statusBusy}
             />
-          )}
-
-          {/* 引擎已装:正常使用 */}
-          {!noEngine && (
+          ) : (
             <>
-              {/* 1. 单图 / 批量 切换 */}
-              <Segmented
-                value={inputMode}
-                onChange={setInputMode}
-                options={[
-                  { value: 'single', label: '单图', hint: '一张图,直接预览' },
-                  { value: 'batch', label: '批量', hint: '一组图,直接落输出目录' }
-                ]}
-              />
-
-              {/* 2. 输入 */}
-              {inputMode === 'single' ? (
-                <ImportPanel value={inputDataUri} onChange={setInputDataUri} maxDim={4096} />
-              ) : (
-                <BatchInputBlock
-                  batchInputs={batchInputs}
-                  onPick={() => void pickBatch()}
-                  onClear={() => setBatchInputs([])}
-                  disabled={running}
-                />
-              )}
-
-              {/* 3. 模式选择(7 模式 grid) */}
+              {/* 1. 模式选择 grid */}
               <ModeSelectorGrid
                 selected={selectedMode}
                 onChange={setSelectedMode}
                 caps={caps}
               />
 
-              {/* 4. 模式详情卡 */}
+              {/* 2. 模式详情卡 */}
               <ModeDetailCard
                 modeId={selectedMode}
                 resolved={resolvedTarget}
@@ -452,7 +541,7 @@ export function RealESRGANPanel(): JSX.Element {
                 onImportCustom={importLocalModels}
               />
 
-              {/* 5. 普通设置 */}
+              {/* 3. 普通设置 */}
               <PrimarySettings
                 scale={scale}
                 setScale={setScale}
@@ -465,7 +554,7 @@ export function RealESRGANPanel(): JSX.Element {
                 disabled={running}
               />
 
-              {/* 6. 高级设置(默认折叠) */}
+              {/* 4. 高级设置(折叠) */}
               <Collapsible
                 title="高级设置"
                 badge={`${tile === 0 ? 'tile 自动' : `tile ${tile}`} · ${tta ? 'TTA' : '无 TTA'}`}
@@ -488,18 +577,19 @@ export function RealESRGANPanel(): JSX.Element {
                 />
               </Collapsible>
 
-              {/* 7. 提交 */}
+              {/* 5. 提交 */}
               <SubmitBar
                 running={running}
-                disabled={!effectiveModelName || statusBusy}
-                onSubmit={() => (inputMode === 'single' ? void runSingle() : void runBatch())}
+                disabled={!effectiveModelName || statusBusy || totalInputs === 0}
+                onSubmit={() => void handleSubmit()}
                 onCancel={() => void cancel()}
+                fileCount={totalInputs}
                 hint={
-                  resolvedTarget?.usedFallback
-                    ? `⚠ 当前后端不支持理想模型,运行时将用「${resolvedTarget.model}」近似代替`
-                    : effectiveModelName
-                      ? `将用模型「${effectiveModelName}」处理`
-                      : '当前模式无可用模型,请切换或扩展模型'
+                  totalInputs === 0
+                    ? '右侧添加图片后即可开始'
+                    : resolvedTarget?.usedFallback
+                      ? `⚠ 后端不支持理想模型,将用「${resolvedTarget.model}」近似`
+                      : `将用模型「${effectiveModelName ?? '?'}」处理 ${totalInputs} 张`
                 }
               />
             </>
@@ -507,16 +597,39 @@ export function RealESRGANPanel(): JSX.Element {
         </InputCardShell>
       }
       right={
-        <OutputCardShell state={running ? 'progress' : lastUpscale || batchResults.length > 0 ? 'result' : 'empty'}>
-          {running ? (
-            <ProgressPane progress={progress} onCancel={cancel} />
-          ) : inputMode === 'single' && lastUpscale ? (
-            <SingleResultPane lastUpscale={lastUpscale} />
-          ) : inputMode === 'batch' && batchResults.length > 0 ? (
-            <BatchResultPane results={batchResults} />
-          ) : (
-            <EmptyPane noEngine={noEngine} />
+        <OutputCardShell state="result">
+          {!noEngine && (
+            <>
+              {/* A. 输入区(上) */}
+              <InputZone
+                pendingInputs={pendingInputs}
+                pasteUri={pasteUri}
+                setPasteUri={setPasteUri}
+                onAddFiles={() => void addFilesFromPicker()}
+                onClear={clearPending}
+                onRemove={removePending}
+                onDrop={handleDrop}
+                disabled={running}
+              />
+
+              {/* B. 任务列表(中) */}
+              {tasks.length > 0 && (
+                <TaskList
+                  tasks={tasks}
+                  selectedId={selectedTaskId}
+                  onSelect={setSelectedTaskId}
+                  onClear={() => {
+                    setTasks([]);
+                    setSelectedTaskId(null);
+                  }}
+                />
+              )}
+
+              {/* C. 选中任务的预览(下,占大头) */}
+              <PreviewArea task={selectedTask} progress={progress} running={running} />
+            </>
           )}
+          {noEngine && <EmptyPane noEngine />}
         </OutputCardShell>
       }
     />
@@ -553,15 +666,8 @@ function RealEsrganHeader({
             <CheckIcon size={11} /> 引擎就绪 · v{status.version} · {status.models.length} 模型
           </span>
         )}
-        {noEngine && (
-          <span className="mb-tlx-chip is-warn">引擎未安装</span>
-        )}
-        <button
-          type="button"
-          className="mb-btn mb-btn-ghost mb-btn-sm"
-          onClick={() => void onRefresh()}
-          title="重新扫描模型目录"
-        >
+        {noEngine && <span className="mb-tlx-chip is-warn">引擎未安装</span>}
+        <button type="button" className="mb-btn mb-btn-ghost mb-btn-sm" onClick={() => void onRefresh()}>
           刷新
         </button>
         {!noEngine && (
@@ -569,7 +675,6 @@ function RealEsrganHeader({
             type="button"
             className="mb-btn mb-btn-ghost mb-btn-sm"
             onClick={() => void onUninstall()}
-            title="卸载引擎(矢量化 / HYPIR 不受影响)"
           >
             <TrashIcon size={12} /> 卸载
           </button>
@@ -580,7 +685,7 @@ function RealEsrganHeader({
 }
 
 // ──────────────────────────────────────────────────────────────────
-// Mode selector grid (7 个友好模式)
+// 模式 grid
 // ──────────────────────────────────────────────────────────────────
 
 function ModeSelectorGrid({
@@ -619,7 +724,7 @@ function ModeSelectorGrid({
 }
 
 // ──────────────────────────────────────────────────────────────────
-// Mode detail card (描述 + 真实模型名 + warning + custom 选择)
+// 模式详情卡
 // ──────────────────────────────────────────────────────────────────
 
 function ModeDetailCard({
@@ -644,29 +749,25 @@ function ModeDetailCard({
 
       {mode.warning && <PanelBanner tone="warn">{mode.warning}</PanelBanner>}
 
-      {/* 自定义模式:选择本地已导入的 .bin */}
       {modeId === 'custom' && (
         <div className="mb-tlx-mode-detail-custom">
           <Field label="选择模型">
-            <select
-              className="mb-tlx-select"
+            <CustomSelect
               value={customModel ?? ''}
-              onChange={(e) => onPickCustom(e.target.value)}
-            >
-              <option value="">(未选择)</option>
-              {groupModelsByCategory(availableModels).map((g) => (
-                <optgroup key={g.category} label={`【${g.label}】`}>
-                  {g.items.map((m) => {
-                    const meta = getUpscaleModelMeta(m.name);
-                    return (
-                      <option key={m.name} value={m.name}>
-                        {m.name}  ·  {meta.label}
-                      </option>
-                    );
-                  })}
-                </optgroup>
-              ))}
-            </select>
+              onChange={onPickCustom}
+              optgroups={[
+                ...groupModelsByCategory(availableModels).map((g) => ({
+                  label: g.label,
+                  options: g.items.map((m) => ({
+                    value: m.name,
+                    label: m.name,
+                    meta: getUpscaleModelMeta(m.name).label,
+                    hint: getUpscaleModelMeta(m.name).description
+                  }))
+                }))
+              ]}
+              placeholder="(选择一个已导入的模型)"
+            />
           </Field>
           <div className="mb-tlx-row-buttons">
             <button
@@ -683,7 +784,6 @@ function ModeDetailCard({
         </div>
       )}
 
-      {/* 模式 ↔ 真实模型 映射 */}
       {modeId !== 'custom' && (
         <div className="mb-tlx-mode-detail-mapping">
           <span className="mb-tlx-key">理想模型</span>
@@ -708,7 +808,7 @@ function ModeDetailCard({
 }
 
 // ──────────────────────────────────────────────────────────────────
-// 普通设置:倍率 / 细节 / 降噪 / 输出格式
+// 普通 / 高级设置
 // ──────────────────────────────────────────────────────────────────
 
 function PrimarySettings({
@@ -742,34 +842,26 @@ function PrimarySettings({
           options={SCALES.map((s) => ({ value: String(s) as '2' | '3' | '4', label: `${s}×` }))}
         />
       </Field>
-
       <Field label="细节强度">
+        <Segmented value={detailLevel} onChange={setDetailLevel} options={DETAIL_LEVELS} />
+      </Field>
+      <Field
+        label="降噪强度"
+        hint="降噪强度需 PyTorch 后端 + general-x4v3 才生效;当前后端会忽略"
+      >
+        <Segmented value={denoiseLevel} onChange={setDenoiseLevel} options={DENOISE_LEVELS} />
+      </Field>
+      <Field label="输出格式">
         <Segmented
-          value={detailLevel}
-          onChange={setDetailLevel}
-          options={DETAIL_LEVELS}
+          value={format as 'png' | 'jpg' | 'webp'}
+          onChange={setFormat as (v: 'png' | 'jpg' | 'webp') => void}
+          options={MODE_FORMATS}
         />
       </Field>
-
-      <Field label="降噪强度">
-        <Segmented value={denoiseLevel} onChange={setDenoiseLevel} options={DENOISE_LEVELS} />
-        <span className="mb-tlx-field-hint">
-          降噪强度需 PyTorch 后端 + general-x4v3 模型才真生效;当前后端会忽略该值
-        </span>
-      </Field>
-
-      <Field label="输出格式">
-        <Segmented value={format as 'png' | 'jpg' | 'webp'} onChange={setFormat as (v: 'png' | 'jpg' | 'webp') => void} options={MODE_FORMATS} />
-      </Field>
-
       {disabled && <span className="mb-tlx-field-hint">(处理中,参数已锁定)</span>}
     </div>
   );
 }
-
-// ──────────────────────────────────────────────────────────────────
-// 高级设置
-// ──────────────────────────────────────────────────────────────────
 
 function AdvancedSettings({
   tile,
@@ -812,27 +904,26 @@ function AdvancedSettings({
           max={4096}
           step={32}
           value={tile}
-          onChange={(e) => setTile(Math.max(0, Math.min(4096, Number(e.target.value) || 0)))}
+          onChange={(e) =>
+            setTile(Math.max(0, Math.min(4096, Number(e.target.value) || 0)))
+          }
           disabled={disabled}
         />
       </Field>
-
       <Field label="GPU">
-        <select
-          className="mb-tlx-select"
+        <CustomSelect
           value={gpuId === 'auto' ? 'auto' : String(gpuId)}
-          onChange={(e) =>
-            setGpuId(e.target.value === 'auto' ? 'auto' : Number(e.target.value))
-          }
+          onChange={(v) => setGpuId(v === 'auto' ? 'auto' : Number(v))}
+          options={[
+            { value: 'auto', label: '自动' },
+            { value: '0', label: 'GPU #0' },
+            { value: '1', label: 'GPU #1' },
+            { value: '2', label: 'GPU #2' },
+            { value: '3', label: 'GPU #3' }
+          ]}
           disabled={disabled}
-        >
-          <option value="auto">自动</option>
-          {[0, 1, 2, 3].map((g) => (
-            <option key={g} value={g}>GPU #{g}</option>
-          ))}
-        </select>
+        />
       </Field>
-
       <CheckRow
         checked={tta}
         onChange={setTta}
@@ -840,7 +931,6 @@ function AdvancedSettings({
         label="TTA 测试时增强"
         hint="8 倍耗时,细节略好;默认关"
       />
-
       <CheckRow
         checked={faceEnhance}
         onChange={setFaceEnhance}
@@ -848,7 +938,6 @@ function AdvancedSettings({
         label="Face Enhance 人脸增强"
         hint={caps.pytorch ? '走 GFPGAN 修复人脸' : '⚠ 需 PyTorch 后端;当前不可用'}
       />
-
       <CheckRow
         checked={keepAlpha}
         onChange={setKeepAlpha}
@@ -856,7 +945,6 @@ function AdvancedSettings({
         label="保留 Alpha 通道"
         hint="PNG / WebP 透明背景保留(JPG 不支持)"
       />
-
       <CheckRow
         checked={keepOriginalName}
         onChange={setKeepOriginalName}
@@ -906,12 +994,14 @@ function SubmitBar({
   disabled,
   onSubmit,
   onCancel,
+  fileCount,
   hint
 }: {
   running: boolean;
   disabled: boolean;
   onSubmit: () => void;
   onCancel: () => void;
+  fileCount: number;
   hint: string;
 }): JSX.Element {
   return (
@@ -922,14 +1012,11 @@ function SubmitBar({
         onClick={onSubmit}
         disabled={running || disabled}
       >
-        <ZapIcon size={14} /> {running ? '放大中…' : '开始放大'}
+        <ZapIcon size={14} />
+        {running ? '处理中…' : fileCount > 1 ? `开始放大 (${fileCount})` : '开始放大'}
       </button>
       {running && (
-        <button
-          type="button"
-          className="mb-btn mb-btn-ghost"
-          onClick={onCancel}
-        >
+        <button type="button" className="mb-btn mb-btn-ghost" onClick={onCancel}>
           <XIcon size={12} /> 取消
         </button>
       )}
@@ -939,200 +1026,295 @@ function SubmitBar({
 }
 
 // ──────────────────────────────────────────────────────────────────
-// 输入子组件 — 批量
+// 输入区(右侧上)
 // ──────────────────────────────────────────────────────────────────
 
-function BatchInputBlock({
-  batchInputs,
-  onPick,
+function InputZone({
+  pendingInputs,
+  pasteUri,
+  setPasteUri,
+  onAddFiles,
   onClear,
+  onRemove,
+  onDrop,
   disabled
 }: {
-  batchInputs: string[];
-  onPick: () => void;
+  pendingInputs: string[];
+  pasteUri: string | null;
+  setPasteUri: (u: string | null) => void;
+  onAddFiles: () => void;
   onClear: () => void;
+  onRemove: (p: string) => void;
+  onDrop: (e: React.DragEvent) => void;
   disabled: boolean;
 }): JSX.Element {
+  const [hovering, setHovering] = useState(false);
+  const total = pendingInputs.length + (pasteUri ? 1 : 0);
+
   return (
-    <div className="mb-tlx-batch-block">
-      <div className="mb-tlx-row-buttons">
-        <button
-          type="button"
-          className="mb-btn mb-btn-ghost mb-btn-sm"
-          onClick={onPick}
-          disabled={disabled}
-        >
-          <FolderIcon size={12} /> 选择多张图
-        </button>
-        {batchInputs.length > 0 && (
+    <div
+      className={`mb-tlx-input-strip-wrap ${hovering ? 'is-hover' : ''}`}
+      onDragOver={(e) => {
+        e.preventDefault();
+        setHovering(true);
+      }}
+      onDragLeave={() => setHovering(false)}
+      onDrop={(e) => {
+        setHovering(false);
+        onDrop(e);
+      }}
+    >
+      {total === 0 && !pasteUri ? (
+        <div className="mb-tlx-input-strip">
+          <UploadIcon size={14} />
+          <span className="mb-tlx-input-strip-empty">
+            拖入图片到此(支持多张),或粘贴 / 点击
+          </span>
           <button
             type="button"
             className="mb-btn mb-btn-ghost mb-btn-sm"
-            onClick={onClear}
+            onClick={onAddFiles}
             disabled={disabled}
           >
-            <XIcon size={11} /> 清空 ({batchInputs.length})
+            <FolderIcon size={12} /> 选择文件
           </button>
-        )}
-      </div>
-      {batchInputs.length === 0 ? (
-        <div className="mb-tlx-placeholder">尚未选图 — 点上方按钮多选 PNG / JPG / WebP</div>
+          <div style={{ display: 'none' }}>
+            <ImportPanel value={pasteUri} onChange={setPasteUri} maxDim={4096} />
+          </div>
+        </div>
       ) : (
-        <ul className="mb-tlx-batch-files">
-          {batchInputs.slice(0, 8).map((p) => (
-            <li key={p} title={p}>{basename(p)}</li>
-          ))}
-          {batchInputs.length > 8 && (
-            <li className="mb-tlx-batch-more">… 还有 {batchInputs.length - 8} 张</li>
-          )}
-        </ul>
-      )}
-    </div>
-  );
-}
-
-// ──────────────────────────────────────────────────────────────────
-// 输出区子组件
-// ──────────────────────────────────────────────────────────────────
-
-function EmptyPane({ noEngine }: { noEngine: boolean }): JSX.Element {
-  return (
-    <div className="mb-tlx-empty">
-      <div className="mb-tlx-empty-title">{noEngine ? '请先安装引擎' : '尚无任务'}</div>
-      <div className="mb-tlx-empty-sub">
-        {noEngine
-          ? '左侧选下载源后点「在线安装引擎」(~10 MB)'
-          : '左侧载入图片 / 选模式 / 点「开始放大」'}
-      </div>
-    </div>
-  );
-}
-
-function ProgressPane({
-  progress,
-  onCancel
-}: {
-  progress: UpscaleProgressPayload | null;
-  onCancel: () => Promise<void>;
-}): JSX.Element {
-  const pct = progress?.percent ?? 0;
-  return (
-    <div className="mb-tlx-progress">
-      <div className="mb-tlx-progress-title">放大中…</div>
-      <div className="mb-tlx-progress-bar">
-        <div className="mb-tlx-progress-fill" style={{ width: `${pct}%` }} />
-      </div>
-      <div className="mb-tlx-progress-pct">{pct}%</div>
-      {progress?.phase && <div className="mb-tlx-progress-detail">{progress.phase}</div>}
-      {progress?.itemCount && progress.itemCount > 1 && (
-        <div className="mb-tlx-progress-detail">
-          第 {progress.itemIndex + 1} / {progress.itemCount} 张
+        <div className="mb-tlx-input-strip">
+          <span className="mb-tlx-input-strip-title">{total} 张待处理</span>
+          <div className="mb-tlx-input-strip-thumbs">
+            {pasteUri && (
+              <img
+                src={pasteUri}
+                className="mb-tlx-input-thumb"
+                alt="paste"
+                title="来自粘贴"
+              />
+            )}
+            {pendingInputs.slice(0, 12).map((p) => (
+              <img
+                key={p}
+                src={localPathToImageUrl(p)}
+                className="mb-tlx-input-thumb"
+                alt=""
+                title={p.split(/[\\/]/).pop()}
+                onClick={() => onRemove(p)}
+                style={{ cursor: 'pointer' }}
+              />
+            ))}
+            {pendingInputs.length > 12 && (
+              <span className="mb-tlx-field-hint">+{pendingInputs.length - 12}</span>
+            )}
+          </div>
+          <button
+            type="button"
+            className="mb-btn mb-btn-ghost mb-btn-sm"
+            onClick={onAddFiles}
+            disabled={disabled}
+          >
+            <PlusIcon size={12} /> 加图
+          </button>
+          <button
+            type="button"
+            className="mb-btn mb-btn-ghost mb-btn-sm"
+            onClick={() => {
+              onClear();
+              setPasteUri(null);
+            }}
+            disabled={disabled}
+          >
+            <XIcon size={11} /> 清空
+          </button>
         </div>
       )}
-      <button
-        type="button"
-        className="mb-btn mb-btn-ghost mb-btn-sm"
-        onClick={() => void onCancel()}
-        style={{ marginTop: 8 }}
-      >
-        <XIcon size={12} /> 取消
-      </button>
     </div>
   );
 }
 
-interface LastUpscaleData {
-  outputDataUri: string;
-  outputPath: string;
-  inputW: number;
-  inputH: number;
-  outputW: number;
-  outputH: number;
-  engineLabel: string;
-  modelName: string;
-  scale: number;
-  elapsedMs: number;
-  ts: number;
-}
+// ──────────────────────────────────────────────────────────────────
+// 任务列表
+// ──────────────────────────────────────────────────────────────────
 
-function SingleResultPane({
-  lastUpscale
+function TaskList({
+  tasks,
+  selectedId,
+  onSelect,
+  onClear
 }: {
-  lastUpscale: LastUpscaleData;
+  tasks: UpscaleTask[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+  onClear: () => void;
 }): JSX.Element {
-  const imgUrl = localPathToImageUrl(lastUpscale.outputPath);
   return (
-    <div className="mb-tlx-result-single">
-      <ResultActionsBar
-        dataUri={imgUrl}
-        kind="upscale"
-        defaultName={`upscale-${lastUpscale.outputW}x${lastUpscale.outputH}-${lastUpscale.ts}`}
-        sourceModel={`${lastUpscale.engineLabel}/${lastUpscale.modelName}`}
-        params={{ scale: lastUpscale.scale, model: lastUpscale.modelName }}
-      />
-      <ResultActions
-        dataUri={imgUrl}
-        kind="upscale"
-        defaultName={`upscale-${lastUpscale.outputW}x${lastUpscale.outputH}-${lastUpscale.ts}`}
-        sourceModel={`${lastUpscale.engineLabel}/${lastUpscale.modelName}`}
-        params={{ scale: lastUpscale.scale, model: lastUpscale.modelName }}
+    <div>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          marginBottom: 4
+        }}
       >
-        <img src={imgUrl} className="mb-tlx-result-img" alt="放大结果" />
-      </ResultActions>
-      <div className="mb-tlx-result-meta">
-        <span><em>原尺寸</em> {lastUpscale.inputW}×{lastUpscale.inputH}</span>
-        <span><em>输出</em> {lastUpscale.outputW}×{lastUpscale.outputH}</span>
-        <span><em>模型</em> {lastUpscale.modelName}</span>
-        <span><em>倍率</em> {lastUpscale.scale}×</span>
-        <span><em>耗时</em> {(lastUpscale.elapsedMs / 1000).toFixed(1)}s</span>
+        <span className="mb-tlx-section-title">任务列表</span>
         <button
           type="button"
-          className="mb-btn mb-btn-ghost mb-btn-sm"
-          onClick={() =>
-            void window.electronAPI.storage.showInFolder(lastUpscale.outputPath)
-          }
+          className="mb-btn mb-btn-ghost mb-btn-xs"
+          onClick={onClear}
+          title="清空列表(不删输出文件)"
         >
-          <FolderIcon size={11} /> 文件夹
+          <TrashIcon size={11} />
         </button>
       </div>
-    </div>
-  );
-}
-
-function BatchResultPane({
-  results
-}: {
-  results: Array<{
-    inputPath: string;
-    outputPath: string;
-    outputW: number;
-    outputH: number;
-    elapsedMs: number;
-  }>;
-}): JSX.Element {
-  return (
-    <div className="mb-tlx-result-batch">
-      <div className="mb-tlx-result-batch-title">批量完成 — {results.length} 张</div>
-      <ul className="mb-tlx-result-batch-list">
-        {results.map((r) => (
-          <li key={r.outputPath}>
-            <code>{basename(r.inputPath)}</code> → {r.outputW}×{r.outputH} · {(r.elapsedMs / 1000).toFixed(1)}s
-            <button
-              type="button"
-              className="mb-btn mb-btn-ghost mb-btn-xs"
-              onClick={() => void window.electronAPI.storage.showInFolder(r.outputPath)}
+      <ul className="mb-tlx-task-list">
+        {tasks.map((t) => {
+          const base = t.inputPath.split(/[\\/]/).pop() ?? t.id;
+          return (
+            <li
+              key={t.id}
+              className={`mb-tlx-task-row is-${t.status} ${t.id === selectedId ? 'is-selected' : ''}`}
+              onClick={() => onSelect(t.id)}
+              title={t.errorMessage ?? `${t.modeId} · ${t.modelName} · ${t.scale}×`}
             >
-              <FolderIcon size={10} />
-            </button>
-          </li>
-        ))}
+              <span className="mb-tlx-task-name">{base}</span>
+              <span className="mb-tlx-task-mode-chip">{t.scale}×</span>
+              <span className="mb-tlx-task-mode-chip">{getMode(t.modeId).label}</span>
+              <span className="mb-tlx-task-status">
+                <span className={`mb-tlx-task-dot is-${t.status}`} />
+                {t.status === 'done'
+                  ? `${(t.elapsedMs / 1000).toFixed(1)}s`
+                  : t.status === 'failed'
+                    ? '失败'
+                    : `${t.progress ?? 0}%`}
+              </span>
+              {t.status === 'running' && (
+                <span className="mb-tlx-task-bar">
+                  <span className="mb-tlx-task-bar-fill" style={{ width: `${t.progress ?? 0}%` }} />
+                </span>
+              )}
+            </li>
+          );
+        })}
       </ul>
     </div>
   );
 }
 
 // ──────────────────────────────────────────────────────────────────
-// 引擎安装引导(独立大块)
+// 预览区(对比 / 缩放 / 拖动)
+// ──────────────────────────────────────────────────────────────────
+
+function PreviewArea({
+  task,
+  progress,
+  running
+}: {
+  task: UpscaleTask | null;
+  progress: UpscaleProgressPayload | null;
+  running: boolean;
+}): JSX.Element {
+  if (!task) {
+    return (
+      <div className="mb-tlx-empty" style={{ flex: 1, justifyContent: 'center' }}>
+        <div className="mb-tlx-empty-title">点任务行查看对比</div>
+        <div className="mb-tlx-empty-sub">
+          每次提交会在上方列表里出现一行任务。
+          点开能看到原图与放大结果的对比预览(可缩放 / 拖动 / 滑条对比)。
+        </div>
+      </div>
+    );
+  }
+
+  if (task.status === 'running') {
+    return (
+      <div className="mb-tlx-progress" style={{ flex: 1 }}>
+        <div className="mb-tlx-progress-title">放大中…</div>
+        <div className="mb-tlx-progress-bar">
+          <div
+            className="mb-tlx-progress-fill"
+            style={{ width: `${progress?.percent ?? task.progress ?? 0}%` }}
+          />
+        </div>
+        <div className="mb-tlx-progress-pct">
+          {progress?.percent ?? task.progress ?? 0}%
+        </div>
+        {running && progress?.phase && (
+          <div className="mb-tlx-progress-detail">{progress.phase}</div>
+        )}
+      </div>
+    );
+  }
+
+  if (task.status === 'failed') {
+    return (
+      <div className="mb-tlx-empty" style={{ flex: 1 }}>
+        <div className="mb-tlx-empty-title" style={{ color: 'var(--mb-color-danger, #ef4444)' }}>
+          任务失败
+        </div>
+        <div className="mb-tlx-empty-sub">{task.errorMessage ?? '未知错误'}</div>
+      </div>
+    );
+  }
+
+  // done
+  if (!task.outputPath) return <></>;
+  const beforeUrl = task.inputDisplayUrl;
+  const afterUrl = localPathToImageUrl(task.outputPath);
+
+  return (
+    <div className="mb-tlx-result-single">
+      <ResultActionsBar
+        dataUri={afterUrl}
+        kind="upscale"
+        defaultName={`upscale-${task.outputW}x${task.outputH}-${task.ts}`}
+        sourceModel={`Real-ESRGAN/${task.modelName}`}
+        params={{ scale: task.scale, model: task.modelName, mode: task.modeId }}
+      />
+      <ImageCompareViewer beforeUrl={beforeUrl} afterUrl={afterUrl} />
+      <div className="mb-tlx-result-meta">
+        <span><em>原图</em> {task.inputW || '?'}×{task.inputH || '?'}</span>
+        <span><em>输出</em> {task.outputW}×{task.outputH}</span>
+        <span><em>模式</em> {getMode(task.modeId).label}</span>
+        <span><em>模型</em> {task.modelName}</span>
+        <span><em>倍率</em> {task.scale}×</span>
+        <span><em>耗时</em> {(task.elapsedMs / 1000).toFixed(1)}s</span>
+        <button
+          type="button"
+          className="mb-btn mb-btn-ghost mb-btn-sm"
+          onClick={() => task.outputPath && void window.electronAPI.storage.showInFolder(task.outputPath)}
+        >
+          <FolderIcon size={11} /> 文件夹
+        </button>
+      </div>
+      <ResultActions
+        dataUri={afterUrl}
+        kind="upscale"
+        defaultName={`upscale-${task.outputW}x${task.outputH}-${task.ts}`}
+        sourceModel={`Real-ESRGAN/${task.modelName}`}
+        params={{ scale: task.scale, model: task.modelName }}
+      >
+        <span style={{ display: 'none' }} />
+      </ResultActions>
+    </div>
+  );
+}
+
+function EmptyPane({ noEngine }: { noEngine: boolean }): JSX.Element {
+  return (
+    <div className="mb-tlx-empty">
+      <div className="mb-tlx-empty-title">{noEngine ? '请先安装引擎' : '尚无任务'}</div>
+      <div className="mb-tlx-empty-sub">
+        {noEngine ? '左侧选下载源后点「在线安装引擎」' : '左侧选模式 + 加图后点开始放大'}
+      </div>
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────
+// 引擎安装引导
 // ──────────────────────────────────────────────────────────────────
 
 function EngineInstaller({
@@ -1164,19 +1346,19 @@ function EngineInstaller({
       <div className="mb-tlx-installer-title">Real-ESRGAN ncnn Vulkan 引擎未安装</div>
       <p className="mb-tlx-installer-sub">
         首次使用需下载 ~10 MB 二进制(含 4 个默认模型)。不依赖 Python / PyTorch / CUDA,
-        走 Vulkan 跨厂商 GPU 加速。安装后即可离线放大。
+        Vulkan 跨厂商 GPU 加速。安装后可离线放大。
       </p>
       <Field label="下载来源">
-        <select
-          className="mb-tlx-select"
+        <CustomSelect
           value={installSource}
-          onChange={(e) => setInstallSource(e.target.value as UpscaleSource)}
+          onChange={(v) => setInstallSource(v)}
+          options={[
+            { value: 'auto', label: '自动(直链 → 国内镜像轮转)' },
+            { value: 'github', label: '仅 GitHub 直链' },
+            { value: 'mirror', label: '仅国内镜像' }
+          ]}
           disabled={installBusy}
-        >
-          <option value="auto">自动(直链 → 国内镜像轮转)</option>
-          <option value="github">仅 GitHub 直链</option>
-          <option value="mirror">仅国内镜像</option>
-        </select>
+        />
       </Field>
       {installBusy && installProgress && (
         <div className="mb-tlx-installer-progress">
@@ -1221,17 +1403,4 @@ function EngineInstaller({
       </div>
     </div>
   );
-}
-
-// ──────────────────────────────────────────────────────────────────
-// 工具
-// ──────────────────────────────────────────────────────────────────
-
-function basename(p: string): string {
-  const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
-  return i >= 0 ? p.slice(i + 1) : p;
-}
-
-function makeTempId(): string {
-  return `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
