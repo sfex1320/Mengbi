@@ -11,7 +11,7 @@ import { logger } from './logger';
  * - schema_version 在 settings 表里追踪
  */
 
-const CURRENT_SCHEMA_VERSION = 3;
+const CURRENT_SCHEMA_VERSION = 13;
 
 let _db: Database.Database | null = null;
 
@@ -93,6 +93,180 @@ function applySchema(db: Database.Database): void {
     logger.info('db migrated to v3 (thumb_data_uri on prompts)');
   }
 
+  if (ver < 4) {
+    db.transaction(() => {
+      // generation_tasks 加 finished_at：用户在最新生图任务卡片上看「总耗时 = finished_at - created_at」。
+      // 旧任务无该字段值，UI 端会跳过展示，无需回填。
+      const cols = db
+        .prepare(`PRAGMA table_info(generation_tasks)`)
+        .all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === 'finished_at')) {
+        db.exec(`ALTER TABLE generation_tasks ADD COLUMN finished_at TEXT`);
+      }
+      writeSchemaVersion(db, 4);
+    })();
+    logger.info('db migrated to v4 (finished_at on generation_tasks)');
+  }
+
+  if (ver < 5) {
+    db.transaction(() => {
+      // api_configs 加 body_overrides_json：让用户给某个方案配 JSON 模板覆盖默认请求体，
+      // 解决中转站字段习惯差异（详见计划文件 1k-2k-validated-wreath.md）。NULL = 不覆盖。
+      const cols = db
+        .prepare(`PRAGMA table_info(api_configs)`)
+        .all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === 'body_overrides_json')) {
+        db.exec(`ALTER TABLE api_configs ADD COLUMN body_overrides_json TEXT`);
+      }
+      writeSchemaVersion(db, 5);
+    })();
+    logger.info('db migrated to v5 (body_overrides_json on api_configs)');
+  }
+
+  if (ver < 6) {
+    db.transaction(() => {
+      // api_configs 加 comfyui_workflow_json：image_kind='comfyui' 时存用户从 ComfyUI 导出的
+      // API Format JSON 字符串。运行时按 {{prompt}} / {{seed}} 等占位符替换后 POST /prompt。
+      const cols = db
+        .prepare(`PRAGMA table_info(api_configs)`)
+        .all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === 'comfyui_workflow_json')) {
+        db.exec(`ALTER TABLE api_configs ADD COLUMN comfyui_workflow_json TEXT`);
+      }
+      writeSchemaVersion(db, 6);
+    })();
+    logger.info('db migrated to v6 (comfyui_workflow_json on api_configs)');
+  }
+
+  if (ver < 7) {
+    db.transaction(() => {
+      // generation_tasks 加 image_kind：把生图任务"出身"记下来
+      // （'comfyui' / 'openai' / 'grsai' / 'gemini' / 'openai-compat' / NULL）
+      // 让 Create 页和 LocalModel 页的"最近输出"能各看各的，不再混在一起。
+      const cols = db
+        .prepare(`PRAGMA table_info(generation_tasks)`)
+        .all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === 'image_kind')) {
+        db.exec(`ALTER TABLE generation_tasks ADD COLUMN image_kind TEXT`);
+      }
+      writeSchemaVersion(db, 7);
+    })();
+    logger.info('db migrated to v7 (image_kind on generation_tasks)');
+  }
+
+  if (ver < 8) {
+    db.transaction(() => {
+      // api_configs 加 local_model_path：official_kind='local' 时指向用户选的 .gguf 文件
+      const cols = db
+        .prepare(`PRAGMA table_info(api_configs)`)
+        .all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === 'local_model_path')) {
+        db.exec(`ALTER TABLE api_configs ADD COLUMN local_model_path TEXT`);
+      }
+      writeSchemaVersion(db, 8);
+    })();
+    logger.info('db migrated to v8 (local_model_path on api_configs)');
+  }
+
+  if (ver < 9) {
+    db.transaction(() => {
+      // 思考模式（reasoning / thinking）支持：
+      //  - api_configs.supports_thinking：方案上的"启用思考模式"开关
+      //  - api_configs.thinking_effort：'low' / 'medium' / 'high' / 'max'；NULL = 上游默认
+      //  - messages.reasoning_content：助手消息附带的思考过程文本；NULL = 该消息无思考内容
+      // 协议侧按 official_kind 分流，详见 chat.ts 注入与解析两段。
+      const cfgCols = db.prepare(`PRAGMA table_info(api_configs)`).all() as Array<{ name: string }>;
+      if (!cfgCols.some((c) => c.name === 'supports_thinking')) {
+        db.exec(`ALTER TABLE api_configs ADD COLUMN supports_thinking INTEGER NOT NULL DEFAULT 0`);
+      }
+      if (!cfgCols.some((c) => c.name === 'thinking_effort')) {
+        db.exec(`ALTER TABLE api_configs ADD COLUMN thinking_effort TEXT`);
+      }
+      const msgCols = db.prepare(`PRAGMA table_info(messages)`).all() as Array<{ name: string }>;
+      if (!msgCols.some((c) => c.name === 'reasoning_content')) {
+        db.exec(`ALTER TABLE messages ADD COLUMN reasoning_content TEXT`);
+      }
+      writeSchemaVersion(db, 9);
+    })();
+    logger.info('db migrated to v9 (thinking mode on api_configs + messages)');
+  }
+
+  if (ver < 10) {
+    db.transaction(() => {
+      // api_configs 加 icon：保存 lobehub slug（如 'openai' / 'anthropic'）或 data:image/... 自定义 dataURI。
+      // NULL = 没指定 → ProviderIcon 会按 provider_name / base_url 猜一个回退；UI 永远不会显示空白。
+      const cols = db.prepare(`PRAGMA table_info(api_configs)`).all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === 'icon')) {
+        db.exec(`ALTER TABLE api_configs ADD COLUMN icon TEXT`);
+      }
+      writeSchemaVersion(db, 10);
+    })();
+    logger.info('db migrated to v10 (icon on api_configs)');
+  }
+
+  if (ver < 11) {
+    db.transaction(() => {
+      // api_configs 加 proxy_timeout_seconds：记下该中转上一次「边缘代理硬超时」是多少秒。
+      // 由 generate.ts 在 isHardProxyTimeout 命中时自动 UPDATE；前端在提交前用这个值做 pre-flight 提示。
+      // NULL = 从未触发硬超时 → 不显示任何额外提示，行为与旧版完全一致。
+      const cols = db.prepare(`PRAGMA table_info(api_configs)`).all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === 'proxy_timeout_seconds')) {
+        db.exec(`ALTER TABLE api_configs ADD COLUMN proxy_timeout_seconds INTEGER`);
+      }
+      writeSchemaVersion(db, 11);
+    })();
+    logger.info('db migrated to v11 (proxy_timeout_seconds on api_configs)');
+  }
+
+  if (ver < 12) {
+    db.transaction(() => {
+      // 图像转矢量历史:每个完成的 vec 任务(VTracer / Potrace / OmniSVG)落一条。
+      // 与 generation_tasks / images 表分开,因为 SVG 文件不进图库,UI 也是 Tools 页独立的 HistoryDrawer。
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS vectorize_history (
+          id           INTEGER PRIMARY KEY AUTOINCREMENT,
+          created_at   TEXT NOT NULL,
+          batch_id     TEXT,
+          mode         TEXT NOT NULL CHECK(mode IN ('vtracer','potrace','omnisvg')),
+          input_path   TEXT NOT NULL,
+          output_path  TEXT NOT NULL,
+          duration_ms  INTEGER NOT NULL,
+          status       TEXT NOT NULL CHECK(status IN ('succeeded','failed','cancelled')),
+          error        TEXT,
+          params_json  TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_vec_history_batch_id ON vectorize_history(batch_id);
+        CREATE INDEX IF NOT EXISTS idx_vec_history_created_at ON vectorize_history(created_at);
+      `);
+      writeSchemaVersion(db, 12);
+    })();
+    logger.info('db migrated to v12 (vectorize_history)');
+  }
+
+  if (ver < 13) {
+    db.transaction(() => {
+      // v3 重构(2026-05-27):vectorize_history 扩 6 列。
+      // 旧的 mode CHECK 还允许 'omnisvg' 死字段;不重建表(数据保留),
+      // 由 types.ts + insertVecHistory 收口,业务层只允许 5 种合法值写入。
+      const cols = db
+        .prepare(`PRAGMA table_info(vectorize_history)`)
+        .all() as Array<{ name: string }>;
+      const ensureCol = (name: string, ddl: string) => {
+        if (!cols.some((c) => c.name === name)) {
+          db.exec(`ALTER TABLE vectorize_history ADD COLUMN ${ddl}`);
+        }
+      };
+      ensureCol('requested_mode', 'requested_mode TEXT');
+      ensureCol('actual_engine', 'actual_engine TEXT');
+      ensureCol('fell_back', 'fell_back INTEGER NOT NULL DEFAULT 0');
+      ensureCol('fallback_reason', 'fallback_reason TEXT');
+      ensureCol('quality_score', 'quality_score INTEGER');
+      ensureCol('report_path', 'report_path TEXT');
+      writeSchemaVersion(db, 13);
+    })();
+    logger.info('db migrated to v13 (vectorize_history v3 refactor cols)');
+  }
+
   if (ver > CURRENT_SCHEMA_VERSION) {
     logger.warn('db schema_version > current app, may have compat issues');
   }
@@ -135,6 +309,11 @@ CREATE TABLE IF NOT EXISTS api_configs (
   supports_vision      INTEGER NOT NULL DEFAULT 0,
   official_kind        TEXT,
   image_kind           TEXT,
+  body_overrides_json  TEXT,
+  comfyui_workflow_json TEXT,
+  local_model_path     TEXT,
+  supports_thinking    INTEGER NOT NULL DEFAULT 0,
+  thinking_effort      TEXT,
   created_at           TEXT NOT NULL
 );
 
@@ -148,17 +327,19 @@ CREATE TABLE IF NOT EXISTS conversations (
 );
 
 CREATE TABLE IF NOT EXISTS messages (
-  id              INTEGER PRIMARY KEY AUTOINCREMENT,
-  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-  role            TEXT NOT NULL,
-  content         TEXT NOT NULL,
-  timestamp       TEXT NOT NULL
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  conversation_id   TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  role              TEXT NOT NULL,
+  content           TEXT NOT NULL,
+  reasoning_content TEXT,
+  timestamp         TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS generation_tasks (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
   conversation_id   TEXT REFERENCES conversations(id),
   model_id          TEXT NOT NULL,
+  image_kind        TEXT,
   positive_prompt   TEXT NOT NULL,
   negative_prompt   TEXT,
   params            TEXT NOT NULL,
@@ -166,7 +347,8 @@ CREATE TABLE IF NOT EXISTS generation_tasks (
   status            TEXT NOT NULL,
   result_paths      TEXT,
   error_message     TEXT,
-  created_at        TEXT NOT NULL
+  created_at        TEXT NOT NULL,
+  finished_at       TEXT
 );
 
 CREATE TABLE IF NOT EXISTS images (
@@ -297,7 +479,20 @@ const DEFAULT_PREFS: Array<[string, string]> = [
   ['last_used_palette', 'warm-orange'],
   ['usage_tracking_enabled', 'false'],
   ['default_context_strategy', 'truncate-head'],
-  ['auto_update_channel', 'stable']
+  ['auto_update_channel', 'stable'],
+  // AI sidecar UNet 编译加速:'off' / 'reduce-overhead' / 'max-autotune'
+  // 默认 off。开启后首次推理慢(编译开销),后续每步 +50-150% 速度
+  ['ai_torch_compile_mode', 'off'],
+  // 图像转矢量输出目录;'' 时回退到 tools_storage_path / vec / 或 image_storage_path / vec /
+  ['vec_output_path', ''],
+  // v3 重构(2026-05-27):是否展示「Lab · 实验精修」模式按钮(默认隐藏)
+  ['vec_show_experimental', 'false'],
+  // userData/vec-debug/ 目录保留天数,过期由 sweepStaleDebugDirs 清理
+  ['vec_debug_retain_days', '7'],
+  // StarVector 模型本地路径(用户手动配置;空 = AI 模式不可用)
+  ['vec_starvector_path', ''],
+  // AutoTrace exe 路径覆盖(空 = 用内置 resources/autotrace-portable/autotrace.exe)
+  ['vec_autotrace_path', '']
 ];
 
 function applyBuiltinSeeds(db: Database.Database): void {

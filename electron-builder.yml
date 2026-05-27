@@ -8,9 +8,25 @@ files:
   - package.json
   - "!**/{.eslintrc.cjs,.prettierrc,tsconfig*.json,electron.vite.config.ts}"
   - "!**/{*.map,*.tsbuildinfo}"
+# HYPIR 便携脚手架（bat + Python 服务源码 + 配置）随安装包发；
+# 用户点"在默认位置展开脚手架"时由主进程从 process.resourcesPath/hypir-portable/ 拷过去
+extraResources:
+  - from: resources/hypir-portable
+    to: hypir-portable
+    filter:
+      - "**/*"
+  # AutoTrace 便携 exe(Phase 2)。目录不存在时 electron-builder 会跳过,不会报错。
+  # 用户运行后:resources/autotrace-portable/autotrace.exe → process.resourcesPath/autotrace-portable/autotrace.exe
+  - from: resources/autotrace-portable
+    to: autotrace-portable
+    filter:
+      - "**/*"
 asarUnpack:
   - resources/**
   - "**/*.{node,dll}"
+  # sharp 是 native 模块，prebuilt 二进制放在 @img/sharp-* 子包；asar 里加载不到 .node 必失败
+  - "node_modules/sharp/**"
+  - "node_modules/@img/**"
 win:
   target:
     - target: nsis

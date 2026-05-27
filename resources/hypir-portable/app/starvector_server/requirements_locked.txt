@@ -1,0 +1,13 @@
+# StarVector 推理依赖(Phase 3,2026-05-27)
+# 不写 torch —— 复用 HYPIR Portable 的 torch + CUDA;只补 StarVector 推理本身需要的
+# transformers 等。运行 install_starvector_extras.bat 装。
+
+transformers==4.45.2
+accelerate>=0.30.0
+safetensors>=0.4.0
+pillow>=10.0.0
+# StarVector 仓库可能用 Qwen2-VL 风格的 vision encoder;若加载报缺 qwen 工具就放开下行
+# qwen-vl-utils>=0.0.8
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+pydantic>=2.7.0

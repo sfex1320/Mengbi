@@ -35,11 +35,20 @@ export const SparkleIcon = (p: IconProps) => (
   </Base>
 );
 
-// 提示词管家：堆叠的卡片（突出"卡片库 / 收藏夹"）
+// 提示词管家：带书签的笔记本 + 三行文字（一眼看出"提示词卡片库 / 收藏"）
 export const GalleryIcon = (p: IconProps) => (
   <Base {...p}>
-    <rect x="6" y="3" width="14" height="14" rx="2.5" />
-    <path d="M16 17v2.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 4 19.5v-9A1.5 1.5 0 0 1 5.5 9H8" />
+    {/* 笔记本外框（左侧装订） */}
+    <rect x="4.5" y="3" width="15" height="18" rx="2" />
+    <path d="M4.5 7h15" />
+    {/* 装订线条 */}
+    <path d="M7 3v18" opacity="0.55" />
+    {/* 三行文字（提示词条目） */}
+    <path d="M9.5 11h7" />
+    <path d="M9.5 14h7" />
+    <path d="M9.5 17h4" />
+    {/* 右上书签飘出 */}
+    <path d="M16 3v6l-1.7-1.4L12.6 9V3" fill="currentColor" opacity="0.35" stroke="none" />
   </Base>
 );
 
@@ -159,6 +168,64 @@ export const CopyIconShape = (p: IconProps) => (
   </Base>
 );
 
+// 通知中心：铃铛
+export const BellIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9z" />
+    <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
+  </Base>
+);
+
+// 工具箱：真正的工具箱（提手 + 箱体 + 锁扣 / 缝合线）
+// 旧的"扳手+螺丝刀"图形太抽象，识别度低，换成具象工具箱
+export const ToolboxIcon = (p: IconProps) => (
+  <Base {...p}>
+    {/* 顶部提手 */}
+    <path d="M8.5 7V5.6A1.6 1.6 0 0 1 10.1 4h3.8A1.6 1.6 0 0 1 15.5 5.6V7" />
+    {/* 箱体 */}
+    <rect x="3" y="7" width="18" height="13" rx="2" />
+    {/* 中间横分隔（盖与体的接缝） */}
+    <path d="M3 11.5h18" />
+    {/* 正面锁扣（小矩形） */}
+    <rect x="10.5" y="13.5" width="3" height="3" rx="0.5" />
+  </Base>
+);
+
+// 铅笔（改名 / 编辑就地小按钮）
+export const PencilIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M12 20h9" />
+    <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z" />
+  </Base>
+);
+
+// 本地大模型：CPU 芯片 + AI "脑回路"线 + 中央节点
+// 强化"本地 AI 推理"语义：芯片外壳 + 内部神经网络节点
+export const LocalModelIcon = (p: IconProps) => (
+  <Base {...p}>
+    {/* 芯片外框 */}
+    <rect x="5" y="5" width="14" height="14" rx="2.2" />
+    {/* 引脚（每边 4 根） */}
+    <path d="M8.5 5V3M12 5V3M15.5 5V3" />
+    <path d="M8.5 21v-2M12 21v-2M15.5 21v-2" />
+    <path d="M5 8.5H3M5 12H3M5 15.5H3" />
+    <path d="M21 8.5h-2M21 12h-2M21 15.5h-2" />
+    {/* 中央"AI 节点"圈 */}
+    <circle cx="12" cy="12" r="2.2" />
+    {/* 神经网络分叉线 */}
+    <path d="M12 9.8V7.5M9.8 12H7.5M14.2 12h2.3M12 14.2v2.3" opacity="0.55" />
+  </Base>
+);
+
+// 画板：三层叠加的图层卡片，一眼能看出"图层 / 拼版 / 编辑"
+export const CanvasIcon = (p: IconProps) => (
+  <Base {...p}>
+    <rect x="3" y="7" width="14" height="14" rx="2.2" />
+    <rect x="6" y="4" width="14" height="14" rx="2.2" opacity="0.55" />
+    <rect x="9" y="1.5" width="13.5" height="13.5" rx="2.2" opacity="0.28" />
+  </Base>
+);
+
 /**
  * AI 生图图标：调色板 + 数颗闪光，一眼能看出"AI 创作类绘图"
  * —— 用于 Sidebar 左上"生图"入口；旧的 SparkleIcon 仅画笔，不够"AI"。
@@ -175,3 +242,43 @@ export const AiBrushIcon = (p: IconProps) => (
     <path d="M9.5 9.5l.4 1.1L11 11l-1.1.4L9.5 12.5l-.4-1.1L8 11l1.1-.4z" />
   </Base>
 );
+
+// 向下 chevron(折叠区展开/收起)
+export const ChevronDownIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M6 9l6 6 6-6" />
+  </Base>
+);
+
+// 向右 chevron
+export const ChevronRightIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M9 6l6 6-6 6" />
+  </Base>
+);
+
+// 上传(用于 dropzone)
+export const UploadIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M12 3v12" />
+    <path d="M7 8l5-5 5 5" />
+    <path d="M5 18v2a1 1 0 001 1h12a1 1 0 001-1v-2" />
+  </Base>
+);
+
+// 信息提示
+export const InfoIcon = (p: IconProps) => (
+  <Base {...p}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 8v.01" />
+    <path d="M11 12h1v4h1" />
+  </Base>
+);
+
+// 调试/扳手(打开 debug 目录)
+export const WrenchIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M14.5 6.5a3.5 3.5 0 11-4.95 4.95L3 18l3 3 6.55-6.55A3.5 3.5 0 0017.5 9.5l-1.65 1.65a1.5 1.5 0 11-2.12-2.12L15.38 7.4A3.5 3.5 0 0014.5 6.5z" />
+  </Base>
+);
+
