@@ -44,6 +44,7 @@ import {
 import type { ApiConfig, ApiConfigInput, ImageKind, OfficialKind } from '@shared/domain';
 import { detectProtocolFromUrl } from '@shared/protocolDetect';
 import { parseSdkSnippet } from '@/lib/sdkSnippetParser';
+import { getUpscaleModelMeta, groupModelsByCategory } from '@/lib/upscaleModelMeta';
 import {
   FILENAME_TOKENS,
   DATETIME_FORMATS,
@@ -1928,18 +1929,21 @@ function ToolsTab(): JSX.Element {
   const toolsPath = prefs.tools_storage_path ?? '(沿用图片存储路径)';
   const autoSave = prefs.tools_auto_save === 'true';
 
+  async function refreshEngineStatus(): Promise<void> {
+    const r = await window.electronAPI.upscale.status();
+    if (r.ok) {
+      setEngineStatus({
+        installed: r.data.installed,
+        version: r.data.version,
+        models: r.data.models,
+        enginePath: r.data.enginePath,
+        platform: r.data.platform
+      });
+    }
+  }
+
   useEffect(() => {
-    void window.electronAPI.upscale.status().then((r) => {
-      if (r.ok) {
-        setEngineStatus({
-          installed: r.data.installed,
-          version: r.data.version,
-          models: r.data.models,
-          enginePath: r.data.enginePath,
-          platform: r.data.platform
-        });
-      }
-    });
+    void refreshEngineStatus();
     void window.electronAPI.hypir.check({}).then((r) => {
       if (r.ok) setHypirReady(r.data.ready);
     });
@@ -2124,24 +2128,90 @@ function ToolsTab(): JSX.Element {
       </Field>
 
       <Field label={`已装放大模型（${engineStatus?.models.length ?? 0}）`}>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            marginBottom: 6,
+            flexWrap: 'wrap'
+          }}
+        >
+          <button
+            className="mb-btn mb-btn-ghost mb-btn-sm"
+            onClick={() => void refreshEngineStatus()}
+            title="重新扫描 models 目录(手动放进去新模型后点这个)"
+          >
+            刷新列表
+          </button>
+          {engineStatus?.enginePath && (
+            <button
+              className="mb-btn mb-btn-ghost mb-btn-sm"
+              onClick={() =>
+                void window.electronAPI.storage.openPath({
+                  targetPath: `${engineStatus.enginePath}\\models`,
+                  ensureDir: true
+                })
+              }
+              title="打开模型目录,可直接拖入 .bin / .param 文件"
+            >
+              <FolderIcon size={12} /> 打开 models 目录
+            </button>
+          )}
+          <span className="mb-field-hint" style={{ marginLeft: 'auto', fontSize: 11 }}>
+            仅支持 ncnn 格式(.bin + .param 同名成对)。.safetensors / .pth / .onnx <strong>不能直接用</strong>。
+          </span>
+        </div>
         {(engineStatus?.models.length ?? 0) === 0 ? (
           <div className="mb-field-hint">
-            尚未安装引擎或模型。引擎安装时会内置 4 个默认模型，可在工具箱面板单独下载额外模型。
+            尚未安装引擎或模型。引擎安装时会内置 4 个默认模型,可在工具箱面板单独下载额外模型。
           </div>
         ) : (
           <div className="mb-mapping-list">
-            {engineStatus!.models.map((m) => (
-              <div key={m.name} className="mb-mapping-row">
-                <code style={{ flex: 1 }}>{m.name}</code>
-                <span className="mb-mapping-arrow">·</span>
-                <code>{(m.sizeBytes / 1024 / 1024).toFixed(1)} MB</code>
-                <button
-                  className="mb-mapping-remove"
-                  onClick={() => void deleteModel(m.name)}
-                  title="删除"
+            {groupModelsByCategory(engineStatus!.models).map((g) => (
+              <div key={g.category} style={{ marginBottom: 6 }}>
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: 'var(--mb-color-text-muted, #888)',
+                    padding: '4px 0 2px',
+                    letterSpacing: '0.5px'
+                  }}
                 >
-                  <TrashIcon size={13} />
-                </button>
+                  【{g.label}】 ({g.items.length})
+                </div>
+                {g.items.map((m) => {
+                  const meta = getUpscaleModelMeta(m.name);
+                  return (
+                    <div
+                      key={m.name}
+                      className="mb-mapping-row"
+                      title={meta.description}
+                    >
+                      <code style={{ flex: 1 }}>{m.name}</code>
+                      <span
+                        style={{
+                          fontSize: 10,
+                          padding: '1px 6px',
+                          borderRadius: 4,
+                          background: 'var(--mb-color-surface-3, rgba(255,255,255,0.06))',
+                          color: 'var(--mb-color-text-muted, #888)'
+                        }}
+                      >
+                        {meta.label}
+                      </span>
+                      <span className="mb-mapping-arrow">·</span>
+                      <code>{(m.sizeBytes / 1024 / 1024).toFixed(1)} MB</code>
+                      <button
+                        className="mb-mapping-remove"
+                        onClick={() => void deleteModel(m.name)}
+                        title="删除"
+                      >
+                        <TrashIcon size={13} />
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
             ))}
           </div>
