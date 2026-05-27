@@ -10,22 +10,22 @@
 import type { AppErrorCode } from '@shared/error';
 
 /**
- * 3 个矢量化模式(2026-05-28 AI 模式整体砍除)。
- *   - vtracer:  Fast · 快速彩色,本身兜底
- *   - potrace:  Crisp · 黑白线稿
- *   - autotrace: Pro · 高级描摹(显式色数量化 spawn exe)
+ * 2 个矢量化模式(2026-05-28 AI + Pro 全砍后,只保留最稳的基础态)。
+ *   - vtracer: Fast · 快速彩色,本身兜底
+ *   - potrace: Crisp · 黑白线稿,失败回退 vtracer
  *
  * 砍掉的:
- *   - starvector(AI · 精准):VLM 生成 SVG 本质不能跑稳,与 OmniSVG 同质化失败
- *   - experimental(Lab · 实验精修):自渲染拟合,投入产出不成正比
+ *   - autotrace(Pro · 高级描摹):上游 NSIS 安装包打包 bug(混搭 32/64 位 + 缺 libssp),
+ *     0.31.10 win-setup 无法跑;不再维护。
+ *   - starvector(AI · 精准):VLM 生成 SVG 实测失败,同 OmniSVG 同质化
+ *   - experimental(Lab · 实验精修):投入产出不成正比
  */
-export type VecMode = 'vtracer' | 'potrace' | 'autotrace';
+export type VecMode = 'vtracer' | 'potrace';
 
 /** 所有引擎对外暴露的统一标签 */
 export const VEC_MODE_LABELS: Record<VecMode, string> = {
   vtracer: 'Fast · 快速彩色',
-  potrace: 'Crisp · 黑白线稿',
-  autotrace: 'Pro · 高级描摹'
+  potrace: 'Crisp · 黑白线稿'
 };
 
 export type VecTaskStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled';
@@ -78,20 +78,7 @@ export interface PotraceParams {
   optTolerance?: number;
 }
 
-export interface AutotraceParams {
-  /** 颜色数量 (2-256),决定颜色量化等级 */
-  colorCount?: number;
-  /** 角点保留阈值 (deg) */
-  cornerThreshold?: number;
-  /** 小区域过滤 */
-  despeckleLevel?: number;
-  /** 中心线追踪(若引擎支持) */
-  centerline?: boolean;
-  /** 平滑度 */
-  lineThreshold?: number;
-}
-
-export type VecParams = VTracerParams | PotraceParams | AutotraceParams;
+export type VecParams = VTracerParams | PotraceParams;
 
 // ── 引擎统一接口 ──────────────────────────────────────────────────
 

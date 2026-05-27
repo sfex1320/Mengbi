@@ -765,22 +765,21 @@ export interface SupirAPI {
 }
 
 // ──────────────────────────────────────────────────────────
-// 图像转矢量（api:vec:*） v3 重构 + AI 清理 (2026-05-28)
-// 3 个模式:
-//   - vtracer:    Fast 彩色(本身就是兜底,失败不回退)
-//   - potrace:    Crisp 黑白线稿(失败 → vtracer)
-//   - autotrace:  Pro 高级描摹(失败 → vtracer)
+// 图像转矢量（api:vec:*） 最终 2 模式 (2026-05-28)
+//   - vtracer: Fast 彩色(本身就是兜底,失败不回退)
+//   - potrace: Crisp 黑白线稿(失败 → vtracer)
 //
-// 砍除:starvector(AI · 精准) + experimental(Lab · 实验精修)
-// 理由:VLM 生成 SVG 实际效果差,与 OmniSVG 同质化失败;
-//      实验精修自渲染拟合投入产出不成正比。
+// 砍除历史:
+//   - autotrace (Pro):上游 NSIS 打包 bug,跑不起来
+//   - starvector (AI):VLM 实测效果差
+//   - experimental (Lab):投入产出比低
 //
-// 所有引擎输出统一过 svg postprocess 流水线;任何模式失败
-// 自动回退到 vtracer(UI 必须显示"用户选择 vs 实际引擎")。
+// 所有引擎输出统一过 svg postprocess 流水线;potrace 失败自动回退 vtracer
+// (UI 必须显示"用户选择 vs 实际引擎")。
 // 每次任务在 userData/vec-debug/<ts>/ 下落 30+ 字段 report.json + 12 个调试文件。
 // ──────────────────────────────────────────────────────────
 
-export type VecMode = 'vtracer' | 'potrace' | 'autotrace';
+export type VecMode = 'vtracer' | 'potrace';
 export type VecTaskStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 export type VecBatchStatus = 'idle' | 'running' | 'paused' | 'completed' | 'aborted';
 export type VecQualityTier = 'excellent' | 'good' | 'fair' | 'poor' | 'invalid';
@@ -819,15 +818,7 @@ export interface PotraceParams {
   optTolerance?: boolean | number;
 }
 
-export interface AutotraceParams {
-  colorCount?: number;
-  cornerThreshold?: number;
-  despeckleLevel?: number;
-  centerline?: boolean;
-  lineThreshold?: number;
-}
-
-export type VecParams = VTracerParams | PotraceParams | AutotraceParams;
+export type VecParams = VTracerParams | PotraceParams;
 
 export interface VecBatchOptions {
   outputDir: string;
@@ -1016,8 +1007,6 @@ export interface VecAPI {
   reportGet(input: { reportDir: string }): Promise<Result<VecReport>>;
   /** 打开 debug 目录;reportDir 为空 = 打开 userData/vec-debug 根 */
   debugOpen(input: { reportDir?: string }): Promise<Result<{ ok: boolean }>>;
-  /** AutoTrace exe 探测 — 用于 UI 判断 Pro 模式是否可用 */
-  autotraceProbe(): Promise<Result<{ available: boolean; exePath: string | null }>>;
 }
 
 // ──────────────────────────────────────────────────────────

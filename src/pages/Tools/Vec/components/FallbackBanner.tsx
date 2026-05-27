@@ -14,8 +14,7 @@ interface Props {
 
 const LABEL: Record<VecMode, string> = {
   vtracer: 'Fast · VTracer',
-  potrace: 'Crisp · Potrace',
-  autotrace: 'Pro · AutoTrace'
+  potrace: 'Crisp · Potrace'
 };
 
 export function FallbackBanner({

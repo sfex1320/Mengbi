@@ -486,9 +486,7 @@ const DEFAULT_PREFS: Array<[string, string]> = [
   // 图像转矢量输出目录;'' 时回退到 tools_storage_path / vec / 或 image_storage_path / vec /
   ['vec_output_path', ''],
   // userData/vec-debug/ 目录保留天数,过期由 sweepStaleDebugDirs 清理
-  ['vec_debug_retain_days', '7'],
-  // AutoTrace exe 路径覆盖(空 = 用内置 resources/autotrace-portable/autotrace.exe)
-  ['vec_autotrace_path', '']
+  ['vec_debug_retain_days', '7']
 ];
 
 function applyBuiltinSeeds(db: Database.Database): void {

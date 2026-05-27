@@ -657,10 +657,6 @@
   background: rgba(99, 102, 241, 0.18);
   color: #a5b4fc;
 }
-.mb-vec-mode-chip.is-autotrace {
-  background: rgba(244, 114, 182, 0.18);
-  color: #f9a8d4;
-}
 .mb-vec-fail-flag {
   color: var(--mb-color-danger, #ef4444);
 }
@@ -779,7 +775,6 @@
 }
 .mb-vec-engine-badge.is-vtracer { border-color: rgba(34, 197, 94, 0.4); }
 .mb-vec-engine-badge.is-potrace { border-color: rgba(99, 102, 241, 0.4); }
-.mb-vec-engine-badge.is-autotrace { border-color: rgba(244, 114, 182, 0.4); }
 .mb-vec-engine-badge-pair {
   display: inline-flex;
   align-items: center;

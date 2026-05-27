@@ -12,7 +12,7 @@
  *   - 输出卡按状态自动切换,不再左右各占一半空着
  *   - 主操作"开始矢量化"内嵌在输入卡底部,跟文件列表贴近
  */
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import { toast } from '@/store/toastStore';
 import { useVecStore } from '@/store/vecStore';
@@ -36,21 +36,10 @@ export function VecPanel(): JSX.Element {
   const onConflict = useVecStore((s) => s.onConflict);
   const registerBatch = useVecStore((s) => s.registerBatch);
   const clearPending = useVecStore((s) => s.clearPendingInputs);
-  const setModeAvailability = useVecStore((s) => s.setModeAvailability);
 
   const [submitting, setSubmitting] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
-
-  // 探测每个模式的本地可用性
-  useEffect(() => {
-    // Fast / Crisp 永远可用
-    setModeAvailability('vtracer', true);
-    setModeAvailability('potrace', true);
-    // Pro: 探测 autotrace.exe
-    void window.electronAPI.vec.autotraceProbe().then((r) => {
-      if (r.ok) setModeAvailability('autotrace', r.data.available);
-    });
-  }, [setModeAvailability]);
+  // 2 模式都是 CPU 原生算法,无需探测;ModeSelector 直接渲染 active 态
 
   const effectiveOutputDir = outputDir.trim() || resolveDefaultOutputDir(prefs);
 

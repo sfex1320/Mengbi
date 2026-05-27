@@ -25,8 +25,7 @@ import type {
   VecMode,
   VecParams,
   VTracerParams,
-  PotraceParams,
-  AutotraceParams
+  PotraceParams
 } from '@/types/ipc';
 
 const IMAGE_EXT = /\.(png|jpe?g|webp|bmp|gif|tiff?)$/i;
@@ -353,31 +352,6 @@ function ModeParamsEditor({
       </div>
     );
   }
-  if (mode === 'autotrace') {
-    const p = params as AutotraceParams;
-    return (
-      <div className="mb-vec-params">
-        <ParamSlider
-          label="色数"
-          min={2}
-          max={256}
-          step={1}
-          value={p.colorCount ?? 8}
-          onChange={(v) => patch('colorCount', v)}
-          hint="量化色数,越多越保色 (默认 8)"
-        />
-        <ParamSlider
-          label="角度阈值"
-          min={0}
-          max={180}
-          step={5}
-          value={p.cornerThreshold ?? 60}
-          onChange={(v) => patch('cornerThreshold', v)}
-          hint="低=尖角 / 高=圆滑 (默认 60°)"
-        />
-      </div>
-    );
-  }
   return <div className="mb-vec-params-empty">该模式暂无可调参数</div>;
 }
 
@@ -414,7 +388,7 @@ function ParamSlider({
 // ── 工具函数 ──────────────────────────────────────────────
 
 function modeLabel(m: VecMode): string {
-  return { vtracer: 'Fast', potrace: 'Crisp', autotrace: 'Pro' }[m];
+  return { vtracer: 'Fast', potrace: 'Crisp' }[m];
 }
 function namingLabel(n: 'original' | 'suffix'): string {
   return n === 'suffix' ? '加后缀' : '保留原名';

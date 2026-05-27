@@ -1,13 +1,14 @@
 /**
  * 图像转矢量 IPC 通道 —— api:vec:*
  *
- * 3 个模式(2026-05-28 AI 清理后): vtracer / potrace / autotrace
- *   - vtracer:   @neplex/vectorizer Rust NAPI,本身兜底
- *   - potrace:   potrace npm,失败回退 vtracer
- *   - autotrace: spawn autotrace.exe,失败回退 vtracer
+ * 2 个模式(2026-05-28 AI + Pro 全砍后最终态):
+ *   - vtracer: @neplex/vectorizer Rust NAPI,本身兜底
+ *   - potrace: potrace npm,失败回退 vtracer
  *
- * 砍除:starvector(AI · 精准) + experimental(Lab · 实验精修)
- *   理由:VLM 生成 SVG 实测效果差,与 OmniSVG 同质化失败。
+ * 砍除历史:
+ *   - autotrace (Pro):上游 NSIS 安装包混搭 32/64 位 + 缺 libssp,跑不起
+ *   - starvector (AI):VLM 生成 SVG 实测效果差
+ *   - experimental (Lab):自渲染拟合投入产出不成正比
  *
  * 设计要点:
  *   - 所有引擎调用统一走 batchQueue,即使是单图也包成 1 张的 batch
@@ -25,12 +26,11 @@ import { getBatchQueue } from '../services/vectorize/batchQueue';
 import { listVecHistory, clearVecHistory } from '../services/vectorize/vecHistory';
 import { detectImageType } from '../services/vectorize/preprocess/imageTypeDetect';
 import { validateOutputDir } from '../services/vectorize/outputNaming';
-import { resolveAutotracePath } from '../services/vectorize/engines/autotraceEngine';
 import type { VecMode, VecParams } from '../services/vectorize/types';
 
 // ── schemas ─────────────────────────────────────────────────
 
-const VecModeEnum = z.enum(['vtracer', 'potrace', 'autotrace']);
+const VecModeEnum = z.enum(['vtracer', 'potrace']);
 
 const VTracerParamsSchema = z
   .object({
@@ -60,21 +60,7 @@ const PotraceParamsSchema = z
   })
   .strict();
 
-const AutotraceParamsSchema = z
-  .object({
-    colorCount: z.number().int().min(2).max(256).optional(),
-    cornerThreshold: z.number().int().min(0).max(180).optional(),
-    despeckleLevel: z.number().int().min(0).max(20).optional(),
-    centerline: z.boolean().optional(),
-    lineThreshold: z.number().min(0).max(5).optional()
-  })
-  .strict();
-
-const AnyParamsSchema = z.union([
-  VTracerParamsSchema,
-  PotraceParamsSchema,
-  AutotraceParamsSchema
-]);
+const AnyParamsSchema = z.union([VTracerParamsSchema, PotraceParamsSchema]);
 
 const VecBatchOptionsSchema = z.object({
   outputDir: z.string().min(1),
@@ -282,12 +268,6 @@ export function registerVecHandlers(): void {
         makeError('UNKNOWN', `读取报告失败: ${(e as Error).message}`, { severity: 'toast' })
       );
     }
-  });
-
-  // ── AutoTrace 探测(UI 用于判断 Pro 是否激活) ──
-  register('api:vec:autotrace-probe', null, async () => {
-    const exe = resolveAutotracePath();
-    return ok({ available: exe !== null, exePath: exe });
   });
 
   // ── 打开 debug 目录(空 reportDir = 打开根目录) ──

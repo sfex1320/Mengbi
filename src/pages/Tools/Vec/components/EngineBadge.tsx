@@ -21,8 +21,7 @@ interface Props {
 
 const SHORT: Record<VecMode, string> = {
   vtracer: 'VTracer',
-  potrace: 'Potrace',
-  autotrace: 'AutoTrace'
+  potrace: 'Potrace'
 };
 
 export function EngineBadge({

@@ -73,13 +73,11 @@ class BatchQueueImpl {
   // 每种模式独立的待办 / 正跑集合
   private readonly pendingByMode: Record<VecMode, string[]> = {
     vtracer: [],
-    potrace: [],
-    autotrace: []
+    potrace: []
   };
   private readonly runningByMode: Record<VecMode, Set<string>> = {
     vtracer: new Set(),
-    potrace: new Set(),
-    autotrace: new Set()
+    potrace: new Set()
   };
 
   // 暂停的批次 (batchId set)

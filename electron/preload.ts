@@ -125,8 +125,7 @@ const api: ElectronAPI = {
     historyClear: (input) => invoke('api:vec:history-clear', input),
     detectType: (input) => invoke('api:vec:detect-type', input),
     reportGet: (input) => invoke('api:vec:report-get', input),
-    debugOpen: (input) => invoke('api:vec:debug-open', input),
-    autotraceProbe: () => invoke('api:vec:autotrace-probe')
+    debugOpen: (input) => invoke('api:vec:debug-open', input)
   },
   upscale: {
     status: () => invoke('api:upscale:status'),

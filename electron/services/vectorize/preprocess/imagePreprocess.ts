@@ -1,9 +1,8 @@
 /**
- * ImagePreprocess —— 按模式做特定预处理(3 模式,2026-05-28)。
+ * ImagePreprocess —— 按模式做特定预处理(2 模式,2026-05-28 最终态)。
  *
- * VTracer:   passthrough(VTracer 自带颜色量化)
- * Potrace:   转灰度 + 自动对比度
- * AutoTrace: 轻度去噪(median 3x3)
+ * VTracer: passthrough(VTracer 自带颜色量化)
+ * Potrace: 转灰度 + 自动对比度
  *
  * 所有预处理结果写到 userData/vec-debug/<ts>/input_preprocessed.png(由 debugWriter copy),
  * 这里仅返回临时文件路径。
@@ -51,10 +50,6 @@ export async function preprocessForMode(
     case 'potrace':
       // 转灰度 + 对比度增强(便于阈值化)
       pipeline = pipeline.grayscale().normalise();
-      break;
-    case 'autotrace':
-      // 轻度去噪(autotrace 自带 color-count,这里给中和的输入)
-      pipeline = pipeline.median(3); // 3x3 median 去噪
       break;
   }
 

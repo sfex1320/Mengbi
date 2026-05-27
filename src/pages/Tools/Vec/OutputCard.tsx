@@ -68,11 +68,5 @@ export function OutputCard(): JSX.Element {
 }
 
 function modeLabel(m: string): string {
-  return (
-    {
-      vtracer: 'Fast (彩色)',
-      potrace: 'Crisp (单色)',
-      autotrace: 'Pro (高级描摹)'
-    }[m] ?? m
-  );
+  return ({ vtracer: 'Fast (彩色)', potrace: 'Crisp (单色)' }[m] ?? m);
 }

@@ -92,25 +92,25 @@ export async function detectImageType(inputPath: string): Promise<ImageTypeDetec
   if (isMostlyBW && distinctColors < 20) {
     if (edgeDensity > 0.05) {
       tag = 'bw-lineart';
-      recommendedModes = ['potrace', 'autotrace', 'vtracer'];
+      recommendedModes = ['potrace', 'vtracer'];
       reasonZh = '黑白线稿,推荐 Crisp(Potrace)';
     } else {
       tag = 'mono-logo';
-      recommendedModes = ['potrace', 'autotrace', 'vtracer'];
-      reasonZh = '单色 logo,推荐 Crisp(Potrace)或 Pro(AutoTrace)';
+      recommendedModes = ['potrace', 'vtracer'];
+      reasonZh = '单色 logo,推荐 Crisp(Potrace)';
     }
   } else if (distinctColors < 64 && edgeDensity > 0.03) {
     tag = 'color-logo';
-    recommendedModes = ['vtracer', 'autotrace'];
-    reasonZh = '彩色 logo,推荐 Fast(VTracer)或 Pro(AutoTrace)';
+    recommendedModes = ['vtracer'];
+    reasonZh = '彩色 logo,推荐 Fast(VTracer)';
   } else if (distinctColors < 200 && edgeDensity > 0.05) {
     tag = 'flat-illustration';
-    recommendedModes = ['vtracer', 'autotrace'];
+    recommendedModes = ['vtracer'];
     reasonZh = '扁平插画,推荐 Fast(VTracer)';
   } else if (distinctColors < 500 && edgeDensity > 0.08) {
     tag = 'icon';
-    recommendedModes = ['vtracer', 'autotrace'];
-    reasonZh = '图标,推荐 Fast(VTracer)或 Pro(AutoTrace)';
+    recommendedModes = ['vtracer'];
+    reasonZh = '图标,推荐 Fast(VTracer)';
   } else if (satStd > 60 && edgeDensity < 0.04) {
     tag = 'gradient-photo';
     recommendedModes = ['vtracer'];
@@ -121,7 +121,7 @@ export async function detectImageType(inputPath: string): Promise<ImageTypeDetec
     reasonZh = '复杂照片,矢量化会有大量节点,只能用 Fast(VTracer)';
   } else {
     tag = 'flat-illustration';
-    recommendedModes = ['vtracer', 'autotrace'];
+    recommendedModes = ['vtracer'];
     reasonZh = '常规图片,推荐 Fast(VTracer)';
   }
 

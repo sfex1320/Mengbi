@@ -15,12 +15,6 @@ extraResources:
     to: hypir-portable
     filter:
       - "**/*"
-  # AutoTrace 便携 exe(Phase 2)。目录不存在时 electron-builder 会跳过,不会报错。
-  # 用户运行后:resources/autotrace-portable/autotrace.exe → process.resourcesPath/autotrace-portable/autotrace.exe
-  - from: resources/autotrace-portable
-    to: autotrace-portable
-    filter:
-      - "**/*"
 asarUnpack:
   - resources/**
   - "**/*.{node,dll}"

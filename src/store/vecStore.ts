@@ -58,8 +58,6 @@ export interface VecTaskView {
 
 interface VecState {
   selectedMode: VecMode;
-  /** 每个模式的可用性(由 probe 异步填充) */
-  modeAvailability: Partial<Record<VecMode, boolean>>;
   pendingInputs: string[];
   outputDir: string;
   naming: 'original' | 'suffix';
@@ -71,7 +69,6 @@ interface VecState {
   lastImageHint: ImageTypeDetection | null;
 
   setSelectedMode: (m: VecMode) => void;
-  setModeAvailability: (mode: VecMode, available: boolean) => void;
   setPendingInputs: (paths: string[]) => void;
   addPendingInputs: (paths: string[]) => void;
   clearPendingInputs: () => void;
@@ -90,7 +87,6 @@ interface VecState {
 
 export const useVecStore = create<VecState>((set, get) => ({
   selectedMode: 'vtracer',
-  modeAvailability: { vtracer: true, potrace: true },
   pendingInputs: [],
   outputDir: '',
   naming: 'original',
@@ -101,8 +97,6 @@ export const useVecStore = create<VecState>((set, get) => ({
   lastImageHint: null,
 
   setSelectedMode: (m) => set({ selectedMode: m }),
-  setModeAvailability: (mode, available) =>
-    set((s) => ({ modeAvailability: { ...s.modeAvailability, [mode]: available } })),
   setPendingInputs: (paths) => set({ pendingInputs: paths }),
   addPendingInputs: (paths) =>
     set((s) => ({ pendingInputs: [...new Set([...s.pendingInputs, ...paths])] })),
