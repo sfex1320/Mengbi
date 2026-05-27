@@ -47,6 +47,8 @@ import {
   cancelTask,
   type UpscaleParams
 } from '../services/realesrganRunner';
+import { getSidecarManager } from '../services/ai-platform/sidecarManager';
+import { REALESRGAN_PYTORCH_FEATURE_ID } from '../services/ai-features/realesrgan-pytorch';
 import { getDb } from '../services/db';
 import { makeError } from '@shared/error';
 
@@ -252,10 +254,48 @@ export function registerUpscaleHandlers(): void {
     const r = cancelTask(input.taskId);
     return ok(r);
   });
+
+  // ── PyTorch sidecar(扩展模型 / face_enhance / denoise_strength) ──
+  register('api:upscale:pytorch-probe', null, async () => {
+    const status = await getSidecarManager().getServerStatus(REALESRGAN_PYTORCH_FEATURE_ID);
+    return ok({
+      reachable: status.reachable,
+      port: status.port,
+      raw: status.raw ?? null,
+      error: status.error ?? null
+    });
+  });
+
+  register('api:upscale:pytorch-start', null, async () => {
+    try {
+      const r = await getSidecarManager().start(REALESRGAN_PYTORCH_FEATURE_ID);
+      return ok(r);
+    } catch (e) {
+      return err(
+        makeError('CONFIG_INVALID', `PyTorch sidecar 启动失败: ${(e as Error).message}`, {
+          severity: 'toast',
+          hint: '先跑 install_realesrgan_extras.bat 装依赖,或查 logs/realesrgan.log'
+        })
+      );
+    }
+  });
+
+  register('api:upscale:pytorch-stop', null, async () => {
+    try {
+      const r = await getSidecarManager().stop(REALESRGAN_PYTORCH_FEATURE_ID);
+      return ok(r);
+    } catch (e) {
+      return err(
+        makeError('UNKNOWN', `PyTorch sidecar 停止失败: ${(e as Error).message}`, { severity: 'toast' })
+      );
+    }
+  });
 }
 
 // 让 helpers WRITE_CHANNELS 白名单识别哪些通道是写操作（用于通知中心）
 export const UPSCALE_WRITE_CHANNELS = [
+  'api:upscale:pytorch-start',
+  'api:upscale:pytorch-stop',
   'api:upscale:install-engine',
   'api:upscale:install-engine-from-zip',
   'api:upscale:remove-engine',

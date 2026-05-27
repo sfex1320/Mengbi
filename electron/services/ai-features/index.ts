@@ -12,6 +12,7 @@
 import { logger } from '../logger';
 import { registerHypirFeature } from './hypir';
 import { registerSupirFeature } from './supir';
+import { registerRealEsrganPytorchFeature } from './realesrgan-pytorch';
 
 let registered = false;
 
@@ -20,10 +21,17 @@ export function registerBuiltinAiFeatures(): void {
   registered = true;
   registerHypirFeature();
   registerSupirFeature();
-  logger.info('[ai-platform] builtin features registered: hypir, supir');
+  registerRealEsrganPytorchFeature();
+  logger.info('[ai-platform] builtin features registered: hypir, supir, realesrgan-pytorch');
 }
 
 export { HYPIR_FEATURE_ID, buildHypirSubmitBody, mapHypirErrorCode } from './hypir';
 export type { HypirSubmitInput } from './hypir';
 export { SUPIR_FEATURE_ID, buildSupirSubmitBody, mapSupirErrorCode } from './supir';
 export type { SupirSubmitInput } from './supir';
+export {
+  REALESRGAN_PYTORCH_FEATURE_ID,
+  buildRealEsrganPytorchSubmitBody,
+  mapRealEsrganPytorchErrorCode
+} from './realesrgan-pytorch';
+export type { RealEsrganPytorchSubmitInput } from './realesrgan-pytorch';

@@ -137,7 +137,10 @@ const api: ElectronAPI = {
     removeModel: (input) => invoke('api:upscale:remove-model', input),
     runSingle: (input) => invoke('api:upscale:run-single', input),
     runBatch: (input) => invoke('api:upscale:run-batch', input),
-    cancel: (input) => invoke('api:upscale:cancel', input ?? {})
+    cancel: (input) => invoke('api:upscale:cancel', input ?? {}),
+    pytorchProbe: () => invoke('api:upscale:pytorch-probe'),
+    pytorchStart: () => invoke('api:upscale:pytorch-start'),
+    pytorchStop: () => invoke('api:upscale:pytorch-stop')
   },
   hypir: {
     check: (input) => invoke('api:hypir:check', input),

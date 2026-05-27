@@ -132,13 +132,30 @@ export function RealESRGANPanel(): JSX.Element {
   const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);
   const [progress, setProgress] = useState<UpscaleProgressPayload | null>(null);
 
+  // ─── PyTorch sidecar 状态(扩展后端) ──────────────
+  const [pytorchReachable, setPytorchReachable] = useState(false);
+
+  const probePytorch = useCallback(async () => {
+    try {
+      const r = await window.electronAPI.upscale.pytorchProbe();
+      if (r.ok) setPytorchReachable(r.data.reachable);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+  useEffect(() => {
+    void probePytorch();
+    const t = setInterval(() => void probePytorch(), 8000);
+    return () => clearInterval(t);
+  }, [probePytorch]);
+
   // ─── 计算 ─────────────────────────────────────────
   const noEngine = !status || !status.installed;
   const platformBlocked = status?.platform === 'unsupported';
 
   const caps: BackendCapabilities = useMemo(
-    () => ({ ncnn: !!status?.installed, pytorch: false }),
-    [status?.installed]
+    () => ({ ncnn: !!status?.installed, pytorch: pytorchReachable }),
+    [status?.installed, pytorchReachable]
   );
 
   const availableModelsLower = useMemo(

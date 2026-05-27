@@ -1,0 +1,10 @@
+{
+  "host": "127.0.0.1",
+  "port": 7869,
+  "realesrgan_models_dir": "models/realesrgan",
+  "gfpgan_models_dir": "models/gfpgan",
+  "default_tile": 0,
+  "default_tile_pad": 10,
+  "default_half_precision": true,
+  "eager_load_models": false
+}

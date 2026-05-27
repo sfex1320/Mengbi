@@ -466,6 +466,12 @@ export interface UpscaleAPI {
   runSingle(input: UpscaleRunSingleInput): Promise<Result<UpscaleSingleResult>>;
   runBatch(input: UpscaleRunBatchInput): Promise<Result<UpscaleBatchResult>>;
   cancel(input?: { taskId?: string }): Promise<Result<{ cancelledTaskIds: string[] }>>;
+  /** PyTorch sidecar 探测(端口 7869);用于 UI 判断扩展模型/face_enhance 是否可用 */
+  pytorchProbe(): Promise<
+    Result<{ reachable: boolean; port: number; raw: Record<string, unknown> | null; error: string | null }>
+  >;
+  pytorchStart(): Promise<Result<{ alreadyRunning: boolean; pid: number | null; port: number }>>;
+  pytorchStop(): Promise<Result<{ stopped: boolean }>>;
 }
 
 /** 'upscale:progress' push payload */
