@@ -1,5 +1,5 @@
 @echo off
-REM Real-ESRGAN PyTorch Portable stop (port 7869)
+REM Real-ESRGAN PyTorch Portable stop (port 7869). ASCII-only.
 
 setlocal EnableDelayedExpansion
 cd /d "%~dp0"

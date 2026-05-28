@@ -1,6 +1,7 @@
 @echo off
 REM ===================================================================
 REM  Real-ESRGAN PyTorch Portable launcher (port 7869)
+REM  ASCII-only (Chinese cmd.exe GBK + UTF-8 BOM = garbled).
 REM  Shares Python runtime + cache with HYPIR / SUPIR Portable.
 REM ===================================================================
 
@@ -28,7 +29,7 @@ if not exist "%PY_EXE%" (
     exit /b 20
 )
 
-"%PY_EXE%" -c "import torch, realesrgan; print('  torch=%s realesrgan=%s' % (torch.__version__, realesrgan.__version__))"
+"%PY_EXE%" -c "import torch, realesrgan; print('  torch=%%s realesrgan=%%s' %% (torch.__version__, realesrgan.__version__))"
 if errorlevel 1 (
     echo [realesrgan][FATAL] torch or realesrgan missing. Run install_realesrgan_extras.bat
     pause
