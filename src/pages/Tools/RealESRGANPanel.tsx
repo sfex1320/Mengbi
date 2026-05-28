@@ -1395,10 +1395,40 @@ function PytorchBackendSection({
         toast.error('启动失败', r.error.message);
         return;
       }
-      toast.info('PyTorch 后端启动中', '首次加载可能 20-30s');
-      setTimeout(() => onRefresh(), 3000);
+      toast.info('PyTorch 后端启动中', '首次加载可能 20-30s,正在轮询...');
+      // 轮询 30s 看是否真起来。spawn 立刻返回但 bat 可能下一秒就 exit(依赖缺失等)。
+      let success = false;
+      for (let i = 0; i < 30; i++) {
+        await new Promise((res) => setTimeout(res, 1000));
+        const probe = await window.electronAPI.upscale.pytorchProbe();
+        if (probe.ok && probe.data.reachable) {
+          success = true;
+          break;
+        }
+      }
+      if (success) {
+        toast.success('PyTorch 后端就绪');
+        onRefresh();
+      } else {
+        toast.error(
+          '启动超时(30s 未响应)',
+          '常见原因:① 缺 Python runtime ② 没跑 install_realesrgan_extras.bat ③ 没下 .pth 模型。点下面「打开便携包目录」自己装。'
+        );
+      }
     } finally {
       setBusy(null);
+    }
+  }
+
+  async function openPortableDir(): Promise<void> {
+    // userData/engines/HYPIR_Portable —— PyTorch sidecar 跟 HYPIR 共用根目录
+    // 通过 hypir 探测拿到具体路径
+    const probe = await window.electronAPI.hypir.probe();
+    if (probe.ok) {
+      await window.electronAPI.storage.openPath({
+        targetPath: probe.data.portablePath,
+        ensureDir: true
+      });
     }
   }
 
@@ -1478,6 +1508,14 @@ function PytorchBackendSection({
             }}
           >
             刷新
+          </button>
+          <button
+            type="button"
+            className="mb-btn mb-btn-ghost mb-btn-sm"
+            onClick={() => void openPortableDir()}
+            title="打开 %APPDATA%/mengbi/engines/HYPIR_Portable/,在那里跑 install_realesrgan_extras.bat / 放 Python runtime / 放 .pth 模型"
+          >
+            <FolderIcon size={11} /> 便携包目录
           </button>
         </div>
 
