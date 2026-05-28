@@ -21,6 +21,7 @@ const PUSH_CHANNELS: ReadonlySet<PushChannel> = new Set<PushChannel>([
   'upscale:progress',
   'upscale:done',
   'upscale:install-progress',
+  'upscale:pytorch-download-progress',
   'hypir:progress',
   'supir:progress',
   // 通用 AI 平台底座（安装脚本进度）
