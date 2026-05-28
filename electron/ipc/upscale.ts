@@ -47,8 +47,13 @@ import {
   cancelTask,
   type UpscaleParams
 } from '../services/realesrganRunner';
+import { existsSync, statSync } from 'node:fs';
+import { BrowserWindow } from 'electron';
 import { getSidecarManager } from '../services/ai-platform/sidecarManager';
+import { getPortableRoot } from '../services/ai-platform/pythonRuntime';
 import { REALESRGAN_PYTORCH_FEATURE_ID } from '../services/ai-features/realesrgan-pytorch';
+import { PYTORCH_MODELS } from '../services/ai-features/realesrgan-pytorch';
+import { downloadFromAny } from '../services/netDownloader';
 import { getDb } from '../services/db';
 import { makeError } from '@shared/error';
 
@@ -290,12 +295,90 @@ export function registerUpscaleHandlers(): void {
       );
     }
   });
+
+  // ── PyTorch 模型清单(从 ModelSpec 派生,加上本地存在性检查) ──
+  register('api:upscale:pytorch-model-list', null, async () => {
+    const root = getPortableRoot();
+    const list = PYTORCH_MODELS.map((m) => {
+      const abs = path.join(root, m.relPath);
+      let installed = false;
+      let actualBytes = 0;
+      try {
+        if (existsSync(abs)) {
+          installed = true;
+          actualBytes = statSync(abs).size;
+        }
+      } catch {
+        /* */
+      }
+      return {
+        id: m.id,
+        displayName: m.displayName,
+        licenseNote: m.licenseNote,
+        relPath: m.relPath,
+        absPath: abs,
+        expectedBytes: m.expectedBytes,
+        actualBytes,
+        installed,
+        sources: m.sources.map((s) => ({ name: s.name, url: s.url, mirror: !!s.mirror }))
+      };
+    });
+    return ok({ portableRoot: root, models: list });
+  });
+
+  // ── 下载某个 PyTorch 模型 .pth ──
+  register(
+    'api:upscale:pytorch-download-model',
+    z.object({ modelId: z.string().min(1) }),
+    async (input) => {
+      const spec = PYTORCH_MODELS.find((m) => m.id === input.modelId);
+      if (!spec) {
+        return err(
+          makeError('VALIDATION_FAILED', `未知模型: ${input.modelId}`, { severity: 'toast' })
+        );
+      }
+      const root = getPortableRoot();
+      const dest = path.join(root, spec.relPath);
+      const urls = spec.sources.map((s) => s.url);
+      try {
+        const onProg = (e: { component: string; received: number; total: number }): void => {
+          for (const w of BrowserWindow.getAllWindows()) {
+            if (w.isDestroyed()) continue;
+            try {
+              w.webContents.send('upscale:pytorch-download-progress', {
+                modelId: input.modelId,
+                component: e.component,
+                received: e.received,
+                total: e.total
+              });
+            } catch {
+              /* */
+            }
+          }
+        };
+        const r = await downloadFromAny(urls, dest, {
+          component: spec.displayName,
+          onProgress: onProg
+        });
+        return ok({ modelId: input.modelId, usedUrl: r.usedUrl, destPath: dest });
+      } catch (e) {
+        const msg = (e as Error).message;
+        return err(
+          makeError('NETWORK_OFFLINE', `下载失败: ${msg}`, {
+            severity: 'toast',
+            hint: '可能 GitHub / HF 不通;手动下载后放到目标路径'
+          })
+        );
+      }
+    }
+  );
 }
 
 // 让 helpers WRITE_CHANNELS 白名单识别哪些通道是写操作（用于通知中心）
 export const UPSCALE_WRITE_CHANNELS = [
   'api:upscale:pytorch-start',
   'api:upscale:pytorch-stop',
+  'api:upscale:pytorch-download-model',
   'api:upscale:install-engine',
   'api:upscale:install-engine-from-zip',
   'api:upscale:remove-engine',

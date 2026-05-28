@@ -60,7 +60,8 @@ import type {
   UpscaleSource,
   UpscaleFormat,
   UpscaleProgressPayload,
-  UpscaleInstallProgressPayload
+  UpscaleInstallProgressPayload,
+  UpscalePytorchDownloadProgressPayload
 } from '@shared/ipc';
 
 interface UpscaleTask {
@@ -569,6 +570,12 @@ export function RealESRGANPanel(): JSX.Element {
                 format={format}
                 setFormat={setFormat}
                 disabled={running}
+              />
+
+              {/* 3b. PyTorch 后端 — 启动/停止 + 模型清单(折叠,默认收起) */}
+              <PytorchBackendSection
+                reachable={pytorchReachable}
+                onRefresh={probePytorch}
               />
 
               {/* 4. 高级设置(折叠) */}
@@ -1327,6 +1334,220 @@ function EmptyPane({ noEngine }: { noEngine: boolean }): JSX.Element {
         {noEngine ? '左侧选下载源后点「在线安装引擎」' : '左侧选模式 + 加图后点开始放大'}
       </div>
     </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────
+// PyTorch 后端 sub-panel(启动 / 停止 + 模型清单 + 下载)
+// ──────────────────────────────────────────────────────────────────
+
+interface PytorchModelView {
+  id: string;
+  displayName: string;
+  licenseNote: string;
+  relPath: string;
+  absPath: string;
+  expectedBytes: number;
+  actualBytes: number;
+  installed: boolean;
+  sources: Array<{ name: string; url: string; mirror: boolean }>;
+}
+
+function PytorchBackendSection({
+  reachable,
+  onRefresh
+}: {
+  reachable: boolean;
+  onRefresh: () => void;
+}): JSX.Element {
+  const [models, setModels] = useState<PytorchModelView[]>([]);
+  const [busy, setBusy] = useState<string | null>(null); // 'start'/'stop'/modelId
+  const [downloadProgress, setDownloadProgress] = useState<
+    Record<string, { received: number; total: number }>
+  >({});
+
+  const refreshModels = useCallback(async () => {
+    const r = await window.electronAPI.upscale.pytorchModelList();
+    if (r.ok) setModels(r.data.models);
+  }, []);
+
+  useEffect(() => {
+    void refreshModels();
+  }, [refreshModels]);
+
+  useEffect(() => {
+    if (!window.electronAPI?.on) return;
+    const off = window.electronAPI.on('upscale:pytorch-download-progress', (raw) => {
+      const p = raw as UpscalePytorchDownloadProgressPayload;
+      setDownloadProgress((prev) => ({
+        ...prev,
+        [p.modelId]: { received: p.received, total: p.total }
+      }));
+    });
+    return () => off?.();
+  }, []);
+
+  async function startSidecar(): Promise<void> {
+    setBusy('start');
+    try {
+      const r = await window.electronAPI.upscale.pytorchStart();
+      if (!r.ok) {
+        toast.error('启动失败', r.error.message);
+        return;
+      }
+      toast.info('PyTorch 后端启动中', '首次加载可能 20-30s');
+      setTimeout(() => onRefresh(), 3000);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function stopSidecar(): Promise<void> {
+    setBusy('stop');
+    try {
+      const r = await window.electronAPI.upscale.pytorchStop();
+      if (!r.ok) {
+        toast.error('停止失败', r.error.message);
+        return;
+      }
+      toast.info('PyTorch 后端已停止');
+      onRefresh();
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function downloadModel(modelId: string): Promise<void> {
+    setBusy(modelId);
+    setDownloadProgress((p) => ({ ...p, [modelId]: { received: 0, total: 0 } }));
+    try {
+      const r = await window.electronAPI.upscale.pytorchDownloadModel({ modelId });
+      if (!r.ok) {
+        toast.error('下载失败', r.error.message);
+        return;
+      }
+      toast.success(`已下载 ${modelId}`, r.data.destPath);
+      await refreshModels();
+    } finally {
+      setBusy(null);
+      setDownloadProgress((p) => {
+        const next = { ...p };
+        delete next[modelId];
+        return next;
+      });
+    }
+  }
+
+  const installed = models.filter((m) => m.installed).length;
+  const total = models.length;
+  const badge = `${reachable ? '运行中' : '未启动'} · ${installed}/${total} 模型`;
+
+  return (
+    <Collapsible title="AI 后端 (PyTorch)" badge={badge}>
+      <div className="mb-tlx-pytorch-section">
+        {/* 状态栏 */}
+        <div className="mb-tlx-pytorch-status">
+          <span className={`mb-tlx-chip ${reachable ? 'is-ok' : 'is-warn'}`}>
+            {reachable ? '✓ sidecar 运行中(端口 7869)' : '○ sidecar 未启动'}
+          </span>
+          {reachable ? (
+            <button
+              type="button"
+              className="mb-btn mb-btn-ghost mb-btn-sm"
+              onClick={() => void stopSidecar()}
+              disabled={busy === 'stop'}
+            >
+              停止
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="mb-btn mb-btn-primary mb-btn-sm"
+              onClick={() => void startSidecar()}
+              disabled={busy === 'start'}
+            >
+              {busy === 'start' ? '启动中…' : '启动后端'}
+            </button>
+          )}
+          <button
+            type="button"
+            className="mb-btn mb-btn-ghost mb-btn-sm"
+            onClick={() => {
+              onRefresh();
+              void refreshModels();
+            }}
+          >
+            刷新
+          </button>
+        </div>
+
+        {!reachable && (
+          <PanelBanner tone="info">
+            启动前需要先跑一次 <code>install_realesrgan_extras.bat</code> 装 realesrgan/basicsr/gfpgan 等依赖
+            (~5 分钟,清华镜像)。安装位置:{' '}
+            <code>resources/hypir-portable/</code>。
+          </PanelBanner>
+        )}
+
+        {/* 模型清单 */}
+        <div className="mb-tlx-pytorch-models">
+          <div className="mb-tlx-section-title">模型清单({installed}/{total} 已装)</div>
+          {models.map((m) => {
+            const prog = downloadProgress[m.id];
+            const pct = prog && prog.total > 0 ? Math.round((prog.received / prog.total) * 100) : 0;
+            const downloading = busy === m.id;
+            return (
+              <div key={m.id} className="mb-tlx-pytorch-model-row">
+                <div className="mb-tlx-pytorch-model-info">
+                  <div className="mb-tlx-pytorch-model-name">
+                    {m.displayName}
+                    {m.installed && <span className="mb-tlx-pytorch-installed-tag">已装</span>}
+                  </div>
+                  <div className="mb-tlx-pytorch-model-meta">
+                    {(m.expectedBytes / 1024 / 1024).toFixed(0)} MB · {m.licenseNote}
+                  </div>
+                  <code className="mb-tlx-pytorch-model-path">{m.relPath}</code>
+                  {downloading && prog && (
+                    <div className="mb-tlx-pytorch-model-progress">
+                      <div className="mb-tlx-progress-bar">
+                        <div className="mb-tlx-progress-fill" style={{ width: `${pct}%` }} />
+                      </div>
+                      <span>
+                        {pct}% · {(prog.received / 1024 / 1024).toFixed(1)} /{' '}
+                        {(prog.total / 1024 / 1024).toFixed(0)} MB
+                      </span>
+                    </div>
+                  )}
+                </div>
+                <div className="mb-tlx-pytorch-model-actions">
+                  {m.installed ? (
+                    <button
+                      type="button"
+                      className="mb-btn mb-btn-ghost mb-btn-xs"
+                      onClick={() =>
+                        void window.electronAPI.storage.showInFolder(m.absPath)
+                      }
+                      title="在文件夹中显示"
+                    >
+                      <FolderIcon size={11} />
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="mb-btn mb-btn-primary mb-btn-xs"
+                      onClick={() => void downloadModel(m.id)}
+                      disabled={downloading}
+                    >
+                      {downloading ? '下载中' : '下载'}
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </Collapsible>
   );
 }
 

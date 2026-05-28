@@ -121,6 +121,7 @@ export type PushChannel =
   | 'upscale:progress'
   | 'upscale:done'
   | 'upscale:install-progress'
+  | 'upscale:pytorch-download-progress'
   | 'hypir:progress'
   | 'supir:progress'
   | 'ai-feature:install-progress'
@@ -472,6 +473,35 @@ export interface UpscaleAPI {
   >;
   pytorchStart(): Promise<Result<{ alreadyRunning: boolean; pid: number | null; port: number }>>;
   pytorchStop(): Promise<Result<{ stopped: boolean }>>;
+  /** 列出 PyTorch sidecar 用到的 8 个模型 + 本地存在性 */
+  pytorchModelList(): Promise<
+    Result<{
+      portableRoot: string;
+      models: Array<{
+        id: string;
+        displayName: string;
+        licenseNote: string;
+        relPath: string;
+        absPath: string;
+        expectedBytes: number;
+        actualBytes: number;
+        installed: boolean;
+        sources: Array<{ name: string; url: string; mirror: boolean }>;
+      }>;
+    }>
+  >;
+  /** 下载指定 modelId 到便携包对应路径 */
+  pytorchDownloadModel(input: { modelId: string }): Promise<
+    Result<{ modelId: string; usedUrl: string; destPath: string }>
+  >;
+}
+
+/** 'upscale:pytorch-download-progress' push payload */
+export interface UpscalePytorchDownloadProgressPayload {
+  modelId: string;
+  component: string;
+  received: number;
+  total: number;
 }
 
 /** 'upscale:progress' push payload */
