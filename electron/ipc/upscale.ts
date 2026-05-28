@@ -50,7 +50,7 @@ import {
 import { existsSync, statSync } from 'node:fs';
 import { BrowserWindow } from 'electron';
 import { getSidecarManager } from '../services/ai-platform/sidecarManager';
-import { getPortableRoot } from '../services/ai-platform/pythonRuntime';
+import { getPortableRoot, bootstrapPortable } from '../services/ai-platform/pythonRuntime';
 import { REALESRGAN_PYTORCH_FEATURE_ID } from '../services/ai-features/realesrgan-pytorch';
 import { PYTORCH_MODELS } from '../services/ai-features/realesrgan-pytorch';
 import { downloadFromAny } from '../services/netDownloader';
@@ -272,14 +272,39 @@ export function registerUpscaleHandlers(): void {
   });
 
   register('api:upscale:pytorch-start', null, async () => {
+    // 启动前先自动 bootstrap(把 resources/hypir-portable/ 脚手架 copy 到 userData/engines/HYPIR_Portable/)。
+    // bootstrap 幂等(已存在的字节相同文件会 skip),所以多次启动不会重复 IO。
+    // 第一次用户从未碰过 HYPIR 时,start_realesrgan.bat 根本不在便携包根,直接 spawn 会找不到文件
+    let bootstrapped = false;
     try {
-      const r = await getSidecarManager().start(REALESRGAN_PYTORCH_FEATURE_ID);
-      return ok(r);
+      const bs = await bootstrapPortable();
+      bootstrapped = bs.copied > 0;
     } catch (e) {
       return err(
-        makeError('CONFIG_INVALID', `PyTorch sidecar 启动失败: ${(e as Error).message}`, {
+        makeError('CONFIG_INVALID', `脚手架展开失败: ${(e as Error).message}`, {
           severity: 'toast',
-          hint: '先跑 install_realesrgan_extras.bat 装依赖,或查 logs/realesrgan.log'
+          hint: '检查 resources/hypir-portable/ 是否存在(打包问题)'
+        })
+      );
+    }
+    try {
+      const r = await getSidecarManager().start(REALESRGAN_PYTORCH_FEATURE_ID);
+      return ok({ ...r, bootstrapped });
+    } catch (e) {
+      const msg = (e as Error).message;
+      // 友好错误归类:python.exe 缺失 / install bat 还没跑 / 端口占用
+      let hint = '查 logs/realesrgan.log';
+      if (/python\.exe|portable Python missing/i.test(msg)) {
+        hint = '首次使用还需装 Python runtime + realesrgan 依赖。请到 HYPIR 面板装一次 Python 运行时(或单独下 Python embed 放到 HYPIR_Portable/runtime/python/),然后跑 install_realesrgan_extras.bat';
+      } else if (/realesrgan|basicsr/i.test(msg)) {
+        hint = '先跑 HYPIR_Portable/install_realesrgan_extras.bat 装 realesrgan/basicsr/gfpgan';
+      } else if (/in use|port/i.test(msg)) {
+        hint = '端口 7869 被占用,检查是否有其它进程或之前的 sidecar 残留';
+      }
+      return err(
+        makeError('CONFIG_INVALID', `PyTorch sidecar 启动失败: ${msg}`, {
+          severity: 'toast',
+          hint
         })
       );
     }

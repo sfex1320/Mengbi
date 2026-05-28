@@ -1483,9 +1483,13 @@ function PytorchBackendSection({
 
         {!reachable && (
           <PanelBanner tone="info">
-            启动前需要先跑一次 <code>install_realesrgan_extras.bat</code> 装 realesrgan/basicsr/gfpgan 等依赖
-            (~5 分钟,清华镜像)。安装位置:{' '}
-            <code>resources/hypir-portable/</code>。
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <strong>首次使用需 3 步</strong>
+              <span>1. 点「启动后端」会自动把脚手架展开到 <code>%APPDATA%\mengbi\engines\HYPIR_Portable\</code></span>
+              <span>2. 装 Python runtime(若已用过 HYPIR/SUPIR 可跳过)+ 跑 <code>install_realesrgan_extras.bat</code>(~5 分钟)</span>
+              <span>3. 下载至少 1 个 .pth 模型(下面清单的「下载」按钮)</span>
+              <span>启动失败的错误信息会在 toast 里给出具体下一步</span>
+            </div>
           </PanelBanner>
         )}
 
