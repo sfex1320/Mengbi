@@ -29,9 +29,10 @@ if not exist "%PY_EXE%" (
     exit /b 20
 )
 
-"%PY_EXE%" -c "import torch, realesrgan; print('  torch=%%s realesrgan=%%s' %% (torch.__version__, realesrgan.__version__))"
+REM realesrgan 0.3.0 doesn't expose __version__; check imports + symbols instead.
+"%PY_EXE%" -c "import torch; from realesrgan import RealESRGANer; from basicsr.archs.rrdbnet_arch import RRDBNet; print('  torch=%%s, cuda=%%s, realesrgan+basicsr OK' %% (torch.__version__, torch.cuda.is_available()))"
 if errorlevel 1 (
-    echo [realesrgan][FATAL] torch or realesrgan missing. Run install_realesrgan_extras.bat
+    echo [realesrgan][FATAL] torch / realesrgan / basicsr import failed. Run install_realesrgan_extras.bat
     pause
     exit /b 25
 )
