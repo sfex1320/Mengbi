@@ -14,6 +14,13 @@ import { ensureThumbnail } from '../services/thumbnail';
 import { detectFamily, getFamilyById, type ImageFamily } from '@shared/imageModelFamilies';
 import { chromiumFetch, ChromiumNetError } from '../services/httpClient';
 import { saveImage, getStorageRoot } from '../services/imageStore';
+import {
+  TIER_PIXEL_BUDGET,
+  snapToGrid,
+  pixelsByAspectAndBudget,
+  resolveSize,
+  applyBodyOverrides
+} from './imageBody';
 
 // ─────────────────────────────────────────────────────
 // 任务队列：FIFO 入队，**最多 3 条并发**
@@ -505,99 +512,9 @@ interface GrsaiImageOpts extends OpenAIImageOpts {
   referenceImages: string[];
 }
 
-// ─────────────────────────────────────────────────────
-// 比例 → 像素尺寸（OpenAI 标准协议）
-// 参考：绘图模型配置规则/GPT-Image-2-配置规则.md §2.2
-//
-// 档位（image_size）按"总像素"算，而不是单边：
-//   1K → 1 MP   ≈ 1024×1024
-//   2K → 4 MP   ≈ 2048×2048
-//   4K → 8.3 MP ≈ 4K UHD（3840×2160 在 16:9 下完美对齐）
-// 这样 4K + 9:16 不会爆 GPT Image 2 的 8.3MP 上限。
-// ─────────────────────────────────────────────────────
-const ASPECT_TO_SIZE: Record<string, string> = {
-  '1:1': '1024x1024',
-  '4:5': '1024x1280',
-  '5:4': '1280x1024',
-  '3:4': '1152x1536',
-  '4:3': '1536x1152',
-  '2:3': '1024x1536',
-  '3:2': '1536x1024',
-  '9:16': '1152x2048',
-  '16:9': '2048x1152',
-  '21:9': '1680x720',
-  '9:21': '720x1680',
-  '4:1': '2048x512',
-  '1:4': '512x2048',
-  '8:1': '2048x256',
-  '1:8': '256x2048',
-  '2:1': '1536x768',
-  '1:2': '768x1536',
-  '3:1': '1920x640',
-  '1:3': '640x1920'
-};
-
-const TIER_PIXEL_BUDGET: Record<string, number> = {
-  '1K': 1_048_576, // 1 MP
-  '2K': 4_194_304, // 4 MP
-  '4K': 8_294_400  // 8.3 MP
-};
-
-function snapToGrid(value: number): number {
-  const snapped = Math.round(value / 16) * 16;
-  return Math.max(256, Math.min(3840, snapped));
-}
-
-/** 严格向下取到 16 的倍数；用于"必须不超预算"的场景（4K 预算 8.3MP） */
-function snapDown16(value: number): number {
-  if (!Number.isFinite(value) || value <= 0) return 256;
-  const snapped = Math.floor(value / 16) * 16;
-  return Math.max(256, Math.min(3840, snapped));
-}
-
-/**
- * 给定比例字符串 + 总像素预算，反推 W×H。
- * 关键约束：snap 后 w*h 必须 **小于等于** totalPx——否则像 GPT Image 2 这种严格 8.3MP 上限的模型会拒绝。
- * 算法：先用 floor-to-16 取下，得到 w0/h0；若仍 > budget（极端比例下浮点误差），逐步把更长那边 -16 直到合规。
- */
-function pixelsByAspectAndBudget(aspect: string, totalPx: number): { w: number; h: number } {
-  const [aw, ah] = aspect.split(':').map(Number);
-  if (!Number.isFinite(aw) || !Number.isFinite(ah) || aw <= 0 || ah <= 0) {
-    const side = Math.sqrt(totalPx);
-    return { w: snapDown16(side), h: snapDown16(side) };
-  }
-  const hExact = Math.sqrt((totalPx * ah) / aw);
-  const wExact = (hExact * aw) / ah;
-  let w = snapDown16(wExact);
-  let h = snapDown16(hExact);
-  // 兜底：极端时再削一档
-  while (w * h > totalPx && (w > 256 || h > 256)) {
-    if (w >= h && w > 256) w -= 16;
-    else if (h > 256) h -= 16;
-    else break;
-  }
-  return { w, h };
-}
-
-/**
- * 解析 params 拿到最终 size 字符串。
- * 优先级：custom W×H > image_size 档位（按总像素） > aspect 比例预设 > 默认 1024x1024
- */
-function resolveSize(params: Record<string, unknown>): string {
-  const w = Number(params.width);
-  const h = Number(params.height);
-  if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
-    return `${snapToGrid(w)}x${snapToGrid(h)}`;
-  }
-  const imageSize = typeof params.image_size === 'string' ? params.image_size : '';
-  const aspect = typeof params.aspect === 'string' ? params.aspect : '1:1';
-  const budget = TIER_PIXEL_BUDGET[imageSize];
-  if (budget) {
-    const { w: cw, h: ch } = pixelsByAspectAndBudget(aspect, budget);
-    return `${cw}x${ch}`;
-  }
-  return ASPECT_TO_SIZE[aspect] ?? '1024x1024';
-}
+// 比例 → 像素尺寸 / 档位换算 / 请求体覆盖 等纯函数已抽到 ./imageBody（便于单测）。
+// ASPECT_TO_SIZE / TIER_PIXEL_BUDGET / snapToGrid / pixelsByAspectAndBudget / resolveSize /
+// applyBodyOverrides 均从那里 import。
 
 async function runOpenAIImage(opts: OpenAIImageOpts): Promise<string[]> {
   const url = joinApiUrl(opts.cfg.base_url, 'images/generations');
@@ -666,7 +583,7 @@ async function runOpenAIImage(opts: OpenAIImageOpts): Promise<string[]> {
     aspect: typeof body.aspect_ratio === 'string' ? body.aspect_ratio : null,
     image_size: typeof body.image_size === 'string' ? body.image_size : null,
     negative_prompt: typeof body.negative_prompt === 'string' ? body.negative_prompt : null
-  });
+  }, (m) => logger.warn(m));
 
   // ────────────────────────────────────────────────────────────
   // 流式分支：family 声明了 streaming 能力（目前只有 gpt-image-2）。
@@ -988,7 +905,7 @@ async function runOpenAIResponsesImage(opts: OpenAIResponsesOpts): Promise<strin
     aspect: typeof opts.params.aspect === 'string' ? opts.params.aspect : null,
     image_size: typeof opts.params.image_size === 'string' ? opts.params.image_size : null,
     negative_prompt: null
-  });
+  }, (m) => logger.warn(m));
 
   logger.info('runOpenAIResponsesImage', {
     url,
@@ -2011,45 +1928,6 @@ async function runMockGenerate(taskId: number): Promise<string[]> {
  * 仅做顶层合并；OpenAI 图片接口的 body 字段都是平的，递归合并复杂度无价值。
  * 非法 JSON / 非对象顶层在 settings 保存时已由 zod 拦截，这里不再二次校验。
  */
-function applyBodyOverrides(
-  body: Record<string, unknown>,
-  overrideText: string | null | undefined,
-  vars: Record<string, unknown>
-): void {
-  if (!overrideText || !overrideText.trim()) return;
-  let overrides: Record<string, unknown>;
-  try {
-    overrides = JSON.parse(overrideText) as Record<string, unknown>;
-  } catch {
-    // 理论上不会到这里（zod 已拦截）。万一发生，宁可静默跳过覆盖也不让生图失败。
-    return;
-  }
-  for (const [k, v] of Object.entries(overrides)) {
-    if (typeof v === 'string') {
-      const m = v.match(/^\$\{(\w+)\}$/);
-      if (m) {
-        // 变量名在 vars 里才替换（含值为 null 时 → 删字段语义）；
-        // 名字打错(vars 没这个键)时跳过此项覆盖、保留默认值，并记警告——
-        // 而不是当成 undefined 把 body[k] 静默删掉（用户根本看不出覆盖失败）。
-        if (m[1] in vars) {
-          body[k] = vars[m[1]];
-        } else {
-          logger.warn(
-            `applyBodyOverrides: 未知变量 \${${m[1]}}（请求体覆盖里写错了？），已跳过对字段 "${k}" 的覆盖`
-          );
-        }
-      } else {
-        body[k] = v;
-      }
-    } else {
-      body[k] = v;
-    }
-  }
-  for (const k of Object.keys(body)) {
-    if (body[k] === null || body[k] === undefined) delete body[k];
-  }
-}
-
 /**
  * 解 b64_json 字段。中转站常把图片包成 data URL（`data:image/png;base64,XXX`）
  * 直接塞进 b64_json，必须先剥前缀再 decode。

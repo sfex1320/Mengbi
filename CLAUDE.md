@@ -724,6 +724,9 @@ CREATE TABLE settings (
 - [ ] 涉及 API Key 的字段经过 `safeStorage`
 - [ ] IPC handler 入参经过 zod 校验
 - [ ] 组件不写颜色字面量，仅用 `var(--mb-*)`
+- [ ] 改动到"参数流"纯函数（family buildBody / `imageBody.ts` 的 resolveSize / applyBodyOverrides）时，`npm test` 通过
+
+> **单元测试（vitest）**：`npm test`（= `vitest run`）。当前覆盖**参数流纯函数** —— `src/types/imageModelFamilies.ts`（family 识别 + buildBody）与 `electron/ipc/imageBody.ts`（resolveSize / applyBodyOverrides / 像素换算），锁住"选 4K 实际出 1024""请求体覆盖变量替换/null 删字段"这类历史 bug。新增纯函数（尤其涉及尺寸/请求体/参数映射）请同步补 `*.test.ts`。测试只跑纯函数，不依赖 electron / better-sqlite3。
 
 ---
 
@@ -880,7 +883,7 @@ OpenAI 兼容只是口号，每个中转站都有字段习惯差异：
 4. **null 剥离**：合并完成后，所有值为 `null` 或 `undefined` 的字段从最终 body 删除——这是"删除字段"的语义
 5. 把最终 body 发出去
 
-实现位于 [generate.ts:applyBodyOverrides](./electron/ipc/generate.ts)。
+实现位于 [imageBody.ts:applyBodyOverrides](./electron/ipc/imageBody.ts)（纯函数，已抽出 generate.ts 便于单测；未知变量名会回调 `onWarn` 跳过该项而非静默删字段）。
 
 ### 13.3 变量表
 
