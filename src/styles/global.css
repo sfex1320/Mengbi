@@ -28,24 +28,52 @@ html {
 }
 
 /**
- * 待机静默模式：窗口失焦 / 最小化 / 切到其它桌面时，
- * 在 <html> 上打 data-idle="true"。把所有 CSS 动画暂停，
- * 包括 .mb-microstar、.mb-meteor、.mb-orb、.mb-galaxy-band、
- * .mb-header-brand-logo-img（渐变漂移）、.mb-marquee-glow（卡片光带）等等。
- * 这能把后台 CPU 降到接近 0—— Chromium 不再为成百上千个动画项做合成。
+ * 待机静默模式(2026-05-29 改造):窗口失焦 / 最小化 / 切到其它桌面时,
+ * 在 <html> 上打 data-idle="true"。
+ *
+ * 旧版一刀切 `* { animation-play-state: paused }` 把所有动画都停,包括进度条 /
+ * loading / spinner 等功能性反馈,让用户在跑 AI 推理时回切窗口看到进度静止 →
+ * 误以为推理卡住(实际上 sidecar Python 进程独立全速跑,IPC 推送也没节流)。
+ *
+ * 新策略:
+ *   - 总规则:idle 时暂停所有动画(把装饰类:粒子 / 星空 / orb / aurora 流光 /
+ *     framer-motion 页面过渡 都停掉,让 CPU 接近 0)
+ *   - 豁免:classname 含 progress / spinner / loading / bar-fill / busy 的功能性
+ *     元素继续动,让用户在窗口失焦回看时仍能看到任务进度推进
+ *   - .mb-anim-keep:utility class — 给特殊场景手动豁免用
  */
+
+/* 总规则:idle 时全暂停 */
 html[data-idle='true'] *,
 html[data-idle='true'] *::before,
 html[data-idle='true'] *::after {
   animation-play-state: paused !important;
-  /* 顺便把 backdrop-filter / filter 这种"每帧合成"的开销停掉一部分：
-     blur(72px) 的 orb 即使 animation 暂停了，它的 filter 仍在每帧计算。
+  /* 顺便把 backdrop-filter / filter 这种"每帧合成"的开销停掉一部分:
+     blur(72px) 的 orb 即使 animation 暂停了,它的 filter 仍在每帧计算。
      用 idle 时把 visibility 设为 hidden 的几个壕坑能进一步省 CPU */
 }
-/* 把最重的几个（带 blur 滤镜）整个隐掉，单独一条，避免 :where 性能开销 */
+
+/* 豁免:功能性动画继续运行(AI 任务进度条 / spinner / loading) */
+html[data-idle='true'] [class*='progress'],
+html[data-idle='true'] [class*='progress'] *,
+html[data-idle='true'] [class*='progress'] *::before,
+html[data-idle='true'] [class*='progress'] *::after,
+html[data-idle='true'] [class*='spinner'],
+html[data-idle='true'] [class*='loading'],
+html[data-idle='true'] [class*='bar-fill'],
+html[data-idle='true'] [class*='busy'],
+html[data-idle='true'] .mb-anim-keep,
+html[data-idle='true'] .mb-anim-keep *,
+html[data-idle='true'] .mb-anim-keep *::before,
+html[data-idle='true'] .mb-anim-keep *::after {
+  animation-play-state: running !important;
+}
+
+/* 把最重的几个(带 blur 滤镜)整个隐掉,单独一条,避免 :where 性能开销 */
 html[data-idle='true'] .mb-orb,
 html[data-idle='true'] .mb-galaxy-band,
-html[data-idle='true'] .mb-meteor {
+html[data-idle='true'] .mb-meteor,
+html[data-idle='true'] .mb-ls-blob {
   visibility: hidden;
 }
 
@@ -202,6 +230,10 @@ a:hover {
   border: 1px solid rgba(248, 113, 113, 0.3);
   background: rgba(248, 113, 113, 0.06);
 }
+/* 浅主题：浅粉红文字在浅底上对比度不足，换成更深的红 */
+[data-atmosphere='warm-jade'] .mb-btn-danger {
+  color: #dc2626;
+}
 .mb-btn-danger:hover:not(:disabled) {
   background: rgba(248, 113, 113, 0.14);
   border-color: rgba(248, 113, 113, 0.5);
@@ -328,88 +360,313 @@ select option:disabled {
   box-shadow: var(--mb-accent-glow);
 }
 
-/* ────────────────────────── 跑马灯炫彩边框（hover 触发） ────────────────────────── */
-/* 用法：给可悬停的卡片加 .mb-marquee-glow 即可。
-   原理：用 @property 注册一个角度变量，让 conic-gradient 的 from 角度可被动画。
-   这样 ::before / ::after 整体不旋转，只是渐变在原位转。
+/* ────────────────────────── 鼠标光晕（取代旧的 mb-marquee-glow） ──────────────────────────
+ * 旧方案给每张 .mb-marquee-glow 卡片各开两层 conic-gradient + blur(28px) + 60fps 旋转动画，
+ * 多模块同屏时（设置页、提示词管家、画廊）GPU 合成压力很大；并且 ::before/::after 在某些
+ * Chromium 渲染分支上有 z-index 错位 bug。
+ *
+ * 新方案：整个 app 只用 1 个 <div class="mb-cursor-halo">，鼠标进入任意 .mb-card 时由 JS
+ * 把 data-active=true 并更新 --mb-halo-x / --mb-halo-y。多种动效由 data-style 切换 CSS class，
+ * 用户在设置里选；想完全关掉就把 data-style=off。
+ *
+ * .mb-marquee-glow 这个旧 className 我们故意保留在 JSX 里（迁移代价高、命中位置广），
+ * 这里不再定义任何样式 —— 等于自动 noop。
+ */
 
-   两层渲染：
-     ::before  内层柔光 — 沿边缘的彩色软带（mask + blur）
-     ::after   外层 halo — 大模糊光晕投在卡片外侧（z-index: -1） */
-@property --mb-marquee-angle {
-  syntax: '<angle>';
-  initial-value: 0deg;
-  inherits: false;
-}
-
-.mb-marquee-glow {
-  position: relative;
-  isolation: isolate;
-}
-
-.mb-marquee-glow::before {
-  content: '';
-  position: absolute;
-  inset: -2px;
-  padding: 4px;
-  border-radius: inherit;
-  background: conic-gradient(
-    from var(--mb-marquee-angle),
-    transparent 0deg,
-    transparent 180deg,
-    color-mix(in srgb, var(--mb-accent) 30%, transparent) 220deg,
-    color-mix(in srgb, var(--mb-accent) 85%, transparent) 270deg,
-    color-mix(in srgb, #c4b5fd 85%, transparent) 315deg,
-    color-mix(in srgb, var(--mb-accent) 30%, transparent) 355deg,
-    transparent 360deg
-  );
-  -webkit-mask:
-    linear-gradient(#000 0 0) content-box,
-    linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask:
-    linear-gradient(#000 0 0) content-box,
-    linear-gradient(#000 0 0);
-  mask-composite: exclude;
-  filter: blur(3px);
+.mb-cursor-halo {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 320px;
+  height: 320px;
+  margin-left: -160px;
+  margin-top: -160px;
   pointer-events: none;
+  z-index: 9000;
   opacity: 0;
-  transition: opacity 600ms var(--mb-ease);
+  transform: translate(var(--mb-halo-x, 0px), var(--mb-halo-y, 0px));
+  transition: opacity 320ms var(--mb-ease, ease);
+  will-change: transform, opacity;
+  mix-blend-mode: screen;
 }
 
-.mb-marquee-glow::after {
-  content: '';
-  position: absolute;
-  inset: -16px;
-  border-radius: inherit;
-  background: conic-gradient(
-    from var(--mb-marquee-angle),
-    transparent 0deg,
-    transparent 200deg,
-    color-mix(in srgb, var(--mb-accent) 65%, transparent) 270deg,
-    color-mix(in srgb, #c4b5fd 65%, transparent) 320deg,
-    transparent 360deg
-  );
-  filter: blur(28px);
-  pointer-events: none;
-  opacity: 0;
-  z-index: -1;
-  transition: opacity 600ms var(--mb-ease);
-}
-
-.mb-marquee-glow:hover::before {
+.mb-cursor-halo[data-active='true'] {
   opacity: 1;
-  animation: mb-marquee-spin 8s linear infinite;
-}
-.mb-marquee-glow:hover::after {
-  opacity: 0.85;
-  animation: mb-marquee-spin 8s linear infinite;
 }
 
-@keyframes mb-marquee-spin {
-  to {
-    --mb-marquee-angle: 360deg;
+.mb-cursor-halo[data-style='off'] {
+  display: none;
+}
+
+/* ── 样式 1: aurora —— 暖橘色柔和呼吸光晕（默认）─────────────────────────── */
+.mb-cursor-halo[data-style='aurora']::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: radial-gradient(
+    closest-side,
+    color-mix(in srgb, var(--mb-accent) 55%, transparent) 0%,
+    color-mix(in srgb, var(--mb-accent) 22%, transparent) 35%,
+    transparent 72%
+  );
+  filter: blur(12px);
+  animation: mb-halo-aurora 4.8s ease-in-out infinite;
+}
+
+@keyframes mb-halo-aurora {
+  0%, 100% { transform: scale(1); opacity: 0.85; }
+  50% { transform: scale(1.12); opacity: 1; }
+}
+
+/* ── 样式 2: pulse —— 同心圆涟漪向外扩散 ───────────────────────────────── */
+.mb-cursor-halo[data-style='pulse']::before,
+.mb-cursor-halo[data-style='pulse']::after {
+  content: '';
+  position: absolute;
+  inset: 32% 32%;
+  border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, var(--mb-accent) 70%, transparent);
+  box-shadow: 0 0 24px color-mix(in srgb, var(--mb-accent) 40%, transparent);
+  animation: mb-halo-pulse 2.2s ease-out infinite;
+}
+.mb-cursor-halo[data-style='pulse']::after {
+  animation-delay: 1.1s;
+}
+
+@keyframes mb-halo-pulse {
+  0% { transform: scale(0.4); opacity: 0; }
+  20% { opacity: 1; }
+  100% { transform: scale(2.4); opacity: 0; }
+}
+
+/* ── 样式 3: prism —— 角度旋转的多色光斑（性能较高的"旋转感"替代品）───── */
+.mb-cursor-halo[data-style='prism']::before {
+  content: '';
+  position: absolute;
+  inset: 22%;
+  border-radius: 50%;
+  background: conic-gradient(
+    from 0deg,
+    color-mix(in srgb, var(--mb-accent) 65%, transparent),
+    color-mix(in srgb, #c4b5fd 50%, transparent),
+    color-mix(in srgb, var(--mb-accent) 65%, transparent),
+    color-mix(in srgb, #a7f3d0 45%, transparent),
+    color-mix(in srgb, var(--mb-accent) 65%, transparent)
+  );
+  filter: blur(18px);
+  animation: mb-halo-prism 6s linear infinite;
+}
+
+@keyframes mb-halo-prism {
+  to { transform: rotate(360deg); }
+}
+
+/* ── 样式 4: trail —— 细微的尾迹拖影 ───────────────────────────────────── */
+.mb-cursor-halo[data-style='trail']::before {
+  content: '';
+  position: absolute;
+  inset: 40%;
+  border-radius: 50%;
+  background: radial-gradient(
+    closest-side,
+    color-mix(in srgb, var(--mb-accent) 70%, transparent),
+    transparent 70%
+  );
+  filter: blur(8px);
+  transition: transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.mb-cursor-halo[data-style='trail'] {
+  transition:
+    opacity 320ms var(--mb-ease, ease),
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* ── 样式 5: orbit —— 两个小光点绕鼠标转 ───────────────────────────────── */
+.mb-cursor-halo[data-style='orbit']::before,
+.mb-cursor-halo[data-style='orbit']::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border-radius: 50%;
+  background: var(--mb-accent);
+  box-shadow: 0 0 16px color-mix(in srgb, var(--mb-accent) 70%, transparent);
+  animation: mb-halo-orbit 3.2s linear infinite;
+}
+.mb-cursor-halo[data-style='orbit']::after {
+  background: color-mix(in srgb, #c4b5fd 80%, var(--mb-accent));
+  animation-delay: -1.6s;
+  animation-duration: 4.2s;
+  width: 8px;
+  height: 8px;
+  margin: -4px 0 0 -4px;
+}
+
+@keyframes mb-halo-orbit {
+  from { transform: rotate(0deg) translateX(56px) rotate(0deg); }
+  to   { transform: rotate(360deg) translateX(56px) rotate(-360deg); }
+}
+
+/* ── 样式 6: ring —— 双层细环慢慢旋转 ──────────────────────────────────── */
+.mb-cursor-halo[data-style='ring']::before,
+.mb-cursor-halo[data-style='ring']::after {
+  content: '';
+  position: absolute;
+  border-radius: 50%;
+  border: 1.5px dashed color-mix(in srgb, var(--mb-accent) 65%, transparent);
+  inset: 30%;
+  animation: mb-halo-ring 9s linear infinite;
+}
+.mb-cursor-halo[data-style='ring']::after {
+  inset: 38%;
+  border-style: solid;
+  border-width: 1px;
+  border-color: color-mix(in srgb, var(--mb-accent) 45%, transparent);
+  animation-direction: reverse;
+  animation-duration: 14s;
+}
+
+@keyframes mb-halo-ring {
+  to { transform: rotate(360deg); }
+}
+
+/* ── 样式 7: nebula —— 双层 conic 反向旋转 + 模糊 ──────────────────────── */
+.mb-cursor-halo[data-style='nebula']::before,
+.mb-cursor-halo[data-style='nebula']::after {
+  content: '';
+  position: absolute;
+  inset: 18%;
+  border-radius: 50%;
+  filter: blur(22px);
+  animation: mb-halo-prism 8s linear infinite;
+}
+.mb-cursor-halo[data-style='nebula']::before {
+  background: conic-gradient(
+    from 0deg,
+    color-mix(in srgb, var(--mb-accent) 70%, transparent),
+    transparent 40%,
+    color-mix(in srgb, #c4b5fd 60%, transparent),
+    transparent 80%,
+    color-mix(in srgb, var(--mb-accent) 70%, transparent)
+  );
+}
+.mb-cursor-halo[data-style='nebula']::after {
+  background: conic-gradient(
+    from 180deg,
+    transparent,
+    color-mix(in srgb, #a7f3d0 55%, transparent),
+    transparent 50%,
+    color-mix(in srgb, var(--mb-accent) 50%, transparent),
+    transparent
+  );
+  animation-direction: reverse;
+  animation-duration: 12s;
+  mix-blend-mode: lighten;
+}
+
+/* ── 样式 8: breath —— 色相缓慢漂移的呼吸光斑 ─────────────────────────── */
+.mb-cursor-halo[data-style='breath']::before {
+  content: '';
+  position: absolute;
+  inset: 28%;
+  border-radius: 50%;
+  background: radial-gradient(
+    closest-side,
+    color-mix(in srgb, var(--mb-accent) 75%, transparent),
+    color-mix(in srgb, var(--mb-accent) 30%, transparent) 50%,
+    transparent 80%
+  );
+  filter: blur(14px);
+  animation: mb-halo-breath 5.6s ease-in-out infinite;
+}
+
+@keyframes mb-halo-breath {
+  0%, 100% {
+    transform: scale(0.85);
+    filter: blur(10px) hue-rotate(0deg);
+    opacity: 0.7;
   }
+  50% {
+    transform: scale(1.15);
+    filter: blur(18px) hue-rotate(40deg);
+    opacity: 1;
+  }
+}
+
+/* ── 样式 9: crosshair —— 细十字 + 中心点，慢速旋转 ───────────────────── */
+.mb-cursor-halo[data-style='crosshair'] {
+  mix-blend-mode: normal;
+}
+.mb-cursor-halo[data-style='crosshair']::before {
+  content: '';
+  position: absolute;
+  inset: 32%;
+  background:
+    linear-gradient(to right,
+      transparent 0%,
+      color-mix(in srgb, var(--mb-accent) 70%, transparent) 50%,
+      transparent 100%) center / 100% 1px no-repeat,
+    linear-gradient(to bottom,
+      transparent 0%,
+      color-mix(in srgb, var(--mb-accent) 70%, transparent) 50%,
+      transparent 100%) center / 1px 100% no-repeat;
+  animation: mb-halo-crosshair 12s linear infinite;
+}
+.mb-cursor-halo[data-style='crosshair']::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  margin: -3px 0 0 -3px;
+  border-radius: 50%;
+  background: var(--mb-accent);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--mb-accent) 80%, transparent);
+}
+
+@keyframes mb-halo-crosshair {
+  to { transform: rotate(360deg); }
+}
+
+/* ── 样式 10: comet —— 小光点拖一道弯弧尾迹 ───────────────────────────── */
+.mb-cursor-halo[data-style='comet']::before {
+  content: '';
+  position: absolute;
+  inset: 40%;
+  border-radius: 50%;
+  background: radial-gradient(
+    closest-side,
+    color-mix(in srgb, var(--mb-accent) 90%, transparent),
+    transparent 70%
+  );
+  box-shadow:
+    0 0 20px color-mix(in srgb, var(--mb-accent) 60%, transparent),
+    0 0 60px color-mix(in srgb, var(--mb-accent) 30%, transparent);
+}
+.mb-cursor-halo[data-style='comet']::after {
+  content: '';
+  position: absolute;
+  inset: 30%;
+  border-radius: 50%;
+  background: conic-gradient(
+    from 0deg,
+    color-mix(in srgb, var(--mb-accent) 55%, transparent),
+    transparent 60%,
+    transparent
+  );
+  filter: blur(10px);
+  animation: mb-halo-prism 2.4s linear infinite;
+}
+
+/* idle 时（窗口失焦）暂停所有动画，跟 stars / orb 同节奏 */
+[data-idle='true'] .mb-cursor-halo::before,
+[data-idle='true'] .mb-cursor-halo::after {
+  animation-play-state: paused;
 }
 
 /* 列表交错入场，配合 framer-motion 用 */
@@ -509,53 +766,57 @@ select option:disabled {
   -webkit-app-region: drag;
 }
 
-.mb-header-brand-logo {
+/* 品牌名 + 标语并排，标语底对齐英文基线 —— 同一行的视觉重心
+   align-items:baseline 让小字"贴"在 Mengbi 的字母底部，比 flex-end
+   的盒模型对齐更符合字体的视觉底线 */
+.mb-header-brand-title {
   display: inline-flex;
-  align-items: center;
-  height: 38px;
-  /* 视觉上 logo 比文字稍微下沉一点；按用户要求往下移 */
-  margin-top: 8px;
+  align-items: baseline;
+  gap: 10px;
+  line-height: 1;
   -webkit-app-region: no-drag;
 }
 
-.mb-header-brand-logo-img {
-  height: 38px;
-  width: auto;
-  display: block;
-  animation: mb-brand-shift 12s linear infinite;
+.mb-header-brand-name {
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  line-height: 1;
+  text-transform: uppercase;
+  /* "光线扫过" 效果：底色主体保持稳定的暖橘，仅在 50% 处嵌一道窄高光带。
+     background-size 280% + 缓慢动画 → 高光"扫"过一次后还要走很久才回头，
+     像在打磨过的金属表面上来回扫的射灯，而不是从头到尾在变色。 */
+  background: linear-gradient(
+    100deg,
+    var(--mb-accent) 0%,
+    var(--mb-accent) 40%,
+    #fff2c8 50%,
+    var(--mb-accent) 60%,
+    var(--mb-accent) 100%
+  );
+  background-size: 280% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  /* 只有一条动画：光带横扫；不再有 transform / glow 呼吸 */
+  animation: mb-brand-name-sweep 5.5s linear infinite;
+  /* 静态、不脉动的轻发光，给字一点立体感 */
+  filter: drop-shadow(0 0 8px rgba(255, 180, 90, 0.4));
+  will-change: background-position;
 }
 
-@keyframes mb-brand-shift {
-  0% {
-    filter:
-      hue-rotate(0deg) saturate(1.15)
-      drop-shadow(0 0 12px rgba(255, 180, 90, 0.55));
-  }
-  20% {
-    filter:
-      hue-rotate(60deg) saturate(1.3)
-      drop-shadow(0 0 14px rgba(255, 215, 120, 0.55));
-  }
-  40% {
-    filter:
-      hue-rotate(150deg) saturate(1.4)
-      drop-shadow(0 0 16px rgba(120, 220, 200, 0.55));
-  }
-  60% {
-    filter:
-      hue-rotate(220deg) saturate(1.4)
-      drop-shadow(0 0 16px rgba(120, 170, 255, 0.55));
-  }
-  80% {
-    filter:
-      hue-rotate(300deg) saturate(1.35)
-      drop-shadow(0 0 16px rgba(220, 130, 255, 0.55));
-  }
-  100% {
-    filter:
-      hue-rotate(360deg) saturate(1.15)
-      drop-shadow(0 0 12px rgba(255, 180, 90, 0.55));
-  }
+.mb-header-brand-tagline {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--mb-text-muted);
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+  opacity: 0.85;
+}
+
+@keyframes mb-brand-name-sweep {
+  0%   { background-position: 100% 50%; }
+  100% { background-position: -180% 50%; }
 }
 
 .mb-header-divider {
@@ -582,6 +843,11 @@ select option:disabled {
   overflow: hidden;
   position: relative;
   z-index: 1;
+}
+/* 路由切换淡入淡出的包裹层：撑满容器，避免页面塌成 0 高 */
+.mb-page-motion {
+  height: 100%;
+  min-height: 0;
 }
 
 /* 让 Stars 真正在 z 轴最底层 */

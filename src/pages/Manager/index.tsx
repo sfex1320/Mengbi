@@ -3,10 +3,12 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { toast } from '@/store/toastStore';
 import { useImageParamsStore } from '@/store/imageParamsStore';
+import { useSmartInboxStore } from '@/store/smartInboxStore';
+import { useDeletedMediaStore } from '@/store/deletedMediaStore';
 import { useUIStore } from '@/store/uiStore';
 import { Modal } from '@/components/Modal';
 import { Lightbox } from '@/components/Lightbox';
-import { openContextMenu } from '@/components/ContextMenu';
+import { openContextMenu, type ContextMenuEntry } from '@/components/ContextMenu';
 import { confirmDialog } from '@/components/ConfirmDialog';
 import {
   PlusIcon,
@@ -19,6 +21,10 @@ import {
 } from '@/components/Icon';
 import { localPathToImageUrl } from '@/lib/imageUrl';
 import { autoTag } from '@/lib/autoTag';
+import { ImportTargetDialog } from '@/pages/Canvas/ImportTargetDialog';
+import { importImageToCanvas } from '@/pages/Canvas/importToCanvas';
+import { AlbumEditModal } from './AlbumEditModal';
+import type { Album, AlbumInput } from '@/types/domain';
 import './Manager.css';
 
 interface PromptCategory {
@@ -56,6 +62,7 @@ interface ImageRow {
   params_json: string | null;
   rating: number;
   notes: string | null;
+  album_ids: string | null;
   created_at: string;
 }
 
@@ -86,11 +93,29 @@ export default function ManagerPage(): JSX.Element {
   const [categories, setCategories] = useState<PromptCategory[]>([]);
   const [prompts, setPrompts] = useState<PromptCard[]>([]);
   const [images, setImages] = useState<ImageRow[]>([]);
+  /** 相册（图库视图侧栏）：列表 + 当前选中（null=全部） + 正在编辑的相册表单 */
+  const [albums, setAlbums] = useState<Album[]>([]);
+  const [activeAlbumId, setActiveAlbumId] = useState<number | null>(null);
+  const [albumEditing, setAlbumEditing] = useState<AlbumInput | null>(null);
   const [editing, setEditing] = useState<Partial<PromptCard> | null>(null);
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
   /** 图库勾选模式 */
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  /**
+   * "删除选中"模式下勾上 = 同时删除本地文件(磁盘 unlink + 硬删 DB)。
+   * 默认关闭,只软删除卡片(可在回收站找回)。用户明确勾上才物理删除。
+   */
+  const [deleteLocalFile, setDeleteLocalFile] = useState(false);
+  const [importDialog, setImportDialog] = useState<{
+    open: boolean;
+    source: { width: number; height: number; name?: string } | null;
+    srcs: Array<{ sourcePath: string; dataUri: string | null; width: number; height: number; name: string }>;
+  }>({ open: false, source: null, srcs: [] });
 
   // 提示词标签筛选——从 ui store 加载，再 wrap 成 Set 保持原 API
   const activeTags = useMemo(() => new Set(ui.managerActiveTags), [ui.managerActiveTags]);
@@ -106,13 +131,15 @@ export default function ManagerPage(): JSX.Element {
   useEffect(() => {
     if (mode !== 'gallery') setMode('gallery');
     refreshCategories();
+    refreshAlbums();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     if (mode === 'prompt') refreshPrompts();
     else refreshImages();
-  }, [mode, activeSlug]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, activeSlug, activeAlbumId]);
 
   // 监听生图完成事件，自动刷新图库
   useEffect(() => {
@@ -126,16 +153,131 @@ export default function ManagerPage(): JSX.Element {
   async function refreshCategories(): Promise<void> {
     const r = await window.electronAPI.prompt.categoryList();
     if (r.ok) setCategories(r.data as PromptCategory[]);
+    else toast.error('加载分类失败', r.error.message);
   }
 
   async function refreshPrompts(): Promise<void> {
     const r = await window.electronAPI.prompt.list({ category_slug: activeSlug });
     if (r.ok) setPrompts(r.data as PromptCard[]);
+    else toast.error('加载提示词失败', r.error.message);
   }
 
   async function refreshImages(): Promise<void> {
-    const r = await window.electronAPI.gallery.list({});
+    const r = await window.electronAPI.gallery.list({ album_id: activeAlbumId ?? undefined });
     if (r.ok) setImages(r.data as ImageRow[]);
+    else toast.error('加载图库失败', r.error.message);
+  }
+
+  async function refreshAlbums(): Promise<void> {
+    const r = await window.electronAPI.album.list();
+    if (r.ok) setAlbums(r.data as Album[]);
+    // 相册加载失败不打扰（图库主流程不依赖它）
+  }
+
+  async function saveAlbum(input: AlbumInput): Promise<void> {
+    const r = await window.electronAPI.album.upsert(input);
+    if (r.ok) {
+      toast.success(input.id ? '相册已更新' : '相册已创建');
+      setAlbumEditing(null);
+      await refreshAlbums();
+      if (mode === 'gallery') refreshImages();
+    } else {
+      toast.error('保存相册失败', r.error.message);
+    }
+  }
+
+  async function deleteAlbum(a: Album): Promise<void> {
+    const ok = await confirmDialog({
+      title: '删除相册',
+      message: `删除相册「${a.name}」？`,
+      detail: '只删除相册本身，相册里的图片不受影响（不会删图）。',
+      okText: '删除',
+      danger: true
+    });
+    if (!ok) return;
+    const r = await window.electronAPI.album.delete(a.id);
+    if (r.ok) {
+      toast.success('相册已删除');
+      if (activeAlbumId === a.id) setActiveAlbumId(null);
+      await refreshAlbums();
+    } else {
+      toast.error('删除相册失败', r.error.message);
+    }
+  }
+
+  /** 把一张图加入/移出某个手动相册（写 images.album_ids） */
+  async function toggleImageAlbum(im: ImageRow, albumId: number): Promise<void> {
+    let cur: number[] = [];
+    try {
+      const parsed = im.album_ids ? JSON.parse(im.album_ids) : [];
+      if (Array.isArray(parsed)) cur = parsed.filter((x): x is number => typeof x === 'number');
+    } catch {
+      cur = [];
+    }
+    const has = cur.includes(albumId);
+    const next = has ? cur.filter((x) => x !== albumId) : [...cur, albumId];
+    const r = await window.electronAPI.gallery.update({ id: im.id, patch: { album_ids: next } });
+    if (r.ok) {
+      toast.success(has ? '已移出相册' : '已加入相册');
+      refreshImages();
+    } else {
+      toast.error('操作失败', r.error.message);
+    }
+  }
+
+  function openAlbumMenu(e: React.MouseEvent, a: Album): void {
+    e.preventDefault();
+    e.stopPropagation();
+    openContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      items: [
+        {
+          label: '编辑相册',
+          icon: <SparkleIcon size={12} />,
+          onClick: () =>
+            setAlbumEditing({
+              id: a.id,
+              name: a.name,
+              type: a.type,
+              smart_rules: a.smart_rules,
+              cover_image_id: a.cover_image_id
+            })
+        },
+        { separator: true },
+        {
+          label: '删除相册',
+          variant: 'danger',
+          icon: <TrashIcon size={12} />,
+          onClick: () => void deleteAlbum(a)
+        }
+      ]
+    });
+  }
+
+  /** 图片右键「加入相册」子菜单项（只列手动相册；当前已属的打勾切换移出） */
+  function albumSubmenuItems(im: ImageRow): ContextMenuEntry[] {
+    const manual = albums.filter((a) => a.type === 'manual');
+    if (manual.length === 0) {
+      return [
+        {
+          label: '新建手动相册…',
+          icon: <PlusIcon size={11} />,
+          onClick: () => setAlbumEditing({ name: '', type: 'manual', smart_rules: null })
+        }
+      ];
+    }
+    let curIds: number[] = [];
+    try {
+      const parsed = im.album_ids ? JSON.parse(im.album_ids) : [];
+      if (Array.isArray(parsed)) curIds = parsed.filter((x): x is number => typeof x === 'number');
+    } catch {
+      curIds = [];
+    }
+    return manual.map((a) => ({
+      label: `${curIds.includes(a.id) ? '✓ ' : '　'}${a.name}`,
+      onClick: () => void toggleImageAlbum(im, a.id)
+    }));
   }
 
   async function deletePrompt(id: number): Promise<void> {
@@ -187,36 +329,81 @@ export default function ManagerPage(): JSX.Element {
   function exitSelectMode(): void {
     setSelectMode(false);
     setSelectedIds(new Set());
+    setDeleteLocalFile(false); // 退出选择模式即复位，避免上次勾的「删本地文件」带到下一次误删
   }
 
   async function batchDeleteSelected(): Promise<void> {
     if (selectedIds.size === 0) return;
     const ok = await confirmDialog({
-      title: '批量从图库移除',
-      message: `从图库移除选中的 ${selectedIds.size} 张图？`,
-      detail: '仅在数据库打软删除标记，磁盘上的源文件不会删除。',
-      okText: '全部移除',
+      title: deleteLocalFile ? '批量删除(含本地文件)' : '批量从图库移除',
+      message: deleteLocalFile
+        ? `物理删除 ${selectedIds.size} 张图的本地文件 + 卡片?`
+        : `从图库移除选中的 ${selectedIds.size} 张图？`,
+      detail: deleteLocalFile
+        ? '⚠ 不可逆!磁盘上的源文件会被 unlink,DB 行硬删,不会进回收站。'
+        : '仅在数据库打软删除标记，磁盘上的源文件不会删除。',
+      okText: deleteLocalFile ? '全部物理删除' : '全部移除',
       danger: true
     });
     if (!ok) return;
-    const ts = new Date().toISOString();
     const ids = Array.from(selectedIds);
-    const results = await Promise.all(
-      ids.map((id) =>
-        window.electronAPI.gallery.update({ id, patch: { deleted_at: ts } })
-      )
-    );
-    const failed = results.filter((r) => !r.ok).length;
-    if (failed === 0) {
-      toast.success('已移入回收站', `成功 ${ids.length} 张`);
-    } else {
-      toast.error(
-        '部分失败',
-        `成功 ${ids.length - failed} / 失败 ${failed}`
+
+    if (deleteLocalFile) {
+      const r = await window.electronAPI.gallery.batchDeleteWithFiles({ ids });
+      if (!r.ok) {
+        toast.error('批量删除失败', r.error.message);
+        return;
+      }
+      toast.success(
+        `已删除 ${r.data.deletedIds.length} 张卡片`,
+        `本地文件:已删 ${r.data.fileDeleted} · 已缺失 ${r.data.fileMissing}`
       );
+      // 跨功能同步：把这些图从智能画布等的结果预览里一并剔除
+      useDeletedMediaStore
+        .getState()
+        .markDeleted(r.data.deletedIds.map((did) => images.find((x) => x.id === did)?.file_path ?? ''));
+    } else {
+      const ts = new Date().toISOString();
+      const results = await Promise.all(
+        ids.map((id) =>
+          window.electronAPI.gallery.update({ id, patch: { deleted_at: ts } })
+        )
+      );
+      // 只把「确实删成功」的 id 同步出去：部分失败时不能把失败项也当已删（否则跨功能状态不一致）
+      const successfulIds = ids.filter((_id, i) => results[i].ok);
+      const failed = ids.length - successfulIds.length;
+      if (failed === 0) {
+        toast.success('已移入回收站', `成功 ${ids.length} 张`);
+      } else {
+        toast.error('部分失败', `成功 ${successfulIds.length} / 失败 ${failed}`);
+      }
+      // 跨功能同步：软删也从智能画布结果预览里剔除（仅成功的；用户已从图库移除）
+      useDeletedMediaStore
+        .getState()
+        .markDeleted(successfulIds.map((id) => images.find((x) => x.id === id)?.file_path ?? ''));
     }
     exitSelectMode();
     refreshImages();
+  }
+
+  /**
+   * 把当前筛选结果中"file_path 已不在本地"的卡片自动选中。
+   * 适合一键收集孤儿卡片用于清理。
+   */
+  async function selectMissingFilesInView(): Promise<void> {
+    const ids = filteredImages.map((im) => im.id);
+    if (ids.length === 0) return;
+    const r = await window.electronAPI.gallery.probeMissingFiles({ ids });
+    if (!r.ok) {
+      toast.error('探测失败', r.error.message);
+      return;
+    }
+    if (r.data.missing.length === 0) {
+      toast.info('未发现无关联卡片', '当前筛选下,所有卡片的本地文件都存在');
+      return;
+    }
+    setSelectedIds(new Set(r.data.missing));
+    toast.success(`已选中 ${r.data.missing.length} 张无关联卡片`);
   }
 
   async function softDeleteImage(id: number): Promise<void> {
@@ -234,6 +421,8 @@ export default function ManagerPage(): JSX.Element {
     });
     if (r.ok) {
       toast.success('已移入回收站');
+      const p = images.find((x) => x.id === id)?.file_path;
+      if (p) useDeletedMediaStore.getState().markDeleted([p]);
       refreshImages();
     } else {
       toast.error('删除失败', r.error.message);
@@ -402,6 +591,12 @@ export default function ManagerPage(): JSX.Element {
     return arr;
   }, [images, search, dateFilter, modelFilter, aspectFilter, sortMode]);
 
+  // 筛选条件变化即清空批量选择：避免「全选当前筛选 → 改筛选 → 批量删除」误删被筛掉的卡片
+  useEffect(() => {
+    setSelectedIds(new Set());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dateFilter, modelFilter, aspectFilter]);
+
   /** 复制图片到系统剪贴板（PNG blob） */
   async function copyImageToClipboard(filePath: string): Promise<void> {
     try {
@@ -438,7 +633,7 @@ export default function ManagerPage(): JSX.Element {
   }
 
   /** 把图片提示词扔到生图模块输入框 */
-  function useAsPrompt(text: string | null): void {
+  function applyAsPrompt(text: string | null): void {
     if (!text || !text.trim()) {
       toast.error('该图片没有保存提示词');
       return;
@@ -495,7 +690,7 @@ export default function ManagerPage(): JSX.Element {
         {
           label: '只填到生图（不复制）',
           icon: <SparkleIcon size={12} />,
-          onClick: () => useAsPrompt(p.text)
+          onClick: () => applyAsPrompt(p.text)
         },
         {
           label: inShortcuts ? '从快捷栏移除' : '加入对话框快捷栏',
@@ -507,6 +702,11 @@ export default function ManagerPage(): JSX.Element {
             ui.toggleShortcutPromptId(p.id);
             toast.success(inShortcuts ? '已从快捷栏移除' : '已加入快捷栏');
           }
+        },
+        {
+          label: '发送到智能画布',
+          icon: <PlusIcon size={12} />,
+          onClick: () => sendPromptToSmartCanvas(p.text)
         },
         {
           label: '编辑',
@@ -522,7 +722,7 @@ export default function ManagerPage(): JSX.Element {
     });
   }
 
-  /** 卡片上右键弹菜单 */
+  /** 卡片上右键弹菜单 —— 含二级菜单"转入工具箱…" */
   function showImageMenu(e: React.MouseEvent, im: ImageRow): void {
     e.preventDefault();
     openContextMenu({
@@ -540,12 +740,18 @@ export default function ManagerPage(): JSX.Element {
           disabled: !im.prompt_positive,
           onClick: () => copyPrompt(im.prompt_positive)
         },
+        { separator: true },
         {
           label: '用作生图提示词',
           variant: 'accent',
           icon: <SparkleIcon size={12} />,
           disabled: !im.prompt_positive,
-          onClick: () => useAsPrompt(im.prompt_positive)
+          onClick: () => applyAsPrompt(im.prompt_positive)
+        },
+        {
+          label: '作为参考图发回生图',
+          icon: <PlusIcon size={12} />,
+          onClick: () => void sendAsReferenceToCreate(im)
         },
         {
           label: '归档到提示词',
@@ -553,6 +759,45 @@ export default function ManagerPage(): JSX.Element {
           disabled: !im.prompt_positive,
           onClick: () => archiveAsPrompt(im)
         },
+        {
+          label: '加入相册…',
+          icon: <FolderIcon size={12} />,
+          children: albumSubmenuItems(im)
+        },
+        { separator: true },
+        {
+          label: '转入工具箱…',
+          icon: <SparkleIcon size={12} />,
+          children: [
+            {
+              label: '保真放大（Real-ESRGAN）',
+              icon: <SparkleIcon size={11} />,
+              onClick: () => void sendToTools(im, 'upscale')
+            },
+            {
+              label: 'AI 修复放大 · HYPIR',
+              icon: <SparkleIcon size={11} />,
+              onClick: () => void sendToTools(im, 'hypir')
+            }
+          ]
+        },
+        {
+          label: '导入画板',
+          icon: <PlusIcon size={12} />,
+          onClick: () => openImportToCanvas(im)
+        },
+        {
+          label: '发送到智能画布',
+          icon: <PlusIcon size={12} />,
+          onClick: () => sendToSmartCanvas(im)
+        },
+        {
+          label: '发送提示词到智能画布',
+          icon: <PlusIcon size={12} />,
+          disabled: !im.prompt_positive,
+          onClick: () => sendPromptToSmartCanvas(im.prompt_positive ?? '')
+        },
+        { separator: true },
         {
           label: '在文件夹中显示',
           icon: <FolderIcon size={12} />,
@@ -566,6 +811,122 @@ export default function ManagerPage(): JSX.Element {
         }
       ]
     });
+  }
+
+  /** 把这张图（本地路径）发送到智能画布的收件箱，跳过去后自动加成图片节点。 */
+  function sendToSmartCanvas(im: ImageRow): void {
+    useSmartInboxStore.getState().push([{ src: im.file_path, name: im.prompt_positive?.slice(0, 20) || '图库图' }]);
+    navigate('/smart-canvas');
+    toast.success('已发送到智能画布');
+  }
+
+  /** 把一段提示词文本发送到智能画布的收件箱，跳过去后自动加成提示词节点。 */
+  function sendPromptToSmartCanvas(text: string): void {
+    if (!text.trim()) return;
+    useSmartInboxStore.getState().push([{ kind: 'prompt', text }]);
+    navigate('/smart-canvas');
+    toast.success('已发送提示词到智能画布');
+  }
+
+  /** 把这张图当作参考图传回 /，复用 imageParamsStore.addRefs */
+  async function sendAsReferenceToCreate(im: ImageRow): Promise<void> {
+    try {
+      const url = localPathToImageUrl(im.file_path);
+      const blob = await (await fetch(url)).blob();
+      const dataUri = await new Promise<string>((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(typeof r.result === 'string' ? r.result : '');
+        r.onerror = () => rej(r.error);
+        r.readAsDataURL(blob);
+      });
+      imgParams.addRefs?.([{ dataUri, path: im.file_path }]);
+      navigate('/');
+      toast.success('已作为参考图发到生图页');
+    } catch (e) {
+      toast.error('发送失败', String(e));
+    }
+  }
+
+  /** 把图库这张图加载为 dataUri，写入 toolsStore.pendingImport + 切到指定 tab，跳到 /tools */
+  async function sendToTools(
+    im: ImageRow,
+    target: 'upscale' | 'hypir' = 'upscale'
+  ): Promise<void> {
+    try {
+      const url = localPathToImageUrl(im.file_path);
+      const blob = await (await fetch(url)).blob();
+      const dataUri = await new Promise<string>((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(typeof r.result === 'string' ? r.result : '');
+        r.onerror = () => rej(r.error);
+        r.readAsDataURL(blob);
+      });
+      const { useToolsStore } = await import('@/store/toolsStore');
+      useToolsStore.setState({ pendingImport: dataUri, activeTab: target });
+      navigate('/tools');
+    } catch (e) {
+      toast.error('发送失败', String(e));
+    }
+  }
+
+  async function openImportToCanvas(im: ImageRow): Promise<void> {
+    try {
+      const url = localPathToImageUrl(im.file_path);
+      const dim = await new Promise<{ w: number; h: number }>((res, rej) => {
+        const img = new Image();
+        img.onload = () => res({ w: img.naturalWidth, h: img.naturalHeight });
+        img.onerror = () => rej(new Error('加载失败'));
+        img.src = url;
+      });
+      const name = (im.file_path.split(/[\\/]/).pop() ?? '图层').replace(/\.[^.]+$/, '').slice(0, 30);
+      setImportDialog({
+        open: true,
+        source: { width: dim.w, height: dim.h, name },
+        srcs: [{ sourcePath: im.file_path, dataUri: null, width: dim.w, height: dim.h, name }]
+      });
+    } catch (e) {
+      toast.error('打开图片失败', String(e));
+    }
+  }
+
+  async function batchImportToCanvas(): Promise<void> {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    try {
+      const srcs: Array<{ sourcePath: string; dataUri: null; width: number; height: number; name: string }> = [];
+      let failed = 0;
+      for (const id of ids) {
+        const im = images.find((x) => x.id === id);
+        if (!im) continue;
+        try {
+          const url = localPathToImageUrl(im.file_path);
+          const dim = await new Promise<{ w: number; h: number }>((res, rej) => {
+            const img = new Image();
+            img.onload = () => res({ w: img.naturalWidth, h: img.naturalHeight });
+            img.onerror = () => rej(new Error('skip'));
+            img.src = url;
+          });
+          const name = (im.file_path.split(/[\\/]/).pop() ?? '图层').replace(/\.[^.]+$/, '').slice(0, 30);
+          srcs.push({ sourcePath: im.file_path, dataUri: null, width: dim.w, height: dim.h, name });
+        } catch {
+          failed++; // 加载失败的计数，下面给用户反馈（原先静默跳过）
+        }
+      }
+      if (srcs.length === 0) {
+        toast.error('没有可导入的图片', failed ? `${failed} 张加载失败（文件可能已移动/损坏）` : undefined);
+        return;
+      }
+      if (failed > 0) toast.info('部分图片已跳过', `${failed} 张加载失败`);
+      // 多张图：用第一张做新画板尺寸预估，"加到当前"则全部 push
+      const first = srcs[0];
+      setImportDialog({
+        open: true,
+        source: { width: first.width, height: first.height, name: `${srcs.length} 张` },
+        srcs
+      });
+    } catch (e) {
+      toast.error('批量导入画板失败', String(e));
+    }
   }
 
   /** 把一张已生成的图归档为提示词卡片 */
@@ -591,18 +952,13 @@ export default function ManagerPage(): JSX.Element {
   const allCategories = [VIRTUAL_ALL, ...categories];
 
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      transition={{ duration: 0.18 }}
-      className="mb-manager-root"
-    >
+    <div className="mb-manager-root">
       <aside className="mb-manager-sidebar mb-card mb-marquee-glow">
         <div className="mb-manager-sidebar-head">
           <h2>
-            <GalleryIcon size={18} /> 提示词管家
+            <GalleryIcon size={18} /> 图库
           </h2>
-          <p>收藏 / 整理 / 复用 · 图库</p>
+          <p>收藏 / 整理 / 复用</p>
         </div>
 
         <div className="mb-manager-mode-row">
@@ -641,11 +997,15 @@ export default function ManagerPage(): JSX.Element {
                 className={`mb-manager-cat ${activeSlug === cat.slug ? 'is-active' : ''}`}
               >
                 {activeSlug === cat.slug && (
-                  <motion.span
-                    layoutId="manager-cat-active"
-                    className="mb-manager-cat-bg"
-                    transition={{ type: 'spring', stiffness: 400, damping: 30 }}
-                  />
+                  mounted ? (
+                    <motion.span
+                      layoutId="manager-cat-active"
+                      className="mb-manager-cat-bg"
+                      transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+                    />
+                  ) : (
+                    <span className="mb-manager-cat-bg" />
+                  )
                 )}
                 <span style={{ position: 'relative' }}>{cat.name}</span>
               </button>
@@ -716,12 +1076,52 @@ export default function ManagerPage(): JSX.Element {
                 </select>
               </div>
             </div>
+
+            <div className="mb-manager-albums">
+              <div className="mb-manager-cat-label">
+                <span>相册</span>
+                <button
+                  type="button"
+                  className="mb-manager-album-add"
+                  title="新建相册"
+                  onClick={() => setAlbumEditing({ name: '', type: 'manual', smart_rules: null })}
+                >
+                  <PlusIcon size={12} />
+                </button>
+              </div>
+              <button
+                type="button"
+                className={`mb-manager-cat ${activeAlbumId === null ? 'is-active' : ''}`}
+                onClick={() => setActiveAlbumId(null)}
+              >
+                {activeAlbumId === null && <span className="mb-manager-cat-bg" />}
+                <span style={{ position: 'relative' }}>全部图片</span>
+              </button>
+              {albums.map((a) => (
+                <button
+                  key={a.id}
+                  type="button"
+                  className={`mb-manager-cat ${activeAlbumId === a.id ? 'is-active' : ''}`}
+                  onClick={() => setActiveAlbumId(a.id)}
+                  onContextMenu={(e) => openAlbumMenu(e, a)}
+                  title={a.type === 'smart' ? '智能相册：按规则实时匹配（右键编辑/删除）' : '手动相册（右键编辑/删除）'}
+                >
+                  {activeAlbumId === a.id && <span className="mb-manager-cat-bg" />}
+                  <span style={{ position: 'relative' }}>
+                    {a.type === 'smart' ? '✦ ' : ''}
+                    {a.name}
+                  </span>
+                </button>
+              ))}
+              {albums.length === 0 && (
+                <div className="mb-manager-album-empty">还没有相册，点上面的 + 新建</div>
+              )}
+            </div>
           </>
         )}
-      </aside>
 
-      <section className="mb-manager-content mb-card mb-marquee-glow">
-        <header className="mb-manager-header">
+        {/* 共用：搜索框 + 总条数 + （仅 gallery）批量工具条 —— 全部从右侧 header 搬过来 */}
+        <div className="mb-manager-side-actions">
           <div className="mb-manager-search">
             <SearchIcon size={16} />
             <input
@@ -734,8 +1134,100 @@ export default function ManagerPage(): JSX.Element {
           <div className="mb-manager-meta">
             共 {mode === 'prompt' ? filteredPrompts.length : filteredImages.length} 条记录
           </div>
-        </header>
 
+          {mode === 'gallery' && (
+            <div className="mb-gallery-toolbar">
+              {!selectMode ? (
+                <button
+                  type="button"
+                  className="mb-btn mb-btn-secondary mb-btn-sm mb-gallery-toolbar-btn"
+                  onClick={() => setSelectMode(true)}
+                  disabled={filteredImages.length === 0}
+                >
+                  ✓ 批量选择
+                </button>
+              ) : (
+                <>
+                  <span className="mb-gallery-toolbar-count">
+                    已选 <strong>{selectedIds.size}</strong> / {filteredImages.length}
+                  </span>
+                  <button
+                    type="button"
+                    className="mb-btn mb-btn-secondary mb-btn-sm mb-gallery-toolbar-btn"
+                    onClick={selectAllInView}
+                  >
+                    全选当前筛选
+                  </button>
+                  <button
+                    type="button"
+                    className="mb-btn mb-btn-secondary mb-btn-sm mb-gallery-toolbar-btn"
+                    onClick={invertSelectionInView}
+                  >
+                    反选
+                  </button>
+                  <button
+                    type="button"
+                    className="mb-btn mb-btn-secondary mb-btn-sm mb-gallery-toolbar-btn"
+                    onClick={() => void selectMissingFilesInView()}
+                    title="自动选中当前筛选下 file_path 已不在本地的孤儿卡片"
+                  >
+                    选中无关联
+                  </button>
+                  <button
+                    type="button"
+                    className="mb-btn mb-btn-secondary mb-btn-sm mb-gallery-toolbar-btn"
+                    onClick={clearSelection}
+                    disabled={selectedIds.size === 0}
+                  >
+                    清空选择
+                  </button>
+                  <button
+                    type="button"
+                    className="mb-btn mb-btn-secondary mb-btn-sm mb-gallery-toolbar-btn"
+                    onClick={batchImportToCanvas}
+                    disabled={selectedIds.size === 0}
+                    title="把选中的图片全部导入画板"
+                  >
+                    <PlusIcon size={12} /> 导入画板（{selectedIds.size}）
+                  </button>
+                  <button
+                    type="button"
+                    className="mb-btn mb-btn-danger mb-btn-sm mb-gallery-toolbar-btn"
+                    onClick={batchDeleteSelected}
+                    disabled={selectedIds.size === 0}
+                  >
+                    <TrashIcon size={12} /> 删除选中（{selectedIds.size}）
+                  </button>
+                  <label
+                    className="mb-gallery-toolbar-checkbox"
+                    title={
+                      deleteLocalFile
+                        ? '勾上 = 同时物理删除本地文件(不可逆,不进回收站)'
+                        : '默认关闭 = 只软删除卡片,本地文件保留'
+                    }
+                  >
+                    <input
+                      type="checkbox"
+                      checked={deleteLocalFile}
+                      onChange={(e) => setDeleteLocalFile(e.target.checked)}
+                    />
+                    <span>同时删本地文件</span>
+                  </label>
+                  <button
+                    type="button"
+                    className="mb-btn mb-btn-ghost mb-btn-sm mb-gallery-toolbar-btn"
+                    onClick={exitSelectMode}
+                  >
+                    退出
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      </aside>
+
+      <section className="mb-manager-content mb-card mb-marquee-glow">
         {mode === 'prompt' && (
           <>
             {allTags.length > 0 && (
@@ -772,16 +1264,27 @@ export default function ManagerPage(): JSX.Element {
               </div>
             ) : (
               <div className="mb-manager-grid">
-                <AnimatePresence>
+                <AnimatePresence initial={false}>
                   {filteredPrompts.map((p, i) => {
                     const isShortcut = ui.shortcutPromptIds.includes(p.id);
+                    // 大量卡片时去掉「交错延迟」（昂贵），但保留轻量 opacity 淡入淡出，搜索/筛选仍有进出反馈
+                    const lightMotion = filteredPrompts.length > 80;
                     return (
                       <motion.div
                         key={p.id}
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, scale: 0.96 }}
-                        transition={{ delay: i * 0.025, duration: 0.25 }}
+                        {...(lightMotion
+                          ? {
+                              initial: { opacity: 0 },
+                              animate: { opacity: 1 },
+                              exit: { opacity: 0 },
+                              transition: { duration: 0.15 }
+                            }
+                          : {
+                              initial: { opacity: 0 },
+                              animate: { opacity: 1 },
+                              exit: { opacity: 0 },
+                              transition: { delay: Math.min(i, 24) * 0.015, duration: 0.2 }
+                            })}
                         className={`mb-prompt-card mb-card-interactive mb-marquee-glow ${
                           isShortcut ? 'is-shortcut' : ''
                         }`}
@@ -803,6 +1306,8 @@ export default function ManagerPage(): JSX.Element {
                               }
                               alt=""
                               draggable={false}
+                              loading="lazy"
+                              decoding="async"
                             />
                           </div>
                         )}
@@ -899,63 +1404,6 @@ export default function ManagerPage(): JSX.Element {
 
         {mode === 'gallery' && (
           <>
-            {/* 批量操作工具条 */}
-            <div className="mb-gallery-toolbar">
-              {!selectMode ? (
-                <button
-                  type="button"
-                  className="mb-btn mb-btn-secondary mb-btn-sm"
-                  onClick={() => setSelectMode(true)}
-                  disabled={filteredImages.length === 0}
-                >
-                  ✓ 批量选择
-                </button>
-              ) : (
-                <>
-                  <span className="mb-gallery-toolbar-count">
-                    已选 <strong>{selectedIds.size}</strong> / {filteredImages.length}
-                  </span>
-                  <button
-                    type="button"
-                    className="mb-btn mb-btn-secondary mb-btn-sm"
-                    onClick={selectAllInView}
-                  >
-                    全选当前筛选
-                  </button>
-                  <button
-                    type="button"
-                    className="mb-btn mb-btn-secondary mb-btn-sm"
-                    onClick={invertSelectionInView}
-                  >
-                    反选
-                  </button>
-                  <button
-                    type="button"
-                    className="mb-btn mb-btn-secondary mb-btn-sm"
-                    onClick={clearSelection}
-                    disabled={selectedIds.size === 0}
-                  >
-                    清空选择
-                  </button>
-                  <button
-                    type="button"
-                    className="mb-btn mb-btn-danger mb-btn-sm"
-                    onClick={batchDeleteSelected}
-                    disabled={selectedIds.size === 0}
-                  >
-                    <TrashIcon size={12} /> 删除选中（{selectedIds.size}）
-                  </button>
-                  <button
-                    type="button"
-                    className="mb-btn mb-btn-ghost mb-btn-sm"
-                    onClick={exitSelectMode}
-                  >
-                    退出
-                  </button>
-                </>
-              )}
-            </div>
-
             {filteredImages.length === 0 ? (
               <div className="mb-manager-empty">
                 <GalleryIcon size={28} />
@@ -970,12 +1418,15 @@ export default function ManagerPage(): JSX.Element {
               </div>
             ) : (
               <div className="mb-gallery-grid">
-                <AnimatePresence>
-                  {filteredImages.map((im, i) => (
+                {/* 大图库时不包 AnimatePresence——它会跟踪 N 张卡片的 exit 动画，
+                    在 filter 切换时会让 N 张卡片都重新调度，造成连续掉帧。 */}
+                {filteredImages.length > 80 ? (
+                  filteredImages.map((im, i) => (
                     <ImageCard
                       key={im.id}
                       img={im}
                       index={i}
+                      totalCount={filteredImages.length}
                       selectMode={selectMode}
                       selected={selectedIds.has(im.id)}
                       onToggleSelect={() => toggleSelect(im.id)}
@@ -985,8 +1436,27 @@ export default function ManagerPage(): JSX.Element {
                       onDelete={() => softDeleteImage(im.id)}
                       onContextMenu={(e) => showImageMenu(e, im)}
                     />
-                  ))}
-                </AnimatePresence>
+                  ))
+                ) : (
+                  <AnimatePresence initial={false}>
+                    {filteredImages.map((im, i) => (
+                      <ImageCard
+                        key={im.id}
+                        img={im}
+                        index={i}
+                        totalCount={filteredImages.length}
+                        selectMode={selectMode}
+                        selected={selectedIds.has(im.id)}
+                        onToggleSelect={() => toggleSelect(im.id)}
+                        onPreview={() => setPreviewSrc(localPathToImageUrl(im.file_path))}
+                        onShowFolder={() => showInFolder(im.file_path)}
+                        onArchive={() => archiveAsPrompt(im)}
+                        onDelete={() => softDeleteImage(im.id)}
+                        onContextMenu={(e) => showImageMenu(e, im)}
+                      />
+                    ))}
+                  </AnimatePresence>
+                )}
               </div>
             )}
           </>
@@ -1086,7 +1556,37 @@ export default function ManagerPage(): JSX.Element {
         src={previewSrc ?? ''}
         onClose={() => setPreviewSrc(null)}
       />
-    </motion.div>
+
+      <ImportTargetDialog
+        open={importDialog.open}
+        source={importDialog.source}
+        onClose={() => setImportDialog({ open: false, source: null, srcs: [] })}
+        onChoose={(mode) => {
+          const srcs = importDialog.srcs;
+          if (srcs.length === 0) {
+            setImportDialog({ open: false, source: null, srcs: [] });
+            return;
+          }
+          if (mode === 'new') {
+            // 新建画板：第一张作为基准尺寸 + 首层；剩余的加到当前
+            importImageToCanvas(srcs[0], 'new');
+            for (let i = 1; i < srcs.length; i++) importImageToCanvas(srcs[i], 'current');
+          } else {
+            for (const s of srcs) importImageToCanvas(s, 'current');
+          }
+          toast.success(srcs.length > 1 ? `已导入 ${srcs.length} 张到画板` : '已导入到画板', '正在跳转 …');
+          navigate('/canvas');
+          setImportDialog({ open: false, source: null, srcs: [] });
+        }}
+      />
+
+      <AlbumEditModal
+        value={albumEditing}
+        availableModels={availableModels}
+        onClose={() => setAlbumEditing(null)}
+        onSave={(input) => void saveAlbum(input)}
+      />
+    </div>
   );
 }
 
@@ -1096,6 +1596,7 @@ export default function ManagerPage(): JSX.Element {
 function ImageCard({
   img,
   index,
+  totalCount,
   selectMode,
   selected,
   onToggleSelect,
@@ -1107,6 +1608,7 @@ function ImageCard({
 }: {
   img: ImageRow;
   index: number;
+  totalCount: number;
   selectMode: boolean;
   selected: boolean;
   onToggleSelect: () => void;
@@ -1116,31 +1618,31 @@ function ImageCard({
   onDelete: () => void;
   onContextMenu: (e: React.MouseEvent) => void;
 }): JSX.Element {
-  const url = localPathToImageUrl(img.file_path);
-  // 真实分辨率从 <img> onLoad 读 naturalWidth/Height
-  // （params_json 里的尺寸是"请求的"，上游可能返回不一样的；以图为准）
-  const [actualSize, setActualSize] = useState<{ w: number; h: number } | null>(null);
+  // 卡片用缩略图（.thumbs/{base}.webp），没有就回退原图；预览 / 操作仍走原图。
+  const thumbUrl = localPathToImageUrl(img.thumbnail_path || img.file_path);
+  // 尺寸/比例仅从 params_json 推断——原版用 onLoad 读 naturalWidth 来精确化，
+  // 但 N 张图同时触发 setState 会让大图库滚动严重卡顿。元数据兜底够用了。
   const meta = useMemo(() => extractMeta(img.params_json), [img.params_json]);
   const created = formatDateTime(img.created_at);
 
-  // 优先用 onLoad 拿到的真实尺寸；拿不到回退到 params_json 推断
-  const sizeStr = actualSize
-    ? `${actualSize.w}×${actualSize.h} px`
-    : meta.size;
-  const aspectStr = actualSize
-    ? computeAspect(actualSize.w, actualSize.h)
-    : meta.aspect;
-  const pixelsStr = actualSize
-    ? formatPixels(actualSize.w * actualSize.h)
-    : meta.pixels;
-  const sizeLine = [aspectStr, sizeStr, pixelsStr].filter(Boolean).join(' · ');
+  const sizeLine = [meta.aspect, meta.size, meta.pixels].filter(Boolean).join(' · ');
+
+  // 大图库（>80 张）关掉入场交错动画，避免一次性启动几百个 motion 轨道导致首次渲染卡死
+  // 入场动画只用透明度（不再用 y/scale 的 transform）：transform + 卡片合成层在大图库 /
+  // 全屏时与背景动画叠加易触发 Chromium 重绘错位（卡片错位 + 闪烁）。纯 opacity 稳定得多。
+  const enableEnterAnim = totalCount <= 80;
+  const motionProps = enableEnterAnim
+    ? {
+        initial: { opacity: 0 },
+        animate: { opacity: 1 },
+        exit: { opacity: 0 },
+        transition: { delay: Math.min(index, 24) * 0.015, duration: 0.2 }
+      }
+    : {};
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, scale: 0.96 }}
-      transition={{ delay: index * 0.02, duration: 0.22 }}
+      {...motionProps}
       className={`mb-gallery-card mb-card mb-marquee-glow ${
         selectMode ? 'is-select-mode' : ''
       } ${selected ? 'is-selected' : ''}`}
@@ -1168,14 +1670,16 @@ function ImageCard({
         title={selectMode ? '点击切换选中' : '点击放大预览'}
       >
         <img
-          src={url}
+          src={thumbUrl}
           alt={img.prompt_positive ?? ''}
           draggable={false}
-          onLoad={(e) => {
-            const el = e.currentTarget;
-            if (el.naturalWidth > 0 && el.naturalHeight > 0) {
-              setActualSize({ w: el.naturalWidth, h: el.naturalHeight });
-            }
+          loading="lazy"
+          decoding="async"
+          // 缩略图加载失败（被删 / 系统休眠）就回退到原图，不让用户看到破图标
+          onError={(e) => {
+            const fallback = localPathToImageUrl(img.file_path);
+            const cur = (e.currentTarget as HTMLImageElement).src;
+            if (cur !== fallback) (e.currentTarget as HTMLImageElement).src = fallback;
           }}
         />
       </button>

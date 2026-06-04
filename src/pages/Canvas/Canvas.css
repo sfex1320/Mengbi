@@ -1,0 +1,1398 @@
+/*
+ * 画板模块样式。所有颜色、阴影、圆角、动效都走 --mb-* token，
+ * 不写颜色字面量；只在需要"棋盘格透明背景"时用 SVG data-uri 兜底。
+ */
+
+.mb-canvas-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  gap: 10px;
+  min-height: 0;
+}
+
+/* ─── 顶部工具条 ─── */
+.mb-canvas-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: var(--mb-bg-card);
+  border: 1px solid var(--mb-border);
+  border-radius: var(--mb-radius-card);
+  box-shadow: var(--mb-shadow-card);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.mb-canvas-toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 8px;
+  border-right: 1px solid var(--mb-border-soft);
+}
+
+.mb-canvas-toolbar-group:last-child {
+  border-right: none;
+  margin-left: auto;
+  padding-right: 0;
+}
+
+.mb-canvas-toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 10px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--mb-radius-button);
+  color: var(--mb-text-secondary);
+  cursor: pointer;
+  font-size: var(--mb-text-aux);
+  transition: background var(--mb-duration-fast) var(--mb-ease),
+    color var(--mb-duration-fast) var(--mb-ease),
+    border-color var(--mb-duration-fast) var(--mb-ease);
+  white-space: nowrap;
+}
+
+.mb-canvas-toolbar-btn:hover:not(:disabled) {
+  background: var(--mb-bg-hover);
+  color: var(--mb-text-primary);
+  border-color: var(--mb-border);
+}
+
+.mb-canvas-toolbar-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.mb-canvas-toolbar-btn.is-primary {
+  background: var(--mb-accent-soft);
+  color: var(--mb-accent);
+  border-color: var(--mb-accent-soft);
+}
+
+.mb-canvas-toolbar-btn.is-primary:hover:not(:disabled) {
+  background: var(--mb-accent);
+  color: var(--mb-text-on-accent);
+  border-color: var(--mb-accent);
+}
+
+.mb-canvas-toolbar-btn.is-active {
+  background: var(--mb-bg-active);
+  color: var(--mb-text-primary);
+  border-color: var(--mb-border-strong);
+}
+
+.mb-canvas-toolbar-zoom {
+  font-family: var(--mb-font-mono);
+  font-size: var(--mb-text-aux);
+  color: var(--mb-text-secondary);
+  min-width: 56px;
+  text-align: center;
+  user-select: none;
+}
+
+/* ─── 三栏 ─── */
+.mb-canvas-body {
+  display: grid;
+  grid-template-columns: 240px 1fr 280px;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+}
+
+/* ─── 左：图层面板 ─── */
+.mb-canvas-layers {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--mb-bg-card);
+  border: 1px solid var(--mb-border);
+  border-radius: var(--mb-radius-card);
+  box-shadow: var(--mb-shadow-card);
+  padding: 10px;
+  min-height: 0;
+}
+
+.mb-canvas-layers-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--mb-border-soft);
+}
+
+.mb-canvas-layers-header h3 {
+  margin: 0;
+  font-size: var(--mb-text-h2);
+  color: var(--mb-text-primary);
+}
+
+.mb-canvas-layers-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.mb-canvas-layer-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  border-radius: var(--mb-radius-input);
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background var(--mb-duration-fast) var(--mb-ease),
+    border-color var(--mb-duration-fast) var(--mb-ease);
+  user-select: none;
+  position: relative;
+}
+
+.mb-canvas-layer-item:hover {
+  background: var(--mb-bg-hover);
+}
+
+.mb-canvas-layer-item.is-active {
+  background: var(--mb-accent-soft);
+  border-color: var(--mb-accent);
+}
+
+/* 多选中：高亮但比 primary 弱一点 */
+.mb-canvas-layer-item.is-active.is-primary {
+  border-color: var(--mb-accent);
+  box-shadow: inset 0 0 0 1px var(--mb-accent);
+}
+
+.mb-canvas-layer-item.is-group {
+  background: rgba(255, 255, 255, 0.02);
+  font-weight: 500;
+}
+
+.mb-canvas-layer-item.is-eff-hidden {
+  opacity: 0.45;
+}
+
+.mb-canvas-layer-item.is-drop-inside {
+  background: var(--mb-accent-soft);
+  border-color: var(--mb-accent);
+}
+
+.mb-canvas-layer-collapse {
+  background: transparent;
+  border: none;
+  width: 14px;
+  height: 14px;
+  font-size: 9px;
+  color: var(--mb-text-muted);
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mb-canvas-layer-collapse:hover {
+  color: var(--mb-text-primary);
+}
+
+.mb-canvas-layer-item.is-dragging {
+  opacity: 0.4;
+}
+
+.mb-canvas-layer-item.is-drop-before::before,
+.mb-canvas-layer-item.is-drop-after::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  height: 2px;
+  background: var(--mb-accent);
+  border-radius: 1px;
+}
+
+.mb-canvas-layer-item.is-drop-before::before {
+  top: -2px;
+}
+
+.mb-canvas-layer-item.is-drop-after::after {
+  bottom: -2px;
+}
+
+.mb-canvas-layer-thumb {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  border-radius: 6px;
+  background:
+    repeating-conic-gradient(rgba(255, 255, 255, 0.06) 0% 25%, rgba(0, 0, 0, 0.18) 0% 50%) 0 0 /
+    12px 12px;
+  border: 1px solid var(--mb-border-soft);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mb-canvas-layer-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.mb-canvas-layer-name {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--mb-text-aux);
+  color: var(--mb-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mb-canvas-layer-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.mb-canvas-layer-icon-btn {
+  background: transparent;
+  border: none;
+  color: var(--mb-text-muted);
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color var(--mb-duration-fast) var(--mb-ease),
+    background var(--mb-duration-fast) var(--mb-ease);
+}
+
+.mb-canvas-layer-icon-btn:hover {
+  color: var(--mb-text-primary);
+  background: var(--mb-bg-hover);
+}
+
+.mb-canvas-layer-icon-btn.is-on {
+  color: var(--mb-accent);
+}
+
+.mb-canvas-layers-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--mb-text-muted);
+  font-size: var(--mb-text-aux);
+  text-align: center;
+  padding: 20px;
+}
+
+/* ─── 中：画布舞台 ─── */
+/*
+ * stage-wrap 是 viewport 容器，处理鼠标 / 滚轮 / 平移；
+ * stage-paper 内部按 panX/panY 绝对定位，里面放 react-konva Stage。
+ */
+.mb-canvas-stage-wrap {
+  position: relative;
+  background: var(--mb-bg-card);
+  border: 1px solid var(--mb-border);
+  border-radius: var(--mb-radius-card);
+  box-shadow: var(--mb-shadow-card);
+  overflow: hidden;
+  min-height: 0;
+  background-image:
+    repeating-conic-gradient(rgba(255, 255, 255, 0.025) 0% 25%, rgba(0, 0, 0, 0.18) 0% 50%);
+  background-size: 24px 24px;
+  cursor: default;
+}
+
+.mb-canvas-stage-wrap.is-hand {
+  cursor: grab;
+}
+
+.mb-canvas-stage-wrap.is-hand:active {
+  cursor: grabbing;
+}
+
+/* 裁切工具栏：固定在视口最顶部居中(避开窗口标题/全局 Header)；
+ * 用 fixed 而不是 absolute,免得跟 stage-paper 的 panX/panY 一起被推走。 */
+.mb-canvas-crop-toolbar {
+  position: fixed;
+  top: 56px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 6px;
+  z-index: 50;
+  padding: 4px;
+  background: var(--mb-bg-card);
+  border: 1px solid var(--mb-border);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+}
+
+/*
+ * 笔刷预览圈：跟随鼠标，显示当前笔触实际尺寸（相对于 zoom 后的屏幕像素）。
+ * 取消默认 cursor，避免系统箭头干扰。
+ */
+.mb-canvas-stage-wrap:has(.mb-canvas-brush-cursor) {
+  cursor: none;
+}
+
+.mb-canvas-brush-cursor {
+  position: absolute;
+  pointer-events: none;
+  z-index: 50;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  border: 1.5px solid rgba(255, 255, 255, 0.9);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.55),
+    inset 0 0 0 1px rgba(0, 0, 0, 0.35);
+  mix-blend-mode: difference;
+  /* 太小时仍然可见 */
+  min-width: 4px;
+  min-height: 4px;
+}
+
+.mb-canvas-stage-paper {
+  background: rgba(0, 0, 0, 0.25);
+  box-shadow: 0 0 0 1px var(--mb-border-strong), 0 12px 32px rgba(0, 0, 0, 0.4);
+}
+
+.mb-canvas-drop-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--mb-text-h2);
+  color: var(--mb-text-muted);
+  pointer-events: none;
+  z-index: 5;
+  text-align: center;
+  padding: 0 24px;
+  line-height: 1.6;
+}
+
+.mb-canvas-drop-hint.is-active {
+  color: var(--mb-accent);
+  background: var(--mb-accent-soft);
+}
+
+/* ─── 状态栏 ─── */
+.mb-canvas-statusbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 28px;
+  padding: 0 14px;
+  background: var(--mb-bg-card);
+  border: 1px solid var(--mb-border);
+  border-radius: var(--mb-radius-input);
+  box-shadow: var(--mb-shadow-card);
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-secondary);
+  font-family: var(--mb-font-mono);
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.mb-canvas-statusbar-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.mb-canvas-statusbar-flex {
+  flex: 1;
+  justify-content: flex-end;
+  color: var(--mb-text-primary);
+}
+
+.mb-canvas-statusbar-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--mb-accent);
+  display: inline-block;
+}
+
+/* ─── 标尺（B5） ─── */
+.mb-canvas-rulers {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 6;
+}
+
+.mb-canvas-ruler-corner {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 22px;
+  height: 22px;
+  background: var(--mb-bg-card);
+  border-right: 1px solid var(--mb-border);
+  border-bottom: 1px solid var(--mb-border);
+}
+
+.mb-canvas-ruler-top {
+  position: absolute;
+  left: 22px;
+  top: 0;
+  height: 22px;
+  pointer-events: none;
+}
+
+.mb-canvas-ruler-left {
+  position: absolute;
+  left: 0;
+  top: 22px;
+  width: 22px;
+  pointer-events: none;
+}
+
+/* ─── 全屏拖拽提示 ─── */
+.mb-canvas-fulldrop {
+  position: fixed;
+  inset: 0;
+  background: var(--mb-accent-soft);
+  border: 2px dashed var(--mb-accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--mb-accent);
+  font-size: 18px;
+  z-index: 9999;
+  pointer-events: none;
+}
+
+/* ─── 右：属性面板 ─── */
+.mb-canvas-props {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: var(--mb-bg-card);
+  border: 1px solid var(--mb-border);
+  border-radius: var(--mb-radius-card);
+  box-shadow: var(--mb-shadow-card);
+  padding: 12px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.mb-canvas-props-empty {
+  color: var(--mb-text-muted);
+  font-size: var(--mb-text-aux);
+  text-align: center;
+  padding: 30px 12px;
+}
+
+.mb-canvas-props h3 {
+  margin: 0;
+  font-size: var(--mb-text-h2);
+  color: var(--mb-text-primary);
+}
+
+.mb-canvas-props-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mb-canvas-props-section-title {
+  font-size: var(--mb-text-tiny);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--mb-text-muted);
+  margin: 0;
+}
+
+.mb-canvas-props-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mb-canvas-props-row label {
+  font-size: var(--mb-text-aux);
+  color: var(--mb-text-secondary);
+  min-width: 36px;
+}
+
+.mb-canvas-props-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--mb-bg-hover);
+  border: 1px solid var(--mb-border);
+  border-radius: var(--mb-radius-input);
+  color: var(--mb-text-primary);
+  padding: 5px 8px;
+  font-size: var(--mb-text-aux);
+  font-family: var(--mb-font-mono);
+}
+
+.mb-canvas-props-input:focus {
+  border-color: var(--mb-accent);
+  outline: none;
+}
+
+.mb-canvas-props-select {
+  flex: 1;
+  background: var(--mb-bg-hover);
+  border: 1px solid var(--mb-border);
+  border-radius: var(--mb-radius-input);
+  color: var(--mb-text-primary);
+  padding: 5px 8px;
+  font-size: var(--mb-text-aux);
+  cursor: pointer;
+}
+
+.mb-canvas-props-slider {
+  flex: 1;
+  accent-color: var(--mb-accent);
+}
+
+/* 对齐按钮组：6 个图标按钮（左/中/右 + 上/中/下） */
+.mb-canvas-props-align {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 4px;
+  margin-top: 6px;
+}
+.mb-canvas-props-align button {
+  height: 26px;
+  background: var(--mb-bg-hover);
+  border: 1px solid var(--mb-border);
+  border-radius: 6px;
+  color: var(--mb-text-secondary);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--mb-duration-fast) var(--mb-ease);
+}
+.mb-canvas-props-align button:hover {
+  background: var(--mb-bg-active);
+  color: var(--mb-text-primary);
+}
+
+.mb-canvas-props-btnrow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.mb-canvas-props-actionbtn {
+  background: var(--mb-bg-hover);
+  border: 1px solid var(--mb-border);
+  border-radius: var(--mb-radius-input);
+  color: var(--mb-text-primary);
+  padding: 6px 8px;
+  font-size: var(--mb-text-aux);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  transition: background var(--mb-duration-fast) var(--mb-ease),
+    border-color var(--mb-duration-fast) var(--mb-ease);
+}
+
+.mb-canvas-props-actionbtn:hover {
+  background: var(--mb-bg-active);
+  border-color: var(--mb-border-strong);
+}
+
+.mb-canvas-props-actionbtn.is-danger {
+  color: #fca5a5;
+  border-color: rgba(252, 165, 165, 0.18);
+}
+
+.mb-canvas-props-actionbtn.is-danger:hover {
+  background: rgba(252, 165, 165, 0.1);
+  border-color: rgba(252, 165, 165, 0.32);
+}
+
+.mb-canvas-props-actionbtn.is-accent {
+  background: var(--mb-accent-soft);
+  color: var(--mb-accent);
+  border-color: var(--mb-accent-soft);
+}
+
+.mb-canvas-props-actionbtn.is-accent:hover {
+  background: var(--mb-accent);
+  color: var(--mb-text-on-accent);
+  border-color: var(--mb-accent);
+}
+
+/* ─── 透视模式 overlay ─── */
+.mb-canvas-perspective-handle {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  border-radius: 50%;
+  background: var(--mb-accent);
+  border: 2px solid #fff;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.42);
+  cursor: grab;
+  z-index: 20;
+}
+
+.mb-canvas-perspective-handle:active {
+  cursor: grabbing;
+}
+
+.mb-canvas-perspective-overlay-svg {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 19;
+}
+
+.mb-canvas-perspective-overlay-svg line {
+  stroke: var(--mb-accent);
+  stroke-width: 1.5;
+  stroke-dasharray: 6 4;
+  opacity: 0.7;
+}
+
+/* ─── 抠图 dialog 内部 ─── */
+.mb-canvas-bg-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: center;
+  padding: 16px 0;
+}
+
+.mb-canvas-bg-progress-bar {
+  width: 100%;
+  height: 6px;
+  background: var(--mb-bg-hover);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.mb-canvas-bg-progress-fill {
+  height: 100%;
+  background: var(--mb-accent-gradient);
+  transition: width 0.2s var(--mb-ease);
+}
+
+.mb-canvas-bg-preview-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.mb-canvas-bg-preview-grid figure {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mb-canvas-bg-preview-grid img {
+  width: 100%;
+  height: 180px;
+  object-fit: contain;
+  background:
+    repeating-conic-gradient(rgba(255, 255, 255, 0.06) 0% 25%, rgba(0, 0, 0, 0.18) 0% 50%) 0 0 /
+    14px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--mb-border-soft);
+}
+
+.mb-canvas-bg-preview-grid figcaption {
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-muted);
+  text-align: center;
+}
+
+/* ─── 导入画板对话框 ─── */
+.mb-canvas-import-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.mb-canvas-import-card {
+  background: var(--mb-bg-hover);
+  border: 1px solid var(--mb-border);
+  border-radius: var(--mb-radius-input);
+  padding: 14px 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--mb-duration-fast) var(--mb-ease),
+    border-color var(--mb-duration-fast) var(--mb-ease);
+}
+
+.mb-canvas-import-card:hover {
+  background: var(--mb-accent-soft);
+  border-color: var(--mb-accent);
+}
+
+.mb-canvas-import-card-title {
+  font-size: var(--mb-text-body);
+  color: var(--mb-text-primary);
+  margin-bottom: 4px;
+  font-weight: 500;
+}
+
+.mb-canvas-import-card-desc {
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-muted);
+  line-height: 1.5;
+}
+
+/* ─── 调色板（C4c） ─── */
+.mb-color-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 8px;
+  background: var(--mb-bg-hover);
+  border: 1px solid var(--mb-border);
+  border-radius: var(--mb-radius-input);
+}
+
+.mb-color-square {
+  position: relative;
+  width: 100%;
+  height: 140px;
+  border-radius: 6px;
+  cursor: crosshair;
+  user-select: none;
+  touch-action: none;
+}
+
+.mb-color-square-cursor {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
+  margin: -6px 0 0 -6px;
+  pointer-events: none;
+}
+
+.mb-color-hue {
+  position: relative;
+  width: 100%;
+  height: 12px;
+  border-radius: 6px;
+  background: linear-gradient(
+    to right,
+    hsl(0, 100%, 50%),
+    hsl(60, 100%, 50%),
+    hsl(120, 100%, 50%),
+    hsl(180, 100%, 50%),
+    hsl(240, 100%, 50%),
+    hsl(300, 100%, 50%),
+    hsl(360, 100%, 50%)
+  );
+  cursor: pointer;
+  touch-action: none;
+}
+
+.mb-color-hue-cursor,
+.mb-color-alpha-cursor {
+  position: absolute;
+  width: 4px;
+  height: 16px;
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.5);
+  border-radius: 2px;
+  top: -2px;
+  margin-left: -2px;
+  pointer-events: none;
+}
+
+.mb-color-alpha {
+  position: relative;
+  width: 100%;
+  height: 12px;
+  border-radius: 6px;
+  background-color: transparent;
+  background-image:
+    repeating-conic-gradient(rgba(255, 255, 255, 0.08) 0% 25%, rgba(0, 0, 0, 0.18) 0% 50%);
+  background-size: 8px 8px;
+  cursor: pointer;
+  touch-action: none;
+}
+
+.mb-color-inputs {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr 1fr;
+  gap: 4px;
+}
+
+.mb-color-recent {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 3px;
+  margin-top: 4px;
+}
+
+.mb-color-recent-cell {
+  width: 100%;
+  aspect-ratio: 1;
+  border: 1px solid var(--mb-border);
+  border-radius: 4px;
+  cursor: pointer;
+  background-clip: padding-box;
+  padding: 0;
+}
+
+.mb-color-recent-cell:hover {
+  border-color: var(--mb-accent);
+}
+
+.mb-color-swatch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--mb-bg-hover);
+  border: 1px solid var(--mb-border);
+  border-radius: var(--mb-radius-input);
+  cursor: pointer;
+  width: 100%;
+  font-family: var(--mb-font-mono);
+  font-size: var(--mb-text-aux);
+  color: var(--mb-text-primary);
+}
+
+.mb-color-swatch:hover {
+  border-color: var(--mb-border-strong);
+}
+
+.mb-color-swatch-chip {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  border: 1px solid var(--mb-border-strong);
+  background-image:
+    repeating-conic-gradient(rgba(255, 255, 255, 0.1) 0% 25%, rgba(0, 0, 0, 0.2) 0% 50%);
+  background-size: 6px 6px;
+  position: relative;
+}
+
+.mb-color-swatch-chip::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background-color: inherit;
+}
+
+/* ─── Photoshop 联动设置弹窗 ─────────────────────────── */
+.mb-ps-dialog {
+  width: 440px;
+  max-width: 92vw;
+  border-radius: 12px;
+}
+.mb-ps-field {
+  margin: 10px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.mb-ps-field > label {
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-muted);
+}
+.mb-ps-pathrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.mb-ps-pathtext {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: var(--mb-surface-2);
+  border: 1px solid var(--mb-border);
+  border-radius: 8px;
+  padding: 7px 9px;
+}
+.mb-ps-pathtext.is-missing {
+  color: #fca5a5;
+  border-color: #fca5a5;
+}
+.mb-ps-pathrow .mb-canvas-props-input {
+  flex: 1;
+  min-width: 0;
+}
+.mb-ps-minibtn {
+  flex-shrink: 0;
+  padding: 6px 12px;
+  background: var(--mb-surface-2);
+  border: 1px solid var(--mb-border);
+  border-radius: 8px;
+  color: var(--mb-text-secondary);
+  font-size: var(--mb-text-tiny);
+  cursor: pointer;
+  transition: background 150ms, color 150ms, border-color 150ms;
+}
+.mb-ps-minibtn:hover:not(:disabled) {
+  background: var(--mb-bg-hover);
+  color: var(--mb-text-primary);
+  border-color: var(--mb-border-strong);
+}
+.mb-ps-minibtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.mb-ps-minibtn.is-danger:hover:not(:disabled) {
+  color: #fca5a5;
+  border-color: #fca5a5;
+}
+.mb-ps-checkrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+  font-size: var(--mb-text-aux);
+  color: var(--mb-text);
+  cursor: pointer;
+}
+.mb-ps-note {
+  margin: 12px 0 0;
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-muted);
+  line-height: 1.5;
+}
+
+/* ─── 局部重绘蒙版面板 ───────────────────────────────── */
+.mb-mask-rule {
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-muted);
+  margin: 0 0 8px;
+  padding: 6px 8px;
+  background: var(--mb-surface-2);
+  border-radius: var(--mb-radius-input);
+  border: 1px solid var(--mb-border);
+}
+.mb-mask-hint {
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-muted);
+  line-height: 1.5;
+  margin: 10px 0 0;
+}
+.mb-mask-color {
+  width: 36px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--mb-border-strong);
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+
+/* ─── AI 扩图对话框 ─────────────────────────────────── */
+.mb-outpaint-dialog {
+  width: 420px;
+  max-width: 92vw;
+  max-height: 86vh;
+  overflow-y: auto;
+}
+.mb-outpaint-dirs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 12px;
+}
+.mb-outpaint-ratios {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.mb-anchor-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 28px);
+  grid-template-rows: repeat(3, 28px);
+  gap: 4px;
+  width: max-content;
+}
+.mb-anchor-cell {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--mb-border-strong);
+  border-radius: 6px;
+  background: var(--mb-surface-2);
+  cursor: pointer;
+}
+.mb-anchor-cell.is-active {
+  background: var(--mb-accent);
+  border-color: var(--mb-accent);
+}
+
+/* ─── 局部重绘对话框 ─────────────────────────────────── */
+.mb-inpaint-dialog {
+  width: 440px;
+  max-width: 92vw;
+  max-height: 88vh;
+  overflow-y: auto;
+}
+
+/* ─── AI 功能面板 ───────────────────────────────────── */
+.mb-ai-panel {
+  width: 520px;
+  max-width: 94vw;
+}
+.mb-ai-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin: 12px 0;
+}
+.mb-ai-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 6px;
+  border: 1px solid var(--mb-border);
+  border-radius: var(--mb-radius-button);
+  background: var(--mb-surface-2);
+  color: var(--mb-text);
+  cursor: pointer;
+  transition: transform 150ms var(--mb-ease-default), border-color 150ms;
+}
+.mb-ai-cell:hover {
+  transform: scale(1.03);
+  border-color: var(--mb-accent);
+}
+.mb-ai-cell-icon {
+  font-size: 22px;
+  line-height: 1;
+}
+.mb-ai-cell-label {
+  font-size: var(--mb-text-body);
+  font-weight: 600;
+}
+.mb-ai-cell-hint {
+  font-size: 10px;
+  color: var(--mb-text-muted);
+  text-align: center;
+  line-height: 1.2;
+}
+
+/* ─── 历史快照面板 ──────────────────────────────────── */
+.mb-history-panel {
+  width: 440px;
+  max-width: 92vw;
+}
+.mb-history-list {
+  max-height: 50vh;
+  overflow-y: auto;
+  margin: 10px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mb-history-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--mb-border);
+  border-radius: var(--mb-radius-input);
+  background: var(--mb-surface-2);
+}
+.mb-history-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.mb-history-label {
+  font-size: var(--mb-text-body);
+  font-weight: 600;
+}
+.mb-history-time {
+  font-size: 11px;
+  color: var(--mb-text-muted);
+}
+.mb-history-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* ─── 参考图管理面板 ────────────────────────────────── */
+.mb-ref-panel {
+  width: 460px;
+  max-width: 94vw;
+}
+.mb-ref-list {
+  max-height: 56vh;
+  overflow-y: auto;
+  margin: 10px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mb-ref-item {
+  display: flex;
+  gap: 10px;
+  padding: 8px;
+  border: 1px solid var(--mb-border);
+  border-radius: var(--mb-radius-input);
+  background: var(--mb-surface-2);
+}
+.mb-ref-item.is-off {
+  opacity: 0.5;
+}
+.mb-ref-thumb {
+  width: 72px;
+  height: 72px;
+  object-fit: cover;
+  border-radius: 8px;
+  flex-shrink: 0;
+  background: repeating-conic-gradient(rgba(255,255,255,0.08) 0% 25%, rgba(0,0,0,0.2) 0% 50%) 0 / 10px 10px;
+}
+.mb-ref-fields {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.mb-ref-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mb-ref-weight {
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-muted);
+}
+.mb-ref-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-muted);
+}
+.mb-ref-flags label {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  cursor: pointer;
+}
+
+/* ─── 拖动边界扩图手柄 ──────────────────────────────── */
+.mb-outpaint-grip {
+  position: absolute;
+  z-index: 30;
+  background: rgba(251, 146, 60, 0.18);
+  border: 1px dashed var(--mb-accent);
+}
+.mb-outpaint-grip.is-h {
+  cursor: ns-resize;
+}
+.mb-outpaint-grip.is-v {
+  cursor: ew-resize;
+}
+.mb-outpaint-grip:hover {
+  background: rgba(251, 146, 60, 0.35);
+}
+.mb-outpaint-preview {
+  position: absolute;
+  z-index: 29;
+  pointer-events: none;
+  border: 2px dashed var(--mb-accent);
+  background: rgba(251, 146, 60, 0.08);
+}
+
+/* ─── 紧凑化 + 新组件样式（2026-05-29 批 3） ───────────── */
+.mb-canvas-root { gap: 8px; }
+.mb-canvas-body { gap: 8px; }
+.mb-canvas-toolbar {
+  padding: 6px 10px;
+  gap: 5px;
+  border-radius: 12px;
+}
+.mb-canvas-toolbar-group { gap: 3px; padding-right: 6px; }
+.mb-canvas-toolbar-btn { padding: 5px 9px; border-radius: 10px; }
+.mb-canvas-layers,
+.mb-canvas-props { border-radius: 12px; }
+
+/* 画板相关弹窗统一收小圆角 */
+.mb-modal.mb-ai-panel,
+.mb-modal.mb-history-panel,
+.mb-modal.mb-ref-panel,
+.mb-modal.mb-outpaint-dialog,
+.mb-modal.mb-inpaint-dialog,
+.mb-modal.mb-solid-dialog { border-radius: 12px; }
+
+/* 画布尺寸预设网格 */
+.mb-canvas-props-presetgrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  margin-top: 4px;
+}
+.mb-canvas-props-presetgrid .mb-canvas-props-actionbtn {
+  font-size: var(--mb-text-tiny);
+  padding: 5px 4px;
+}
+
+/* 新建纯色图层弹窗 */
+.mb-solid-dialog { width: 320px; max-width: 90vw; }
+.mb-solid-row { display: flex; align-items: center; gap: 8px; }
+.mb-solid-row .mb-canvas-props-input { flex: 1; min-width: 0; }
+.mb-solid-preview {
+  height: 48px;
+  border-radius: 8px;
+  margin-top: 10px;
+  border: 1px solid var(--mb-border);
+}
+
+/* ─── 新建画布弹窗 ──────────────────────────────────── */
+.mb-newcanvas-dialog {
+  width: 360px;
+  max-width: 92vw;
+  border-radius: 12px;
+}
+
+/* ─── 图层面板底部控制条（缩放 / 仅当前层 / 画板 / 贴合 / 清空） ─── */
+.mb-canvas-layers-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--mb-border-soft);
+  flex-shrink: 0;
+}
+.mb-canvas-layers-footrow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.mb-canvas-layer-foot-btn {
+  flex: 1;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 6px 4px;
+  background: var(--mb-surface-2);
+  border: 1px solid var(--mb-border);
+  border-radius: 8px;
+  color: var(--mb-text-secondary);
+  font-size: var(--mb-text-tiny);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 150ms, color 150ms, border-color 150ms;
+}
+.mb-canvas-layer-foot-btn:hover:not(:disabled) {
+  background: var(--mb-bg-hover);
+  color: var(--mb-text-primary);
+  border-color: var(--mb-border-strong);
+}
+.mb-canvas-layer-foot-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.mb-canvas-layer-foot-btn.is-active {
+  background: var(--mb-bg-active);
+  color: var(--mb-text-primary);
+  border-color: var(--mb-accent);
+}
+.mb-canvas-layer-foot-btn.is-danger:hover:not(:disabled) {
+  color: #fca5a5;
+  border-color: #fca5a5;
+}
+.mb-canvas-foot-zoom {
+  min-width: 42px;
+  text-align: center;
+  font-family: var(--mb-font-mono);
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-secondary);
+  user-select: none;
+}
+
+/* ═══ 批 6：右侧属性面板紧凑 + 文字略小 ═══ */
+.mb-canvas-props { gap: 8px; padding: 10px; }
+.mb-canvas-props h3 { font-size: 14px; }
+.mb-canvas-props-section { gap: 5px; }
+.mb-canvas-props-section-title { font-size: 10px; }
+.mb-canvas-props-row { gap: 5px; }
+.mb-canvas-props-row label { font-size: 12px; min-width: 30px; }
+.mb-canvas-props-input,
+.mb-canvas-props-select { padding: 4px 7px; font-size: 12px; }
+.mb-canvas-props-actionbtn { padding: 5px 7px; font-size: 12px; }
+.mb-canvas-props-btnrow { gap: 5px; }
+
+/* ═══ 批 6：图层底部控制条 —— 允许换行，文字不溢出 ═══ */
+.mb-canvas-layers-footrow { flex-wrap: wrap; }
+.mb-canvas-layer-foot-btn {
+  font-size: 11px;
+  padding: 5px 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ═══ 批 6：画板弹窗统一内边距（修复文字/按钮顶到边） ═══ */
+.mb-modal.mb-ps-dialog,
+.mb-modal.mb-ai-panel,
+.mb-modal.mb-outpaint-dialog,
+.mb-modal.mb-inpaint-dialog,
+.mb-modal.mb-history-panel,
+.mb-modal.mb-ref-panel,
+.mb-modal.mb-solid-dialog,
+.mb-modal.mb-newcanvas-dialog {
+  padding: 18px 20px;
+  overflow-y: auto;
+}
+.mb-modal.mb-ps-dialog > h3,
+.mb-modal.mb-ai-panel > h3,
+.mb-modal.mb-outpaint-dialog > h3,
+.mb-modal.mb-inpaint-dialog > h3,
+.mb-modal.mb-history-panel > h3,
+.mb-modal.mb-ref-panel > h3,
+.mb-modal.mb-solid-dialog > h3,
+.mb-modal.mb-newcanvas-dialog > h3 {
+  margin: 0 0 12px;
+  font-size: 16px;
+}
+/* 弹窗底部按钮行：与内容拉开间距、右对齐 */
+.mb-modal .mb-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--mb-border-soft);
+}

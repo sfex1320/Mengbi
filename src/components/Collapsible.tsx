@@ -2,12 +2,13 @@
  * Collapsible —— 通用折叠区(全项目共享)。
  *
  * 历史:原在 src/pages/Tools/Vec/components/,2026-05-28 提升到 src/components/
- * 让 Real-ESRGAN / HYPIR / SUPIR 面板也能复用同款折叠。
+ * 让 Real-ESRGAN / HYPIR 等面板也能复用同款折叠。
  *
  * 受控:open + onOpenChange。
- * 不写动画(避免高度抖动),纯 display:none/flex 切换。
+ * 展开/收起用 framer-motion 的 height:auto 动画(测量目标高度,平滑不抖)。
  */
 import { useState, type ReactNode } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 import { ChevronDownIcon, ChevronRightIcon } from '@/components/Icon';
 
 interface Props {
@@ -50,7 +51,20 @@ export function Collapsible({
         <span className="mb-collapsible-title">{title}</span>
         {badge !== undefined && <span className="mb-collapsible-badge">{badge}</span>}
       </button>
-      {isOpen && <div className="mb-collapsible-body">{children}</div>}
+      <AnimatePresence initial={false}>
+        {isOpen && (
+          <motion.div
+            className="mb-collapsible-body"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.18, ease: 'easeOut' }}
+            style={{ overflow: 'hidden' }}
+          >
+            {children}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

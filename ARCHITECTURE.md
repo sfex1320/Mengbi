@@ -43,6 +43,11 @@
                   └──────────────────────┘
 ```
 
+> 上图 Pages 列只是示意。**当前顶级路由（自上而下，与侧栏一致）**：
+> `/` 生图(Ctrl+1) · `/canvas` 画板(Ctrl+2) · `/manager` 图库·提示词管家(Ctrl+3) ·
+> `/comfyui` ComfyUI 工作流编排器(Ctrl+4) · `/tools` 工具箱(Ctrl+5) · `/lab` 提示词实验室(Ctrl+6) · `/settings` 设置。
+> 历史 `/local-model`（本地大模型）页已移除，ComfyUI 统一走 `/comfyui` 编排器；工具箱里 SUPIR、OmniSVG 已分别砍除。
+
 ---
 
 ## 二、模块依赖图
@@ -95,11 +100,14 @@
 1. GeneratorForm 提交 → window.electronAPI.image.generate({prompt, params, refs})
 2. generate.ts 把任务插入 generation_tasks 表（status=pending）
 3. TaskQueue Service 按并发上限取出任务（status=running）
-4. 调 ImageAdapter[provider] 发请求（含 base64 参考图）
-5. 拿到图 URL / base64 → FileStorage 保存到用户配置的 images 目录
-6. 写入 images 表（关联 task_id）
-7. webContents.send('image:done', { taskId, paths })
-8. 渲染进程刷新历史图片栏
+4. 调 ImageAdapter[provider] 构造默认 body
+   4a. 应用 api_configs.body_overrides_json：顶层合并用户 JSON 模板，
+       null 值剥字段，${var} 占位替换为真实类型（详见 CLAUDE.md §13）
+5. 发 HTTP 请求（含 base64 参考图）
+6. 拿到图 URL / base64 → 解码（含 data URL 前缀剥离）→ FileStorage 保存
+7. 写入 images 表（关联 task_id）
+8. webContents.send('image:done', { taskId, paths })
+9. 渲染进程刷新历史图片栏
 ```
 
 ---
@@ -442,10 +450,63 @@ my-export.mengbi（zip 重命名）
 
 ---
 
+## 九 .B 画板渲染管线
+
+画板（`/canvas`）是少数**完全跑在渲染进程**的模块，不走 IPC。整个数据流是单向的：
+
+```
+用户拖图 / 文件选择
+        │
+        ▼
+window.electronAPI.storage.pickImages   ─►  Layer { sourcePath, dataUri }
+        │
+        ▼  push 到
+useCanvasStore.project.layers (Zustand + persist)
+        │
+        ▼
+CanvasStage (react-konva)
+        │  ├─ Konva.Group(x,y,scaleX,scaleY,rotation,skewX,skewY,opacity,blendMode)
+        │  │     └─ Konva.Image(image, crop?)
+        │  └─ Konva.Transformer (8 anchors，仅选中图层挂)
+        │
+        ▼  退出"普通模式"进入：
+        ├─ 透视模式：PerspectiveOverlay
+        │       │ 4 角控制点 + 实时 renderPerspectiveWarp
+        │       │   homography (8 元高斯消元) + 16×16 三角剖分 drawImage
+        │       │ 提交 → cookedDataUri = canvas.toDataURL('image/png')
+        │       │       layer.{width,height,x,y} 同步偏移以保持视觉位置
+        │       └ perspective 字段清零
+        ├─ 裁切模式：CropOverlay
+        │       └ 写 layer.crop {x,y,width,height}（Konva 原生消费）
+        └─ 抠图：BgRemoveDialog
+                └ 动态 import('@imgly/background-removal')
+                  Blob → onnxruntime (wasm/webgpu) → Blob → dataUri
+                  写入 layer.cookedDataUri
+```
+
+**关键设计**：
+
+| 字段 | 用途 | 持久化？ |
+|------|------|---------|
+| `Layer.sourcePath` | 原图（`mengbi-image://`） | ✅ |
+| `Layer.cookedDataUri` | 抠图 / 透视烘焙后的中间图（dataUri，可能 MB 级） | ❌（铁律 14） |
+| `Layer.{x,y,scaleX,scaleY,rotation,skewX,skewY}` | 仿射变换 | ✅ |
+| `Layer.crop` | 裁切矩形 | ✅ |
+| `Layer.perspective` | 编辑中的透视角点；commit 后清零 | ✅ |
+| `Layer.{visible,locked,opacity,blendMode}` | 显示属性 | ✅ |
+
+**导出**：`exportProjectAsPNG(project) → Blob`：离屏 canvas（project.width × height），按图层顺序遍历，应用每层 transform / blend / opacity / crop，`canvas.toBlob('image/png')`。
+
+**送入生图页**：导出 Blob → dataUri → `useImageParamsStore.addRefs([{ path: 伪 path, dataUri, width, height }])` → `navigate('/')`。
+
+**撤销栈**：内存 `useRef<CanvasProject[]>` 保留 50 步；`stripCooked` 在入栈前剔除 `cookedDataUri`，避免内存爆。撤销后烘焙图丢失，回退到 sourcePath 是默认行为，提示用户。
+
+---
+
 ## 十、构建与发布
 
 ```
-本地 dev：   vite dev (5173)  ──►  electron main 加载 http://localhost:5173
+本地 dev：   vite dev (5400)  ──►  electron main 加载 http://127.0.0.1:5400
 本地 build： vite build → dist/   electron-builder 打包为 NSIS / DMG / AppImage
 更新通道：   electron-updater 走 GitHub Releases（默认）或自建 OSS
 ```

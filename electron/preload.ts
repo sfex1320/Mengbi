@@ -15,20 +15,24 @@ const PUSH_CHANNELS: ReadonlySet<PushChannel> = new Set<PushChannel>([
   'chat:sources',
   'image:done',
   'image:progress',
-  'update:available',
-  'update:downloaded',
   'notification:append',
   'upscale:progress',
   'upscale:done',
   'upscale:install-progress',
-  'upscale:pytorch-download-progress',
+  'upscale:onnx-download-progress',
   'hypir:progress',
-  'supir:progress',
   // 通用 AI 平台底座（安装脚本进度）
   'ai-feature:install-progress',
   // 图像转矢量 v2
   'vec:progress',
-  'vec:batch-progress'
+  'vec:batch-progress',
+  // 画板 Photoshop 联动
+  'ps:file-changed',
+  // ComfyUI 编排器
+  'comfyui:status',
+  'comfyui:run-progress',
+  'comfyui:run-done',
+  'comfyui:queue'
 ]);
 
 function invoke<T>(channel: string, payload?: unknown): Promise<T> {
@@ -63,14 +67,15 @@ const api: ElectronAPI = {
     generate: (input) => invoke('api:image:generate', input),
     status: (id) => invoke('api:image:status', id),
     cancel: (id) => invoke('api:image:cancel', id),
-    queue: () => invoke('api:image:queue'),
-    reorder: (input) => invoke('api:image:reorder', input)
+    queue: () => invoke('api:image:queue')
   },
   gallery: {
     list: (input) => invoke('api:gallery:list', input),
     detail: (id) => invoke('api:gallery:detail', id),
     update: (input) => invoke('api:gallery:update', input),
-    importFromBuffer: (input) => invoke('api:gallery:import-from-buffer', input)
+    importFromBuffer: (input) => invoke('api:gallery:import-from-buffer', input),
+    probeMissingFiles: (input) => invoke('api:gallery:probe-missing-files', input),
+    batchDeleteWithFiles: (input) => invoke('api:gallery:batch-delete-with-files', input)
   },
   prompt: {
     list: (input) => invoke('api:prompt:list', input),
@@ -80,14 +85,12 @@ const api: ElectronAPI = {
   },
   album: {
     list: () => invoke('api:album:list'),
-    upsert: (input) => invoke('api:album:upsert', input)
+    upsert: (input) => invoke('api:album:upsert', input),
+    delete: (id) => invoke('api:album:delete', id)
   },
   lab: {
     reverse: (input) => invoke('api:lab:reverse', input),
-    split: (input) => invoke('api:lab:split', input),
-    compare: (input) => invoke('api:lab:compare', input),
     translate: (input) => invoke('api:lab:translate', input),
-    fuse: (input) => invoke('api:lab:fuse', input),
     history: (input) => invoke('api:lab:history', input)
   },
   theme: {
@@ -139,11 +142,12 @@ const api: ElectronAPI = {
     runSingle: (input) => invoke('api:upscale:run-single', input),
     runBatch: (input) => invoke('api:upscale:run-batch', input),
     cancel: (input) => invoke('api:upscale:cancel', input ?? {}),
-    pytorchProbe: () => invoke('api:upscale:pytorch-probe'),
-    pytorchStart: () => invoke('api:upscale:pytorch-start'),
-    pytorchStop: () => invoke('api:upscale:pytorch-stop'),
-    pytorchModelList: () => invoke('api:upscale:pytorch-model-list'),
-    pytorchDownloadModel: (input) => invoke('api:upscale:pytorch-download-model', input)
+    onnxList: () => invoke('api:upscale:onnx-list'),
+    onnxDownload: (input) => invoke('api:upscale:onnx-download', input),
+    onnxRemove: (input) => invoke('api:upscale:onnx-remove', input),
+    onnxImportFiles: (input) => invoke('api:upscale:onnx-import-files', input),
+    onnxUnload: () => invoke('api:upscale:onnx-unload'),
+    onnxPrewarm: (input) => invoke('api:upscale:onnx-prewarm', input)
   },
   hypir: {
     check: (input) => invoke('api:hypir:check', input),
@@ -157,16 +161,6 @@ const api: ElectronAPI = {
     taskStatus: (input) => invoke('api:hypir:task-status', input),
     cancelTask: (input) => invoke('api:hypir:cancel-task', input),
     unloadModel: () => invoke('api:hypir:unload-model')
-  },
-  supir: {
-    probe: () => invoke('api:supir:probe'),
-    startServer: () => invoke('api:supir:start-server'),
-    stopServer: () => invoke('api:supir:stop-server'),
-    serverStatus: () => invoke('api:supir:server-status'),
-    submitTask: (input) => invoke('api:supir:submit-task', input),
-    taskStatus: (input) => invoke('api:supir:task-status', input),
-    cancelTask: (input) => invoke('api:supir:cancel-task', input),
-    unloadModel: () => invoke('api:supir:unload-model')
   },
   aiFeature: {
     list: () => invoke('api:ai-feature:list'),
@@ -192,6 +186,42 @@ const api: ElectronAPI = {
     preview: (input) => invoke('api:config:preview', input),
     import: (input) => invoke('api:config:import', input),
     pickImportFile: () => invoke('api:config:pick-import-file')
+  },
+  ps: {
+    status: () => invoke('api:ps:status'),
+    setConfig: (input) => invoke('api:ps:set-config', input),
+    send: (input) => invoke('api:ps:send', input),
+    readBack: (input) => invoke('api:ps:read-back', input),
+    stopWatch: (input) => invoke('api:ps:stop-watch', input ?? {}),
+    openTempDir: () => invoke('api:ps:open-temp-dir')
+  },
+  comfyui: {
+    getConfig: () => invoke('api:comfyui:get-config'),
+    setConfig: (input) => invoke('api:comfyui:set-config', input),
+    detect: (input) => invoke('api:comfyui:detect', input ?? null),
+    status: () => invoke('api:comfyui:status'),
+    start: () => invoke('api:comfyui:start'),
+    stop: () => invoke('api:comfyui:stop'),
+    freeMemory: (input) => invoke('api:comfyui:free-memory', input),
+    import: (input) => invoke('api:comfyui:import', input),
+    refreshObjectInfo: () => invoke('api:comfyui:refresh-object-info'),
+    templateList: () => invoke('api:comfyui:template:list'),
+    templateGet: (input) => invoke('api:comfyui:template:get', input),
+    templateUpsert: (input) => invoke('api:comfyui:template:upsert', input),
+    templateDelete: (input) => invoke('api:comfyui:template:delete', input),
+    runSingle: (input) => invoke('api:comfyui:run-single', input),
+    runBatch: (input) => invoke('api:comfyui:run-batch', input),
+    cancel: (input) => invoke('api:comfyui:cancel', input),
+    skip: (input) => invoke('api:comfyui:skip', input),
+    pause: () => invoke('api:comfyui:pause'),
+    resume: () => invoke('api:comfyui:resume'),
+    runStatus: (input) => invoke('api:comfyui:run-status', input),
+    resultsGet: (input) => invoke('api:comfyui:results:get', input),
+    resultsList: (input) => invoke('api:comfyui:results:list', input),
+    resultsRestore: (input) => invoke('api:comfyui:results:restore', input),
+    resultsDelete: (input) => invoke('api:comfyui:results:delete', input),
+    resultsExport: (input) => invoke('api:comfyui:results:export', input),
+    resultsToGallery: (input) => invoke('api:comfyui:results:to-gallery', input)
   },
   exporter: {
     card: (input) => invoke('api:export:card', input)

@@ -13,10 +13,10 @@ export type ManagerMode = 'gallery' | 'prompt';
 export type DateFilter = 'all' | 'today' | 'week' | 'month';
 export type SortMode = 'newest' | 'oldest';
 export type ChatPanelMode = 'chat' | 'image';
-export type SettingsTab = 'plans' | 'appearance' | 'storage';
+export type SettingsTab = 'plans' | 'appearance' | 'storage' | 'tools' | 'about';
 
 interface UIState {
-  // 提示词管家页面
+  // 图库页面
   managerMode: ManagerMode;
   managerSlug: string;
   managerSearch: string;
@@ -37,8 +37,8 @@ interface UIState {
   avatarKey: string;
   /** 用户上传的自定义头像（dataUri）；avatarKey === 'custom' 时使用 */
   customAvatarDataUri: string;
-  /** 聊天面板的最后滚动位置（像素，从顶部）—— 跨页面切换记住 */
-  chatScrollTop: number;
+  /** 各对话的最后滚动位置（conversationId → 像素）—— 跨页面/快速切换对话各自记住 */
+  chatScrollTops: Record<string, number>;
   /** 在管家中标记为"快捷"的提示词 ID —— 渲染在对话/生图发送按钮左侧 */
   shortcutPromptIds: number[];
   /** 缓存各 shortcut prompt 的 { title, text }，避免每次切页都要重新拉一次 prompt.list */
@@ -46,7 +46,7 @@ interface UIState {
 
   setAvatarKey: (k: string) => void;
   setCustomAvatarDataUri: (s: string) => void;
-  setChatScrollTop: (n: number) => void;
+  setChatScrollTop: (id: string, n: number) => void;
   toggleShortcutPromptId: (id: number) => void;
   setShortcutPromptIds: (ids: number[]) => void;
   setShortcutPromptCache: (cache: Record<number, { title: string; text: string }>) => void;
@@ -87,13 +87,13 @@ export const useUIStore = create<UIState>()(
 
       avatarKey: 'default',
       customAvatarDataUri: '',
-      chatScrollTop: 0,
+      chatScrollTops: {},
       shortcutPromptIds: [],
       shortcutPromptCache: {},
 
       setAvatarKey: (k) => set({ avatarKey: k }),
       setCustomAvatarDataUri: (s) => set({ customAvatarDataUri: s }),
-      setChatScrollTop: (n) => set({ chatScrollTop: n }),
+      setChatScrollTop: (id, n) => set((s) => ({ chatScrollTops: { ...s.chatScrollTops, [id]: n } })),
       toggleShortcutPromptId: (id) =>
         set((s) => {
           const cur = s.shortcutPromptIds;

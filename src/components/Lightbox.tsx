@@ -134,9 +134,11 @@ export function Lightbox({ open, src, alt, onClose }: LightboxProps): JSX.Elemen
             src={src}
             alt={alt}
             draggable={false}
+            decoding="async"
+            loading="eager"
             onClick={(e) => e.stopPropagation()}
             style={{
-              transform: `translate(${t.x}px, ${t.y}px) scale(${t.scale})`,
+              transform: `translate3d(${t.x}px, ${t.y}px, 0) scale(${t.scale})`,
               cursor: draggingRef.current ? 'grabbing' : 'grab'
             }}
           />

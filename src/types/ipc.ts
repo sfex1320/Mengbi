@@ -4,7 +4,24 @@
  */
 
 import type { Result, AppErrorCode, ErrorSeverity } from './error';
-import type { ApiPlan, ApiConfig, ApiConfigInput, SettingsBundle } from './domain';
+import type { ApiPlan, ApiConfig, ApiConfigInput, SettingsBundle, Album, AlbumInput } from './domain';
+import type {
+  ComfyConnectionConfig,
+  ConnectionStatus,
+  DetectResult,
+  ImportResult,
+  WorkflowTemplate,
+  WorkflowTemplateSummary,
+  RunSingleResult,
+  RunBatchResult,
+  ComfyRun,
+  ComfyRunSummary,
+  InputControl,
+  OutputControl,
+  Binding,
+  LoopConfig,
+  UiLayout
+} from './comfyui';
 
 /** preload 暴露给渲染进程的入口 */
 export interface ElectronAPI {
@@ -26,14 +43,129 @@ export interface ElectronAPI {
   vec: VecAPI;
   upscale: UpscaleAPI;
   hypir: HypirAPI;
-  supir: SupirAPI;
-  /** 通用 AI 平台底座（HYPIR/SUPIR/未来功能共用） */
+  /** 通用 AI 平台底座（HYPIR + 未来功能共用） */
   aiFeature: AiFeatureAPI;
   aiModel: AiModelAPI;
   config: ConfigIOAPI;
   llm: LocalLlmAPI;
+  /** 画板 Photoshop 联动桥（api:ps:*） */
+  ps: PsAPI;
+  /** ComfyUI 通用工作流编排器（api:comfyui:*） */
+  comfyui: ComfyuiAPI;
   /** 主进程 → 渲染进程 的事件订阅 */
   on(channel: PushChannel, handler: (payload: unknown) => void): () => void;
+}
+
+export interface ComfyuiAPI {
+  getConfig(): Promise<Result<ComfyConnectionConfig>>;
+  setConfig(input: {
+    host?: string;
+    launchCommand?: string;
+    launchCwd?: string;
+    authToken?: string | null;
+  }): Promise<Result<{ saved: boolean }>>;
+  detect(input?: { host?: string } | null): Promise<Result<DetectResult>>;
+  status(): Promise<Result<ConnectionStatus>>;
+  start(): Promise<Result<{ pid: number | null }>>;
+  stop(): Promise<Result<{ stopped: boolean }>>;
+  import(input: { json: string }): Promise<Result<ImportResult>>;
+  refreshObjectInfo(): Promise<Result<{ refreshed: boolean; nodeTypes: number }>>;
+  templateList(): Promise<Result<WorkflowTemplateSummary[]>>;
+  templateGet(input: { workflowId: string }): Promise<Result<WorkflowTemplate>>;
+  templateUpsert(input: {
+    workflowId?: string;
+    name: string;
+    typeTags?: string[];
+    originalApiWorkflowJson: string;
+    inputControls?: InputControl[];
+    outputControls?: OutputControl[];
+    bindings?: Binding[];
+    uiLayout?: UiLayout | null;
+  }): Promise<Result<{ workflowId: string }>>;
+  templateDelete(input: { workflowId: string }): Promise<Result<{ deleted: boolean }>>;
+  runSingle(input: {
+    workflowId?: string;
+    workflowJson?: string;
+    controlValues?: Record<string, unknown>;
+    controls?: InputControl[];
+    bindings?: Binding[];
+    outputNodeIds?: string[];
+  }): Promise<Result<RunSingleResult>>;
+  runBatch(input: {
+    workflowId?: string;
+    workflowJson?: string;
+    controlValues?: Record<string, unknown>;
+    controls?: InputControl[];
+    bindings?: Binding[];
+    outputNodeIds?: string[];
+    loopConfig: LoopConfig;
+  }): Promise<Result<RunBatchResult>>;
+  freeMemory(input: {
+    unloadModels?: boolean;
+    freeMemory?: boolean;
+  }): Promise<Result<{ requested: boolean }>>;
+  cancel(input: { batchId?: string; runId?: string }): Promise<Result<{ cancelled: number }>>;
+  skip(input: { runId: string }): Promise<Result<{ skipped: boolean }>>;
+  pause(): Promise<Result<{ paused: boolean }>>;
+  resume(): Promise<Result<{ paused: boolean }>>;
+  runStatus(input: {
+    batchId: string;
+  }): Promise<Result<{ total: number; pending: number; running: number; done: number; failed: number }>>;
+  resultsGet(input: { runId: string }): Promise<Result<ComfyRun>>;
+  resultsList(input: {
+    templateId?: string;
+    batchId?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<Result<ComfyRunSummary[]>>;
+  resultsRestore(input: { runId: string }): Promise<Result<{ controlValues: Record<string, unknown> }>>;
+  resultsDelete(input: { runId?: string; batchId?: string }): Promise<Result<{ deleted: number }>>;
+  resultsExport(input: { runIds: string[]; outputDir: string }): Promise<Result<{ copied: number }>>;
+  resultsToGallery(input: { runIds: string[] }): Promise<Result<{ added: number }>>;
+}
+
+// ──────────────────────────────────────────────────────────
+// ps.ts —— 画板 Photoshop 联动桥
+// ──────────────────────────────────────────────────────────
+
+export interface PsBridgeStatus {
+  /** Photoshop 可执行文件路径；空 = 未设置（用系统默认程序打开） */
+  photoshopPath: string;
+  photoshopPathExists: boolean;
+  /** 临时文件目录（空设置时为 userData/ps-bridge） */
+  tempDir: string;
+  /** 导回后是否保留临时文件 */
+  keepTemp: boolean;
+  /** 当前正在监听的临时文件路径 */
+  watching: string[];
+}
+
+export interface PsAPI {
+  /** 当前桥状态 */
+  status(): Promise<Result<PsBridgeStatus>>;
+  /** 更新桥配置（部分字段） */
+  setConfig(input: {
+    photoshopPath?: string;
+    tempDir?: string;
+    keepTemp?: boolean;
+  }): Promise<Result<true>>;
+  /** 把当前画布 PNG dataUri 写临时文件 → 打开 PS → 开始监听；返回临时路径 */
+  send(input: {
+    dataUri: string;
+    suggestedName?: string;
+  }): Promise<Result<{ tempPath: string; openedWith: 'photoshop' | 'system' }>>;
+  /** 把 PS 保存后的临时文件读回 dataUri（仅限本桥跟踪过的路径） */
+  readBack(input: { tempPath: string }): Promise<Result<{ dataUri: string }>>;
+  /** 停止监听（tempPath 省略 = 全部）；按设置决定是否删临时文件 */
+  stopWatch(input?: { tempPath?: string }): Promise<Result<true>>;
+  /** 打开临时目录 */
+  openTempDir(): Promise<Result<true>>;
+}
+
+/** 'ps:file-changed' push payload —— PS 中 Ctrl+S 后主进程检测到 mtime 前进 */
+export interface PsFileChangedPayload {
+  tempPath: string;
+  mtimeMs: number;
 }
 
 export interface LocalLlmStatus {
@@ -115,18 +247,20 @@ export type PushChannel =
   | 'chat:sources'
   | 'image:done'
   | 'image:progress'
-  | 'update:available'
-  | 'update:downloaded'
   | 'notification:append'
   | 'upscale:progress'
   | 'upscale:done'
   | 'upscale:install-progress'
-  | 'upscale:pytorch-download-progress'
+  | 'upscale:onnx-download-progress'
   | 'hypir:progress'
-  | 'supir:progress'
   | 'ai-feature:install-progress'
   | 'vec:progress'
-  | 'vec:batch-progress';
+  | 'vec:batch-progress'
+  | 'ps:file-changed'
+  | 'comfyui:status'
+  | 'comfyui:run-progress'
+  | 'comfyui:run-done'
+  | 'comfyui:queue';
 
 /**
  * chat:sources 推送 payload —— 代搜（DDG/Tavily/SearXNG）路径下，
@@ -134,8 +268,10 @@ export type PushChannel =
  */
 export interface ChatSourcesPayload {
   id: string;
-  backend: 'native' | 'ddg' | 'tavily' | 'searxng';
+  backend: 'native' | 'ddg' | 'tavily' | 'searxng' | 'off';
   hits: Array<{ title: string; url: string; snippet: string; hostname: string }>;
+  /** 用户强制 🌐 联网但出问题时填上,前端弹 toast 让用户知道 */
+  error?: string;
 }
 
 /**
@@ -252,6 +388,8 @@ export interface ChatSendInput {
   content: string;
   /** 仅本次发送附带的图片（data URI / https URL），后端拼成多模态消息 */
   attachedImages?: string[];
+  /** 本轮强制启用代搜(对应聊天框 🌐 toggle);后端忽略 supports_web_search */
+  forceWebSearch?: boolean;
 }
 
 // ──────────────────────────────────────────────────────────
@@ -263,7 +401,6 @@ export interface ImageAPI {
   status(taskId: number): Promise<Result<{ status: string; result_paths?: string[] }>>;
   cancel(taskId: number): Promise<Result<true>>;
   queue(): Promise<Result<unknown[]>>;
-  reorder(input: { taskIds: number[] }): Promise<Result<true>>;
 }
 
 export interface ImageGenerateInput {
@@ -286,6 +423,12 @@ export interface GalleryAPI {
   importFromBuffer(
     input: GalleryImportFromBufferInput
   ): Promise<Result<{ id: number; filePath: string }>>;
+  /** 批量探测哪些卡片的 file_path 已不在本地(用于"选中无关联文件") */
+  probeMissingFiles(input: { ids: number[] }): Promise<Result<{ missing: number[] }>>;
+  /** 批量"同时删除本地文件"—— 物理 unlink + 硬删 DB 行 */
+  batchDeleteWithFiles(input: { ids: number[] }): Promise<
+    Result<{ deletedIds: number[]; fileDeleted: number; fileMissing: number }>
+  >;
 }
 
 export interface GalleryListInput {
@@ -293,6 +436,8 @@ export interface GalleryListInput {
   tags?: string[];
   search?: string;
   include_deleted?: boolean;
+  /** 按相册筛选（手动=成员匹配；智能=规则实时匹配） */
+  album_id?: number;
 }
 
 export interface PromptAPI {
@@ -303,20 +448,18 @@ export interface PromptAPI {
 }
 
 export interface AlbumAPI {
-  list(): Promise<Result<unknown[]>>;
-  upsert(input: Record<string, unknown>): Promise<Result<unknown>>;
+  list(): Promise<Result<Album[]>>;
+  upsert(input: AlbumInput): Promise<Result<Album>>;
+  delete(id: number): Promise<Result<true>>;
 }
 
 // ──────────────────────────────────────────────────────────
-// lab.ts (Phase 5 占位)
+// lab.ts
 // ──────────────────────────────────────────────────────────
 
 export interface LabAPI {
   reverse(input: { imagePaths: string[]; modelId: string; resultType: string }): Promise<Result<unknown>>;
-  split(input: { text: string; modelId: string }): Promise<Result<unknown>>;
-  compare(input: { text: string; modelIds: string[] }): Promise<Result<unknown>>;
   translate(input: { text: string; direction: 'zh-to-en' | 'en-to-zh' }): Promise<Result<unknown>>;
-  fuse(input: { textA: string; textB: string; ratioA: number }): Promise<Result<unknown>>;
   history(input?: { operation_type?: string }): Promise<Result<unknown[]>>;
 }
 
@@ -407,6 +550,51 @@ export interface UpscaleCommonParams {
   tile: number;
   gpuId: number | 'auto';
   tta: boolean;
+  /**
+   * 跑哪个后端 — 默认 'ncnn'。
+   * - 'ncnn' :modelName 是 ncnn short-id(如 realesrgan-x4plus)。spawn 二进制
+   * - 'onnx' :modelName 是 OnnxModelSpec.id(如 realesrgan-x4plus、4x-ultrasharp)。
+   *           走 onnxruntime-node 主进程内推理(DirectML/CoreML/CUDA + CPU 回退)
+   */
+  backend?: 'ncnn' | 'onnx';
+  /** 保留 alpha 通道(仅 PNG/WebP 输出有效) */
+  keepAlpha?: boolean;
+}
+
+/** 与 src/lib/upscaleModes.ts 的 UpscaleModeId 保持一致(用于 ONNX 模型分类提示) */
+export type UpscaleModeCategory =
+  | 'smart'
+  | 'general-hd'
+  | 'general-fast'
+  | 'anime-illust'
+  | 'anime-video'
+  | 'sharpen'
+  | 'custom';
+
+/** ONNX 模型清单条目(api:upscale:onnx-list 返回) */
+export interface OnnxModelView {
+  id: string;
+  displayName: string;
+  description: string;
+  licenseNote: string;
+  /** 该模型契合的模式分类;Settings 据此分组渲染 */
+  categoryHint: UpscaleModeCategory;
+  fileName: string;
+  absPath: string;
+  expectedBytes: number;
+  actualBytes: number;
+  installed: boolean;
+  nativeScale: 2 | 3 | 4;
+  /** sources 为空 = 无公开 .onnx,UI 应显示「上传到此槽位」 */
+  sources: Array<{ name: string; url: string }>;
+}
+
+export interface OnnxCustomEntry {
+  fileName: string;
+  absPath: string;
+  sizeBytes: number;
+  /** 用户上传时指定的分类(默认 'custom') */
+  modeHint: UpscaleModeCategory;
 }
 
 export interface UpscaleRunSingleInput extends UpscaleCommonParams {
@@ -467,37 +655,33 @@ export interface UpscaleAPI {
   runSingle(input: UpscaleRunSingleInput): Promise<Result<UpscaleSingleResult>>;
   runBatch(input: UpscaleRunBatchInput): Promise<Result<UpscaleBatchResult>>;
   cancel(input?: { taskId?: string }): Promise<Result<{ cancelledTaskIds: string[] }>>;
-  /** PyTorch sidecar 探测(端口 7869);用于 UI 判断扩展模型/face_enhance 是否可用 */
-  pytorchProbe(): Promise<
-    Result<{ reachable: boolean; port: number; raw: Record<string, unknown> | null; error: string | null }>
-  >;
-  pytorchStart(): Promise<Result<{ alreadyRunning: boolean; pid: number | null; port: number }>>;
-  pytorchStop(): Promise<Result<{ stopped: boolean }>>;
-  /** 列出 PyTorch sidecar 用到的 8 个模型 + 本地存在性 */
-  pytorchModelList(): Promise<
+
+  /** ONNX 模型管理(2026-05-28 替代 PyTorch sidecar) */
+  onnxList(): Promise<
     Result<{
-      portableRoot: string;
-      models: Array<{
-        id: string;
-        displayName: string;
-        licenseNote: string;
-        relPath: string;
-        absPath: string;
-        expectedBytes: number;
-        actualBytes: number;
-        installed: boolean;
-        sources: Array<{ name: string; url: string; mirror: boolean }>;
-      }>;
+      modelsDir: string;
+      builtins: OnnxModelView[];
+      custom: OnnxCustomEntry[];
     }>
   >;
-  /** 下载指定 modelId 到便携包对应路径 */
-  pytorchDownloadModel(input: { modelId: string }): Promise<
+  /** 下载内置 onnx 模型(HF mirror 优先) */
+  onnxDownload(input: { modelId: string }): Promise<
     Result<{ modelId: string; usedUrl: string; destPath: string }>
   >;
+  /** 删除某 .onnx 文件 */
+  onnxRemove(input: { fileName: string }): Promise<Result<true>>;
+  /** 导入本地 .onnx 文件到 onnx 模型目录(保留原文件名,带 modeHint 写入 custom_meta.json) */
+  onnxImportFiles(input: { filePaths: string[]; modeHint?: UpscaleModeCategory }): Promise<
+    Result<{ imported: string[]; skipped: Array<{ src: string; reason: string }> }>
+  >;
+  /** 释放 ORT session(清显存) */
+  onnxUnload(): Promise<Result<true>>;
+  /** 后台预热 ONNX 模型 session(首次推理跳过冷加载 5-15s) */
+  onnxPrewarm(input: { modelId: string }): Promise<Result<{ warmed: boolean }>>;
 }
 
-/** 'upscale:pytorch-download-progress' push payload */
-export interface UpscalePytorchDownloadProgressPayload {
+/** 'upscale:onnx-download-progress' push payload */
+export interface UpscaleOnnxDownloadProgressPayload {
   modelId: string;
   component: string;
   received: number;
@@ -608,7 +792,7 @@ export interface HypirAPI {
   unloadModel(): Promise<Result<{ unloaded: boolean; modelLoaded: boolean; vramUsedMb: number | null }>>;
 }
 
-/** 推理结果元数据（HYPIR / SUPIR 共享形状） */
+/** 推理结果元数据(HYPIR 用,SUPIR 已砍) */
 export interface UpscaleResultInfo {
   output_path?: string;
   duration_seconds?: number;
@@ -699,106 +883,7 @@ export interface HypirProgressPayload {
   resultInfo?: UpscaleResultInfo | null;
 }
 
-// ──────────────────────────────────────────────────────────
-// SUPIR Portable —— SDXL-based 高质量修复 / 增强
-// ──────────────────────────────────────────────────────────
-
-export interface SupirPortableProbe {
-  configured: boolean;
-  portablePath: string;
-  exists: boolean;
-  supirSource: { exists: boolean; path: string };
-  supirV0F: { exists: boolean; path: string; sizeBytes: number };
-  supirV0Q: { exists: boolean; path: string; sizeBytes: number };
-  sdxlBase: { exists: boolean; path: string };
-  bats: { startExists: boolean; stopExists: boolean };
-  configPort: number;
-  serverScaffoldExists: boolean;
-  scaffoldSource: string;
-}
-
-export interface SupirServerStatus {
-  reachable: boolean;
-  port: number;
-  raw?: {
-    server?: string;
-    engine?: string;
-    loaded_checkpoint?: string | null;
-    queue_size?: number;
-    active_tasks?: number;
-    probe?: {
-      supir_source: boolean;
-      supir_v0f: boolean;
-      supir_v0q: boolean;
-      sdxl_base: boolean;
-      torch_installed: boolean;
-      cuda_available: boolean;
-      gpu_name: string | null;
-      vram_total_mb: number | null;
-      loaded_sign: string | null;
-    };
-    version?: string;
-  };
-  error?: string;
-}
-
-export interface SupirTaskStatusRaw {
-  task_id: string;
-  status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
-  progress: number;
-  message: string;
-  output_path: string;
-  error_code: string | null;
-  error_message_zh: string | null;
-  error_hint: string | null;
-  error_detail: string | null;
-  duration_seconds?: number | null;
-  result_info?: UpscaleResultInfo;
-}
-
-export interface SupirProgressPayload {
-  taskId: string;
-  percent: number;
-  message: string;
-  status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
-  outputPath?: string;
-  errorCode?: AppErrorCode | null;
-  rawErrorCode?: string | null;
-  errorMessageZh?: string | null;
-  errorHint?: string | null;
-  durationSeconds?: number | null;
-  resultInfo?: UpscaleResultInfo | null;
-}
-
-export interface SupirAPI {
-  probe(): Promise<Result<SupirPortableProbe>>;
-  startServer(): Promise<Result<{ alreadyRunning: boolean; pid: number | null; port: number }>>;
-  stopServer(): Promise<Result<{ stopped: boolean }>>;
-  serverStatus(): Promise<Result<SupirServerStatus>>;
-  submitTask(input: {
-    inputPath: string;
-    outputPath?: string;
-    scale: number;
-    prompt?: string;
-    negativePrompt?: string;
-    seed?: number;
-    checkpoint?: 'F' | 'Q';
-    intensity?: 'conservative' | 'standard' | 'strong';
-    highlightProtection?: boolean;
-    disablePostsharpen?: boolean;
-    numSteps?: number;
-    cfgScale?: number;
-    restorationScale?: number;
-    sChurn?: number;
-    sNoise?: number;
-    colorFix?: 'Wavelet' | 'AdaIn' | 'None';
-    tileEncoder?: number;
-    tileDecoder?: number;
-  }): Promise<Result<{ taskId: string; status: string }>>;
-  taskStatus(input: { taskId: string }): Promise<Result<SupirTaskStatusRaw>>;
-  cancelTask(input: { taskId: string }): Promise<Result<true>>;
-  unloadModel(): Promise<Result<{ unloaded: boolean; loadedCheckpoint: string | null; vramUsedMb: number | null }>>;
-}
+// SUPIR Portable 类型已整体砍除(2026-05-29 — 显存需求 25-30 GB 过大)
 
 // ──────────────────────────────────────────────────────────
 // 图像转矢量（api:vec:*） 最终 2 模式 (2026-05-28)

@@ -1,9 +1,12 @@
 .mb-modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.45);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  /* 0.45 黑色 + blur(8) 在多卡片场景下不足以遮挡，会看到下面的列表透出；
+     提到 0.72 配合更强的 blur 才能形成清晰的"前后景"分离。 */
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  will-change: backdrop-filter; /* GPU 提示：切主题/弹出时 blur 重算更顺，弱机不卡顿 */
   z-index: 800;
   display: flex;
   align-items: center;
@@ -15,11 +18,24 @@
   display: flex;
   flex-direction: column;
   max-height: calc(100vh - 80px);
-  background: var(--mb-bg-card);
-  backdrop-filter: blur(40px) saturate(180%);
-  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  /* 永不超出视口（内联 width 可能比窗口宽，如节点图 1180px 在窄窗口会被裁切） */
+  max-width: calc(100vw - 48px);
+  /* 模态自身用不透明的 raw color（取 deep-quiet 主氛围的卡片色，但 1.0 alpha），
+     否则 --mb-bg-card 自带 55% 透明会让下层列表继续透出。 */
+  background: rgb(20, 20, 26);
   border: 1px solid var(--mb-border);
+  border-radius: var(--mb-radius-card-lg);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
   overflow: hidden;
+}
+/* 浅主题：模态自身要翻成不透明浅色（否则全 app 的弹窗都是深色块）；
+   玻璃主题：用偏深的不透明玻璃色（仍遮住背后列表）。 */
+[data-atmosphere='warm-jade'] .mb-modal {
+  background: #fbf9f3;
+  box-shadow: 0 24px 80px rgba(70, 58, 40, 0.22);
+}
+[data-atmosphere='glass'] .mb-modal {
+  background: #14162a;
 }
 
 .mb-modal-header {

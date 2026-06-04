@@ -27,22 +27,7 @@ interface Tool {
 
 const TOOLS: Tool[] = [
   { key: 'reverse', name: '反推', desc: '上传一张图，得到近似生成它的提示词', priority: 'P0', available: true },
-  { key: 'translate', name: '中英互译', desc: '提示词中英双向翻译', priority: 'P0', available: true },
-  {
-    key: 'split',
-    name: '拆解',
-    desc: '把一段提示词拆成主题/风格/光线/构图/镜头/后处理',
-    priority: 'P1',
-    available: false
-  },
-  {
-    key: 'compare',
-    name: '多模型对比',
-    desc: '同提示词喂给多个模型，并排出图',
-    priority: 'P2',
-    available: false
-  },
-  { key: 'fuse', name: '融合', desc: '把两条提示词按比例（70%/30%）合一条', priority: 'P2', available: false }
+  { key: 'translate', name: '中英互译', desc: '提示词中英双向翻译', priority: 'P0', available: true }
 ];
 
 export default function LaboratoryPage(): JSX.Element {
@@ -61,7 +46,7 @@ export default function LaboratoryPage(): JSX.Element {
           <h2>
             <FlaskIcon size={20} /> 提示词实验室
           </h2>
-          <p>对提示词本身做实验：反推 / 拆解 / 翻译 / 融合 / 对比测试</p>
+          <p>对提示词本身做实验：反推 / 中英互译</p>
         </header>
 
         <div className="mb-lab-grid">
@@ -183,7 +168,8 @@ function ReverseTool({ onClose }: { onClose: () => void }): JSX.Element {
   useEffect(() => {
     if (result === null) return;
     const t = setTimeout(() => {
-      resultBoxRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      // 用 'center' 而非 'nearest'：长结果 + 小窗时 nearest 只保证刚好可见，可能把上方操作栏顶出去
+      resultBoxRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }, 100);
     return () => clearTimeout(t);
   }, [result]);
@@ -270,7 +256,7 @@ function ReverseTool({ onClose }: { onClose: () => void }): JSX.Element {
       notes: `由反推工具生成 · 模型 ${modelId || '(mock)'}`,
       thumb_data_uri: thumb ?? undefined
     });
-    if (r.ok) toast.success('已加入提示词管家');
+    if (r.ok) toast.success('已加入图库');
     else toast.error('归档失败', r.error.message);
   }
 
@@ -302,7 +288,7 @@ function ReverseTool({ onClose }: { onClose: () => void }): JSX.Element {
           onClick: useSelectedAsImagePrompt
         },
         {
-          label: '加入提示词管家',
+          label: '加入图库',
           icon: <PlusIcon size={12} />,
           onClick: archiveAsPrompt
         }
@@ -397,7 +383,7 @@ function ReverseTool({ onClose }: { onClose: () => void }): JSX.Element {
         {useFallback && (
           <div className="mb-field-hint">
             建议把真正支持图片输入的模型（GPT-4o / Claude / Gemini / Qwen-VL ...）
-            在设置里勾上"支持 vision"，下次只列出它们。
+            在设置里勾上「支持 vision」，下次只列出它们。
           </div>
         )}
       </div>
@@ -510,9 +496,9 @@ function ReverseTool({ onClose }: { onClose: () => void }): JSX.Element {
                 <button
                   className="mb-config-row-btn"
                   onClick={archiveAsPrompt}
-                  title="加入提示词管家"
+                  title="加入图库"
                 >
-                  <PlusIcon size={12} /> 加入管家
+                  <PlusIcon size={12} /> 加入图库
                 </button>
               </div>
             </div>

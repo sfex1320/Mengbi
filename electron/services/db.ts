@@ -11,7 +11,7 @@ import { logger } from './logger';
  * - schema_version 在 settings 表里追踪
  */
 
-const CURRENT_SCHEMA_VERSION = 13;
+const CURRENT_SCHEMA_VERSION = 14;
 
 let _db: Database.Database | null = null;
 
@@ -267,6 +267,53 @@ function applySchema(db: Database.Database): void {
     logger.info('db migrated to v13 (vectorize_history v3 refactor cols)');
   }
 
+  if (ver < 14) {
+    // ComfyUI 通用工作流编排器：工作流模板 + 运行记录。
+    // 连接配置（host / 启动命令 / 目录 / token）复用 settings k/v 表，不单建表。
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS comfyui_workflow_templates (
+          workflow_id                TEXT PRIMARY KEY,
+          name                       TEXT NOT NULL,
+          type_tags                  TEXT,
+          original_api_workflow_json TEXT NOT NULL,
+          object_info_snapshot       TEXT,
+          input_controls             TEXT NOT NULL DEFAULT '[]',
+          output_controls            TEXT NOT NULL DEFAULT '[]',
+          bindings                   TEXT NOT NULL DEFAULT '[]',
+          loop_config                TEXT,
+          ui_layout                  TEXT,
+          created_at                 TEXT NOT NULL,
+          updated_at                 TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_comfyui_tpl_updated
+          ON comfyui_workflow_templates(updated_at);
+
+        CREATE TABLE IF NOT EXISTS comfyui_runs (
+          run_id             TEXT PRIMARY KEY,
+          template_id        TEXT REFERENCES comfyui_workflow_templates(workflow_id) ON DELETE SET NULL,
+          batch_id           TEXT,
+          iteration_index    INTEGER NOT NULL DEFAULT 0,
+          prompt_id          TEXT,
+          status             TEXT NOT NULL CHECK(status IN ('pending','running','done','failed','cancelled')),
+          input_snapshot     TEXT,
+          parameter_snapshot TEXT,
+          uploaded_files     TEXT,
+          output_files       TEXT,
+          error_message      TEXT,
+          started_at         TEXT,
+          finished_at        TEXT,
+          duration_ms        INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_comfyui_runs_batch ON comfyui_runs(batch_id);
+        CREATE INDEX IF NOT EXISTS idx_comfyui_runs_tpl ON comfyui_runs(template_id);
+        CREATE INDEX IF NOT EXISTS idx_comfyui_runs_started ON comfyui_runs(started_at);
+      `);
+      writeSchemaVersion(db, 14);
+    })();
+    logger.info('db migrated to v14 (comfyui orchestrator: templates + runs)');
+  }
+
   if (ver > CURRENT_SCHEMA_VERSION) {
     logger.warn('db schema_version > current app, may have compat issues');
   }
@@ -481,8 +528,9 @@ const DEFAULT_PREFS: Array<[string, string]> = [
   ['default_context_strategy', 'truncate-head'],
   ['auto_update_channel', 'stable'],
   // AI sidecar UNet 编译加速:'off' / 'reduce-overhead' / 'max-autotune'
-  // 默认 off。开启后首次推理慢(编译开销),后续每步 +50-150% 速度
-  ['ai_torch_compile_mode', 'off'],
+  // 2026-05-29 默认从 'off' 改 'reduce-overhead'。 5090+ / 现代 NVIDIA 卡上首次 trace 多 30-60s,
+  // 后续每张图 +15-30% 速度。triton-windows 缺失时 compile_helper 会 silently 跳过,无副作用。
+  ['ai_torch_compile_mode', 'reduce-overhead'],
   // 图像转矢量输出目录;'' 时回退到 tools_storage_path / vec / 或 image_storage_path / vec /
   ['vec_output_path', ''],
   // userData/vec-debug/ 目录保留天数,过期由 sweepStaleDebugDirs 清理

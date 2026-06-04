@@ -23,12 +23,12 @@ const WRITE_CHANNELS: ReadonlySet<string> = new Set<string>([
   // image
   'api:image:generate',
   'api:image:cancel',
-  'api:image:reorder',
   // gallery / prompt / album
   'api:gallery:update',
   'api:prompt:upsert',
   'api:prompt:delete',
   'api:album:upsert',
+  'api:album:delete',
   // settings / plan
   'api:settings:save',
   'api:settings:test-connection',
@@ -79,11 +79,7 @@ const WRITE_CHANNELS: ReadonlySet<string> = new Set<string>([
   'api:hypir:stop-server',
   'api:hypir:submit-task',
   'api:hypir:cancel-task',
-  // SUPIR Portable
-  'api:supir:start-server',
-  'api:supir:stop-server',
-  'api:supir:submit-task',
-  'api:supir:cancel-task',
+  // SUPIR 已于 2026-05-29 整体砍除(显存需求 25-30 GB 太大)
   // 通用 AI 平台底座（未来新 AI 功能都用 api:ai-feature:* / api:ai-model:*）
   'api:ai-feature:bootstrap',
   'api:ai-feature:set-portable-path',
@@ -95,7 +91,27 @@ const WRITE_CHANNELS: ReadonlySet<string> = new Set<string>([
   'api:ai-feature:cleanup-all',
   // config import / export
   'api:config:export',
-  'api:config:import'
+  'api:config:import',
+  // 画板 Photoshop 联动
+  'api:ps:send',
+  'api:ps:set-config',
+  // ComfyUI 编排器
+  'api:comfyui:set-config',
+  'api:comfyui:start',
+  'api:comfyui:stop',
+  'api:comfyui:free-memory',
+  'api:comfyui:template:upsert',
+  'api:comfyui:template:delete',
+  'api:comfyui:run-single',
+  'api:comfyui:run-batch',
+  'api:comfyui:cancel',
+  'api:comfyui:skip',
+  'api:comfyui:pause',
+  'api:comfyui:resume',
+  'api:comfyui:results:delete',
+  'api:comfyui:results:export',
+  'api:comfyui:results:to-gallery',
+  'api:comfyui:refresh-object-info'
 ]);
 
 /**

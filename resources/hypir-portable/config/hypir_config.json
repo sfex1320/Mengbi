@@ -1,0 +1,22 @@
+{
+  "host": "127.0.0.1",
+  "port": 7865,
+
+  "hypir_source_dir": "app/HYPIR",
+  "hypir_weights_path": "models/hypir/HYPIR_sd2.pth",
+  "sd21_base_dir": "models/sd2_1_base",
+
+  "input_dir": "input",
+  "output_dir": "output",
+  "temp_dir": "temp",
+  "logs_dir": "logs",
+
+  "default_scale": 4,
+  "default_tile_size": 512,
+  "default_device": "cuda",
+
+  "eager_load_models": false,
+
+  "huggingface_cache_dir": "cache/huggingface",
+  "torch_cache_dir": "cache/torch"
+}

@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { useThemeStore } from '@/store/themeStore';
 import './Stars.css';
 
 /**
@@ -82,13 +83,35 @@ function makeMeteorShower(count: number, cycle: number, delayBase: number): Mete
   return arr;
 }
 
+/**
+ * 暖白玉（浅色主题）专用背景：「光影变换」。
+ *
+ * 白色星点 / 流星 / screen 混合的 orb 在浅底上几乎不可见，所以浅色主题不复用星空，
+ * 改成几团缓慢漂移的暖色软光晕（multiply = 柔和阴影池 + 一团暖高光），
+ * 在象牙白底上读作"光与影的缓慢流转"。z-index 0，在所有内容之下，不影响可读性。
+ */
+function LightShadowField(): JSX.Element {
+  return (
+    <div className="mb-stars mb-lightshadow" aria-hidden="true">
+      <div className="mb-ls-blob mb-ls-blob-1" />
+      <div className="mb-ls-blob mb-ls-blob-2" />
+      <div className="mb-ls-blob mb-ls-blob-3" />
+      <div className="mb-ls-blob mb-ls-blob-4" />
+    </div>
+  );
+}
+
 export function Stars(): JSX.Element {
+  const atmosphere = useThemeStore((s) => s.atmosphere);
   const microStars = useMemo(() => makeMicroStars(260), []);
   // 三波流星雨——错开周期 + 错开延迟基线，让屏幕几乎一直能看到流星
   // 周期短 = 来得勤；count 大 = 单波更密集
   const showerA = useMemo(() => makeMeteorShower(28, 32, 0), []);
   const showerB = useMemo(() => makeMeteorShower(24, 44, 12), []);
   const showerC = useMemo(() => makeMeteorShower(20, 56, 24), []);
+
+  // 浅色主题不用星空/流星（白点在浅底不可见），改走"光影变换"软光晕场
+  if (atmosphere === 'warm-jade') return <LightShadowField />;
 
   return (
     <div className="mb-stars" aria-hidden="true">

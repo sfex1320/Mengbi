@@ -248,6 +248,19 @@ class BatchQueueImpl {
       this.runningByMode[mode].add(taskId);
       this.startTask(t).catch((e) => {
         logger.error(`[vec.queue] startTask threw: ${(e as Error).message}`);
+        // startTask 抛出未被自身 try/catch 收住的异常时，若不收尾，runningByMode
+        // 永不缩小 → 并发位被占死，整条 mode 队列再也不派发(死锁)。
+        // 仅当任务仍是 running(没被 markFailed/markSucceeded 收尾过) 才补收尾，避免重复。
+        if (t.status === 'running') {
+          this.markFailed(
+            t,
+            'UNKNOWN',
+            `处理失败：${(e as Error).message}`,
+            '请重试，或换一张图片再试',
+            'STARTTASK_THREW',
+            String(e)
+          );
+        }
       });
     }
   }

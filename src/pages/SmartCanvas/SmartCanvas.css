@@ -1,0 +1,1873 @@
+/* 智能画布（AI 创作节点画布）。前缀 mb-sc-*，与 /board 隔离。颜色用 var(--mb-*)。 */
+.mb-sc-root {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  min-height: 0;
+}
+
+/* ── 工具栏 ── */
+.mb-sc-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  flex-wrap: wrap;
+}
+.mb-sc-toolbar-label {
+  font-size: var(--mb-text-aux);
+  color: var(--mb-text-secondary);
+  margin-right: 2px;
+}
+.mb-sc-divider {
+  width: 1px;
+  height: 18px;
+  background: var(--mb-border-soft);
+  margin: 0 4px;
+}
+.mb-sc-spacer {
+  flex: 1;
+}
+.mb-sc-count {
+  font-size: var(--mb-text-aux);
+  color: var(--mb-text-muted);
+}
+
+/* 工具栏：当前文档标题（点击改名） */
+.mb-sc-doctitle {
+  border: none;
+  background: none;
+  cursor: text;
+  font-size: var(--mb-text-body);
+  font-weight: 600;
+  color: var(--mb-text-primary);
+  padding: 2px 6px;
+  border-radius: var(--mb-radius-input);
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mb-sc-doctitle:hover {
+  background: var(--mb-bg-hover);
+}
+.mb-sc-doctitle-input {
+  font-size: var(--mb-text-body);
+  font-weight: 600;
+  color: var(--mb-text-primary);
+  background: var(--mb-bg-card);
+  border: 1px solid var(--mb-accent);
+  border-radius: var(--mb-radius-input);
+  padding: 2px 6px;
+  width: 180px;
+}
+
+/* ── 选择画布启动页 ── */
+.mb-sc-launcher {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 24px 28px;
+  overflow: auto;
+}
+.mb-sc-launcher-head {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-rows: auto auto;
+  align-items: center;
+  gap: 4px 12px;
+}
+.mb-sc-launcher-titlewrap {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.mb-sc-launcher-title {
+  margin: 0;
+  font-size: var(--mb-text-h1, 24px);
+  font-weight: 700;
+  color: var(--mb-text-primary);
+}
+.mb-sc-launcher-count {
+  font-size: var(--mb-text-aux);
+  color: var(--mb-text-muted);
+  background: var(--mb-bg-hover);
+  border-radius: 999px;
+  padding: 2px 9px;
+}
+.mb-sc-launcher-sub {
+  grid-row: 2;
+  grid-column: 1;
+  margin: 0;
+  font-size: var(--mb-text-aux);
+  color: var(--mb-text-secondary);
+}
+.mb-sc-launcher-actions {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mb-sc-launcher-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--mb-text-muted);
+}
+.mb-sc-launcher-empty p {
+  margin: 0;
+  font-size: var(--mb-text-body);
+}
+.mb-sc-launcher-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 14px;
+  align-content: start;
+}
+.mb-sc-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  min-height: 132px;
+  border: 1px solid var(--mb-border);
+  border-radius: var(--mb-radius-card);
+  background: var(--mb-bg-card);
+  cursor: pointer;
+  transition:
+    transform var(--mb-ease-default, 150ms),
+    box-shadow var(--mb-ease-default, 150ms),
+    border-color var(--mb-ease-default, 150ms);
+}
+.mb-sc-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--mb-accent);
+  box-shadow: var(--mb-shadow-md, 0 6px 18px rgba(0, 0, 0, 0.22));
+}
+.mb-sc-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.mb-sc-card-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  color: var(--mb-accent);
+  background: var(--mb-accent-soft, var(--mb-bg-hover));
+}
+.mb-sc-card-badge {
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-accent);
+  background: var(--mb-accent-soft, var(--mb-bg-hover));
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+.mb-sc-card-title {
+  font-size: var(--mb-text-body);
+  font-weight: 600;
+  color: var(--mb-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mb-sc-card-rename {
+  font-size: var(--mb-text-body);
+  font-weight: 600;
+  color: var(--mb-text-primary);
+  background: var(--mb-bg-base);
+  border: 1px solid var(--mb-accent);
+  border-radius: var(--mb-radius-input);
+  padding: 3px 6px;
+  width: 100%;
+}
+.mb-sc-card-foot {
+  margin-top: auto;
+}
+.mb-sc-card-meta {
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-muted);
+}
+.mb-sc-card-hover {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity var(--mb-ease-default, 150ms);
+}
+.mb-sc-card:hover .mb-sc-card-hover {
+  opacity: 1;
+}
+.mb-sc-card-act {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--mb-border-soft);
+  border-radius: 8px;
+  background: var(--mb-bg-card);
+  color: var(--mb-text-secondary);
+  cursor: pointer;
+}
+.mb-sc-card-act:hover {
+  color: var(--mb-text-primary);
+  border-color: var(--mb-border);
+}
+.mb-sc-card-act.is-danger:hover {
+  color: var(--mb-danger, #e5484d);
+  border-color: var(--mb-danger, #e5484d);
+}
+
+/* ── 主区：画布 + 检查器 ── */
+.mb-sc-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: 10px;
+}
+.mb-sc-canvas {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  border-radius: var(--mb-radius-card);
+  border: 1px solid var(--mb-border);
+  overflow: hidden;
+  background: var(--mb-bg-base);
+}
+/* 底部细条帮助：所有备注收到这里，居中、半透明、不占空间 */
+/* 底部备注条：左段=选中节点能做什么（随节点变）；右段=快捷键。一行两段，避开左下控件与右下小地图。 */
+.mb-sc-help {
+  position: absolute;
+  left: 56px;
+  right: 176px;
+  bottom: 8px;
+  pointer-events: none;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-muted);
+  background: var(--mb-bg-card);
+  border: 1px solid var(--mb-border-soft);
+  border-radius: 999px;
+  padding: 4px 14px;
+  opacity: 0.92;
+}
+.mb-sc-help-left {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--mb-text-secondary);
+}
+.mb-sc-help-right {
+  flex-shrink: 0;
+  white-space: nowrap;
+  border-left: 1px solid var(--mb-border-soft);
+  padding-left: 14px;
+}
+
+/* ── React Flow 主题适配 ── */
+.mb-sc-canvas .react-flow__node {
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  width: 100%;
+  font-size: var(--mb-text-aux);
+}
+.mb-sc-canvas .react-flow__attribution {
+  display: none;
+}
+.mb-sc-canvas .react-flow__controls-button {
+  background: var(--mb-bg-card);
+  border-bottom: 1px solid var(--mb-border-soft);
+  color: var(--mb-text-secondary);
+  fill: var(--mb-text-secondary);
+}
+.mb-sc-minimap {
+  background: var(--mb-bg-card) !important;
+  border: 1px solid var(--mb-border-soft);
+  border-radius: 10px;
+  width: 150px;
+  height: 104px;
+  overflow: hidden;
+  box-shadow: var(--mb-shadow-sm, 0 2px 8px rgba(0, 0, 0, 0.18));
+}
+/* 缩略图节点按类型上色，让小地图能一眼读出「当前画布有什么」（实时跟随 nodes 变化）。
+   同源同型 → 输入类(图片/提示词/LLM)淡、处理类(工作/ComfyUI)实、结果类灰、分组只描边不挡子节点。 */
+.mb-sc-minimap .react-flow__minimap-node {
+  fill: var(--mb-accent);
+  fill-opacity: 0.5;
+  stroke: none;
+  rx: 2;
+}
+.mb-sc-minimap .mb-sc-mm-work,
+.mb-sc-minimap .mb-sc-mm-comfy {
+  fill: var(--mb-accent);
+  fill-opacity: 0.85;
+}
+.mb-sc-minimap .mb-sc-mm-result {
+  fill: var(--mb-text-secondary);
+  fill-opacity: 0.55;
+}
+.mb-sc-minimap .mb-sc-mm-group {
+  fill: var(--mb-accent);
+  fill-opacity: 0.08;
+  stroke: var(--mb-border-strong, var(--mb-border));
+  stroke-width: 1;
+}
+.mb-sc-minimap .react-flow__minimap-mask {
+  fill: var(--mb-bg-base);
+  fill-opacity: 0.55;
+}
+
+/* ── 节点外壳 ── */
+.mb-sc-node {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--mb-bg-card-solid, var(--mb-bg-card));
+  border: 1px solid var(--mb-border);
+  border-radius: 12px;
+  box-shadow: var(--mb-shadow-sm, 0 2px 8px rgba(0, 0, 0, 0.18));
+  overflow: hidden;
+}
+.mb-sc-node.is-fill {
+  height: 100%;
+}
+.react-flow__node.selected .mb-sc-node {
+  border-color: var(--mb-accent);
+  box-shadow: 0 0 0 2px var(--mb-accent), 0 0 16px -3px var(--mb-accent);
+}
+/* 悬停整圈高亮（无需选中即可从边缘缩放；代替 4 点框） */
+.mb-sc-canvas .react-flow__node:hover .mb-sc-node {
+  box-shadow: 0 0 0 2px var(--mb-accent);
+}
+/* 节点缩放控件：隐藏 4 个角点（仍可从边缘线拖拽缩放），边线透明但加宽便于抓取 */
+.mb-sc-canvas .react-flow__resize-control.handle {
+  opacity: 0;
+  border: none;
+  background: transparent;
+  width: 14px;
+  height: 14px;
+}
+.mb-sc-canvas .react-flow__resize-control.line {
+  border-color: transparent;
+  border-width: 4px;
+}
+.mb-sc-node-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--mb-border-soft);
+}
+.mb-sc-node-title {
+  font-size: var(--mb-text-aux);
+  font-weight: 600;
+  color: var(--mb-accent);
+}
+.mb-sc-node-headright {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.mb-sc-node-x {
+  border: none;
+  background: none;
+  color: var(--mb-text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+}
+.mb-sc-node-x:hover {
+  color: var(--mb-text-primary);
+}
+.mb-sc-node-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  flex: 1;
+  min-height: 0;
+}
+
+/* 连接口：纵贯节点高度的「箭头轨」（替代小圆点）。命中区=整条，易抓、悬停才显形。 */
+.mb-sc-node .mb-sc-handle {
+  width: 15px;
+  height: calc(100% - 8px);
+  min-height: 30px;
+  top: 4px;
+  transform: none;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  cursor: crosshair;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--mb-accent);
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease;
+  z-index: 4;
+}
+/* 全高细轨 */
+.mb-sc-node .mb-sc-handle::before {
+  content: '';
+  position: absolute;
+  top: 7px;
+  bottom: 7px;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--mb-accent);
+  opacity: 0.5;
+}
+/* 中部箭头（指向流动方向） */
+.mb-sc-node .mb-sc-handle::after {
+  content: '❯';
+  position: relative;
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 700;
+  text-shadow: 0 0 3px var(--mb-bg-card-solid, var(--mb-bg-card));
+}
+.react-flow__node:hover .mb-sc-handle,
+.react-flow__node.selected .mb-sc-handle {
+  opacity: 0.9;
+}
+.mb-sc-node .mb-sc-handle:hover {
+  opacity: 1;
+  background: var(--mb-accent-soft, var(--mb-bg-hover));
+}
+.mb-sc-node .mb-sc-handle:hover::before {
+  opacity: 1;
+  width: 4px;
+}
+.mb-sc-node .mb-sc-handle-in {
+  left: -8px;
+}
+.mb-sc-node .mb-sc-handle-out {
+  right: -8px;
+}
+
+/* 分组：外观与普通节点一致（实线卡片），内部留空让子节点落入；标题旁显示已含数量 */
+.mb-sc-node.is-group {
+  background: var(--mb-bg-card-solid, var(--mb-bg-card));
+}
+.mb-sc-node.is-group .mb-sc-node-body {
+  min-height: 60px;
+}
+.react-flow__node.selected .mb-sc-node.is-group {
+  border-color: var(--mb-accent);
+}
+.mb-sc-group-count {
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-accent);
+  background: var(--mb-accent-soft, var(--mb-bg-hover));
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+/* 分组节点排在子节点之下（React Flow 父节点 z 较低；显式兜底） */
+.react-flow__node-group {
+  z-index: 0 !important;
+}
+.mb-sc-range {
+  width: 100%;
+  accent-color: var(--mb-accent);
+}
+.mb-sc-cfield {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.mb-sc-switch-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--mb-text-aux);
+  color: var(--mb-text-secondary);
+}
+
+/* ── 视角提示词节点（angle-prompt）：CSS-3D 预览 + 控制 + 实时提示词 ── */
+.mb-sc-angle-stage {
+  position: relative;
+  height: 148px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: radial-gradient(120% 80% at 50% 18%, var(--mb-bg-hover), var(--mb-bg-base));
+  border: 1px solid var(--mb-border-soft);
+  perspective: 620px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  touch-action: none;
+}
+.mb-sc-angle-stage:active {
+  cursor: grabbing;
+}
+.mb-sc-angle-scene {
+  position: relative;
+  transform-style: preserve-3d;
+  transition: transform 0.08s linear;
+}
+.mb-sc-angle-plane {
+  width: 114px;
+  height: 114px;
+  border-radius: 6px;
+  border: 1px solid var(--mb-border);
+  background-color: var(--mb-bg-card);
+  background-size: cover;
+  background-position: center;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-muted);
+}
+.mb-sc-angle-floor {
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  width: 200px;
+  height: 200px;
+  margin-left: -100px;
+  transform: rotateX(90deg);
+  transform-origin: top center;
+  background-image: linear-gradient(var(--mb-border-soft) 1px, transparent 1px),
+    linear-gradient(90deg, var(--mb-border-soft) 1px, transparent 1px);
+  background-size: 20px 20px;
+  opacity: 0.32;
+  pointer-events: none;
+}
+.mb-sc-angle-uploadrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mb-sc-angle-srcnote {
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-muted);
+}
+.mb-sc-angle-ctl {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.mb-sc-angle-ctl-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--mb-text-tiny);
+}
+.mb-sc-angle-ctl-label {
+  color: var(--mb-text-secondary);
+}
+.mb-sc-angle-ctl-hint {
+  flex: 1;
+  color: var(--mb-accent);
+}
+.mb-sc-angle-reset {
+  border: none;
+  background: none;
+  color: var(--mb-text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+}
+.mb-sc-angle-reset:hover {
+  color: var(--mb-accent);
+}
+.mb-sc-angle-ctl-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.mb-sc-angle-ctl-row .mb-sc-range {
+  flex: 1;
+}
+.mb-sc-angle-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.mb-sc-angle-prompt {
+  font-size: var(--mb-text-tiny);
+  line-height: 1.5;
+  color: var(--mb-text-primary);
+  background: var(--mb-bg-base);
+  border: 1px solid var(--mb-border-soft);
+  border-radius: 8px;
+  padding: 7px 9px;
+  max-height: 92px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+/* 文本输出节点（LLM / 视角 / ComfyUI）的「→ 提示词节点」按钮 */
+.mb-sc-toprompt {
+  margin-top: 6px;
+  width: 100%;
+  justify-content: center;
+}
+.mb-sc-seedrow {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.mb-sc-seedrow .mb-input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 节点搜索（Ctrl+F）：画布顶部居中浮层 */
+.mb-sc-search {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  width: min(420px, 80%);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mb-sc-search-input {
+  width: 100%;
+}
+.mb-sc-search-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 280px;
+  overflow: auto;
+}
+.mb-sc-search-empty {
+  font-size: var(--mb-text-aux);
+  color: var(--mb-text-muted);
+  padding: 6px;
+}
+.mb-sc-search-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  border: none;
+  background: none;
+  color: var(--mb-text-primary);
+  font-size: var(--mb-text-aux);
+  padding: 6px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.mb-sc-search-item:hover {
+  background: var(--mb-bg-hover);
+  color: var(--mb-accent);
+}
+.mb-sc-search-item-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 分组折叠态：一行摘要 */
+.mb-sc-group-collapsed {
+  font-size: var(--mb-text-aux);
+  color: var(--mb-text-secondary);
+  padding: 4px 2px;
+  cursor: pointer;
+}
+.mb-sc-group-collapsed:hover {
+  color: var(--mb-accent);
+}
+
+/* 图片节点空态：上传 + 从图库选图 */
+.mb-sc-img-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+}
+
+/* 从图库选图弹窗：随窗口自适应放大；列数按宽度自动铺满；网格独立滚动不叠图 */
+.mb-sc-gpick {
+  width: min(1180px, 92vw);
+  height: 85vh;
+  max-height: calc(100vh - 80px);
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+}
+.mb-sc-gpick-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  flex-shrink: 0;
+}
+.mb-sc-gpick-head h3 {
+  margin: 0;
+}
+.mb-sc-gpick-grid {
+  flex: 1 1 auto;
+  /* flex 子项默认 min-height:auto 会撑开父容器导致网格不滚、行高被挤 → 0 让它可收缩并真正滚动 */
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  /* 行高跟随单元格内容（aspect-ratio 方图），不拉伸、不重叠 */
+  grid-auto-rows: min-content;
+  align-content: start;
+  gap: 12px;
+  overflow-y: auto;
+  padding-right: 6px;
+}
+.mb-sc-gpick-item {
+  width: 100%;
+  aspect-ratio: 1;
+  border: 1px solid var(--mb-border-soft);
+  border-radius: 10px;
+  padding: 0;
+  overflow: hidden;
+  cursor: pointer;
+  background: var(--mb-bg-base);
+}
+.mb-sc-gpick-item:hover {
+  border-color: var(--mb-accent);
+}
+.mb-sc-gpick-item img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* 检查器：结果图 + 入图库/另存 */
+.mb-sc-rlist {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mb-sc-rrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.mb-sc-rrow img {
+  width: 40px;
+  height: 40px;
+  object-fit: cover;
+  border-radius: 6px;
+  flex: 0 0 auto;
+}
+
+/* LLM 节点：输出文本预览 */
+.mb-sc-llm-out {
+  margin: 0;
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-secondary);
+  background: var(--mb-bg-hover);
+  border-radius: 6px;
+  padding: 6px;
+  max-height: 110px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-family: inherit;
+}
+/* ── 光标状态：画布抓手 / 拖动握拳 / 节点箭头 ── */
+.mb-sc-canvas .react-flow__pane {
+  cursor: grab;
+}
+.mb-sc-canvas .react-flow__pane.dragging {
+  cursor: grabbing;
+}
+.mb-sc-canvas .react-flow__node {
+  cursor: default;
+}
+
+/* ── 工作节点：上游输入实时预览 ── */
+.mb-sc-up {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 5px 6px;
+  border-radius: 8px;
+  background: var(--mb-bg-hover);
+}
+.mb-sc-up-head {
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-muted);
+}
+.mb-sc-up-thumbs {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.mb-sc-up-thumbs img {
+  width: 34px;
+  height: 34px;
+  object-fit: cover;
+  border-radius: 5px;
+  cursor: zoom-in;
+}
+.mb-sc-up-prompt {
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 结果 / 上游缩略图：点击放大 */
+.mb-sc-work-thumbs img,
+.mb-sc-result-grid img,
+.mb-sc-img {
+  cursor: zoom-in;
+}
+
+/* ── 输入控件 ── */
+.mb-sc-input {
+  width: 100%;
+  background: var(--mb-bg-input, var(--mb-bg-hover));
+  border: 1px solid var(--mb-border-soft);
+  border-radius: var(--mb-radius-input);
+  color: var(--mb-text-primary);
+  font-size: var(--mb-text-aux);
+  padding: 5px 8px;
+}
+.mb-sc-textarea {
+  min-height: 70px;
+  resize: vertical;
+  font-family: inherit;
+}
+.mb-sc-empty,
+.mb-sc-note {
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-muted);
+  line-height: 1.5;
+}
+
+/* ── 图片节点 ── */
+.mb-sc-img-area {
+  position: relative;
+  flex: 1;
+  min-height: 90px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--mb-radius-input);
+  background: var(--mb-bg-hover);
+  overflow: hidden;
+}
+.mb-sc-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.mb-sc-img-drop {
+  width: 100%;
+  height: 100%;
+  min-height: 90px;
+  border: 1px dashed var(--mb-border);
+  border-radius: var(--mb-radius-input);
+  background: none;
+  color: var(--mb-text-muted);
+  font-size: var(--mb-text-tiny);
+  cursor: pointer;
+}
+.mb-sc-img-x {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--mb-bg-card);
+  border: 1px solid var(--mb-border);
+  color: var(--mb-text-secondary);
+  cursor: pointer;
+  font-size: 10px;
+  line-height: 1;
+}
+
+/* ── 工作节点 ── */
+.mb-sc-status {
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-muted);
+}
+.mb-sc-status.is-running {
+  color: var(--mb-accent);
+}
+.mb-sc-status.is-error {
+  color: var(--mb-danger, var(--mb-text-secondary));
+}
+.mb-sc-work-line {
+  font-size: var(--mb-text-aux);
+  color: var(--mb-text-primary);
+  font-weight: 600;
+}
+.mb-sc-work-model {
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mb-sc-work-prompt {
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mb-sc-work-thumbs,
+.mb-sc-result-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 4px;
+}
+.mb-sc-work-thumbs img,
+.mb-sc-result-grid img {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  border-radius: 6px;
+}
+
+/* ── 结果节点 ── */
+.mb-sc-result {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mb-sc-sim {
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-muted);
+  background: var(--mb-bg-hover);
+  border-radius: 6px;
+  padding: 3px 6px;
+}
+.mb-sc-result-summary {
+  font-size: var(--mb-text-aux);
+  color: var(--mb-text-primary);
+}
+.mb-sc-result-meta {
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mb-sc-result-err {
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-danger, var(--mb-text-secondary));
+}
+.mb-sc-logs {
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-muted);
+  background: var(--mb-bg-hover);
+  border-radius: 6px;
+  padding: 6px;
+  max-height: 120px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-family: var(--mb-font-mono, monospace);
+}
+
+/* 结果项可拖出成节点：抓手光标 + 拖拽态高亮 */
+.mb-sc-result-grid img {
+  cursor: grab;
+}
+.mb-sc-result-grid img:active {
+  cursor: grabbing;
+}
+.mb-sc-result-texts {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mb-sc-result-text {
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-secondary);
+  background: var(--mb-bg-hover);
+  border: 1px solid var(--mb-border-subtle, var(--mb-border));
+  border-radius: 6px;
+  padding: 5px 7px;
+  max-height: 84px;
+  overflow: auto;
+  white-space: pre-wrap;
+  cursor: grab;
+}
+.mb-sc-result-text:active {
+  cursor: grabbing;
+}
+.mb-sc-result-videos {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mb-sc-result-video {
+  width: 100%;
+  border-radius: 6px;
+  background: #000;
+}
+
+/* 生成节点：运行 + 取消并排 */
+.mb-sc-work-runrow {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.mb-sc-work-runrow .mb-btn {
+  flex: 1;
+}
+
+/* ── 检查器 ── */
+.mb-sc-inspector {
+  flex: 0 0 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  overflow-y: auto;
+  transition: flex-basis 0.18s ease;
+}
+.mb-sc-inspector.is-collapsed {
+  flex: 0 0 22px;
+  padding: 6px 0;
+  align-items: center;
+  overflow: hidden;
+}
+.mb-sc-inspector-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: var(--mb-text-h2);
+  font-weight: 600;
+  color: var(--mb-text-primary);
+}
+.mb-sc-inspector-toggle {
+  border: none;
+  background: none;
+  color: var(--mb-text-muted);
+  cursor: pointer;
+  font-size: 17px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.mb-sc-inspector-toggle:hover {
+  color: var(--mb-accent);
+}
+.mb-sc-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mb-sc-flabel {
+  font-size: var(--mb-text-aux);
+  color: var(--mb-text-secondary);
+  margin-top: 4px;
+}
+.mb-sc-itext {
+  min-height: 80px;
+  resize: vertical;
+}
+.mb-sc-run {
+  margin-top: 8px;
+}
+
+/* ── 检查器：上游输入引用 ── */
+.mb-sc-refs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mb-sc-ref {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--mb-text-tiny);
+}
+.mb-sc-ref-kind {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  background: var(--mb-bg-hover);
+  color: var(--mb-text-secondary);
+}
+.mb-sc-ref-prev {
+  color: var(--mb-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── 连线删除按钮（连线中点 ×）── */
+.mb-sc-edge-x {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--mb-border);
+  background: var(--mb-bg-card-solid, var(--mb-bg-card));
+  color: var(--mb-text-secondary);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  pointer-events: all;
+  opacity: 0.55;
+  transition: opacity 0.12s, color 0.12s, border-color 0.12s;
+}
+.mb-sc-edge-x:hover,
+.mb-sc-edge-x.is-selected {
+  opacity: 1;
+  color: var(--mb-danger, var(--mb-text-primary));
+  border-color: var(--mb-accent);
+}
+
+/* ── 武装态（点选节点类型后，点画布落位）── */
+.mb-btn.is-armed {
+  border-color: var(--mb-accent);
+  color: var(--mb-accent);
+}
+.mb-sc-armed-hint {
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-accent);
+  margin-left: 4px;
+}
+.mb-sc-canvas .mb-sc-armed .react-flow__pane {
+  cursor: copy;
+}
+
+/* ── 快捷创建菜单（拖出 / 双击）── */
+.mb-sc-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 49;
+}
+/* 双类 `.mb-sc-create-menu.mb-card` 提特异性，压过全局 `.mb-card{position:relative}`（见 CreateMenu.tsx 注释）。
+   组件里仍内联 position:fixed 双保险。 */
+.mb-sc-create-menu.mb-card {
+  position: fixed;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  min-width: 124px;
+}
+.mb-sc-create-menu-head {
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-muted);
+  padding: 2px 6px 4px;
+}
+.mb-sc-create-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  border: none;
+  background: none;
+  color: var(--mb-text-primary);
+  font-size: var(--mb-text-aux);
+  padding: 5px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.mb-sc-create-menu-item:hover {
+  background: var(--mb-bg-hover);
+  color: var(--mb-accent);
+}
+
+/* ── 排布面板 ── */
+.mb-sc-arrange-wrap {
+  position: relative;
+  display: inline-flex;
+}
+/* 排布弹窗：画布右下角（minimap 上方）。
+   注意 `.mb-sc-arrange.mb-card` 双类提特异性 —— 否则全局 `.mb-card{position:relative}`（bundle 里更晚、
+   同特异性）会把它顶成 relative 飞出定位。凡 `.mb-sc-* + mb-card` 又要自定位的都得这么写。 */
+.mb-sc-arrange.mb-card {
+  position: absolute;
+  right: 12px;
+  bottom: 128px;
+  z-index: 30;
+  width: 320px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.mb-sc-arrange-grid2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.mb-sc-arrange-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-secondary);
+}
+.mb-sc-arrange-field .mb-input {
+  flex: 1;
+  min-width: 0;
+}
+.mb-sc-arrange-row2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.mb-sc-arrange-row2 .mb-btn {
+  justify-content: center;
+}
+.mb-sc-arrange-aligns {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+.mb-sc-arrange-aligns .mb-btn {
+  justify-content: center;
+  padding-left: 6px;
+  padding-right: 6px;
+}
+.mb-sc-arrange-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: var(--mb-text-aux);
+  font-weight: 600;
+  color: var(--mb-text-primary);
+}
+/* 工具栏 / 菜单的图标按钮：图标 + 文字对齐 */
+.mb-sc-tbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.mb-sc-arrange-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.mb-sc-arrange-row > span {
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-secondary);
+}
+.mb-sc-arrange-row .mb-input {
+  width: 56px;
+}
+.mb-sc-arrange-label {
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-muted);
+  margin-top: 2px;
+}
+.mb-sc-arrange-note {
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-muted);
+  line-height: 1.5;
+}
+
+/* ── 可调大小节点：文本/输出区填满 + 动画顺滑 ── */
+.mb-sc-node.is-fill .mb-sc-textarea,
+.mb-sc-node.is-fill .mb-sc-llm-out {
+  flex: 1;
+}
+.mb-sc-node {
+  transition: box-shadow 0.16s ease, border-color 0.16s ease;
+}
+/* ── 连线：彩色流动（像河流）；颜色 var(--mb-sc-flow) 默认跟随主题强调色，可在外观设置覆盖 ── */
+.mb-sc-canvas .react-flow__edge-path,
+.mb-sc-canvas .react-flow__connection-path {
+  stroke: var(--mb-sc-flow, var(--mb-accent));
+  stroke-width: 2.5;
+  stroke-dasharray: 9 7;
+  animation: mb-sc-flow-move 0.55s linear infinite;
+}
+.mb-sc-canvas .react-flow__edge.selected .react-flow__edge-path {
+  stroke-width: 3;
+  filter: drop-shadow(0 0 3px var(--mb-sc-flow, var(--mb-accent)));
+}
+@keyframes mb-sc-flow-move {
+  to {
+    stroke-dashoffset: -16;
+  }
+}
+
+/* ── 节点区域：复制按钮 + 文本/输出容器 ── */
+.mb-sc-area {
+  position: relative;
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+.mb-sc-area > .mb-sc-textarea {
+  flex: 1;
+}
+.mb-sc-arearel {
+  position: relative;
+}
+.mb-sc-copy {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 2;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: var(--mb-bg-card);
+  border: 1px solid var(--mb-border-soft);
+  color: var(--mb-text-secondary);
+  cursor: pointer;
+  opacity: 0.7;
+}
+.mb-sc-copy:hover {
+  opacity: 1;
+  color: var(--mb-accent);
+  border-color: var(--mb-accent);
+}
+.mb-sc-img-area .mb-sc-copy {
+  right: 28px;
+}
+
+/* ── LLM 节点：tab + 迷你流式聊天 ── */
+.mb-sc-tabs {
+  display: inline-flex;
+  gap: 2px;
+  background: var(--mb-bg-hover);
+  border-radius: 8px;
+  padding: 2px;
+}
+.mb-sc-tab {
+  border: none;
+  background: none;
+  color: var(--mb-text-muted);
+  font-size: var(--mb-text-tiny);
+  padding: 2px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.mb-sc-tab.is-on {
+  background: var(--mb-bg-card);
+  color: var(--mb-accent);
+}
+.mb-sc-chat {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-height: 0;
+}
+.mb-sc-chat-model {
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-muted);
+}
+.mb-sc-chat-msgs {
+  flex: 1;
+  min-height: 80px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
+  background: var(--mb-bg-hover);
+  border-radius: 8px;
+}
+.mb-sc-chat-msg {
+  font-size: var(--mb-text-tiny);
+  line-height: 1.5;
+  padding: 5px 8px;
+  border-radius: 8px;
+  white-space: pre-wrap;
+  max-width: 92%;
+}
+.mb-sc-chat-msg.is-user {
+  align-self: flex-end;
+  background: var(--mb-accent-soft, var(--mb-bg-card));
+  color: var(--mb-text-primary);
+}
+.mb-sc-chat-msg.is-assistant {
+  align-self: flex-start;
+  background: var(--mb-bg-card);
+  color: var(--mb-text-secondary);
+}
+.mb-sc-chat-input {
+  display: flex;
+  gap: 6px;
+  align-items: flex-end;
+}
+.mb-sc-chat-input .mb-sc-input {
+  flex: 1;
+  resize: none;
+  max-height: 80px;
+}
+
+/* ── 快捷键对话框：portal 到 body，flex 居中（避开 .mb-sc-root 的 framer transform 错位） ── */
+.mb-sc-keys-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.42);
+}
+.mb-sc-keys {
+  width: min(480px, 92vw);
+  max-height: 78vh;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 18px 20px;
+}
+.mb-sc-keys-hint {
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-muted);
+}
+.mb-sc-keys-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: var(--mb-text-h2);
+  font-weight: 600;
+  color: var(--mb-text-primary);
+}
+.mb-sc-keys-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow: auto;
+}
+.mb-sc-keys-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mb-sc-keys-label {
+  flex: 1;
+  font-size: var(--mb-text-aux);
+  color: var(--mb-text-secondary);
+}
+.mb-sc-keys-combo {
+  min-width: 100px;
+  font-family: var(--mb-font-mono, monospace);
+}
+.mb-sc-keys-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* ── 增强版（v2）：对齐参考线 / loading / 标签 / 视图偏好 / 模板 / 多画布标签 / 筛选 ── */
+
+/* 拖动对齐参考线（ViewportPortal，世界坐标） */
+.mb-sc-guide {
+  background: var(--mb-accent);
+  opacity: 0.65;
+  pointer-events: none;
+  z-index: 5;
+}
+.mb-sc-guide-v {
+  width: 1px;
+}
+.mb-sc-guide-h {
+  height: 1px;
+}
+
+/* 运行中 loading 小圈 */
+.mb-sc-spinner {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  margin-right: 5px;
+  vertical-align: -1px;
+  border: 2px solid var(--mb-border, currentColor);
+  border-top-color: var(--mb-accent);
+  border-radius: 50%;
+  animation: mb-sc-spin 0.7s linear infinite;
+}
+@keyframes mb-sc-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 节点标签 / 注释彩色小条 */
+.mb-sc-node-tag {
+  margin: 0 8px 4px;
+  padding: 1px 8px;
+  border-radius: 6px;
+  font-size: var(--mb-text-tiny);
+  font-weight: 600;
+  color: #fff;
+  line-height: 1.6;
+  max-width: calc(100% - 16px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 检查器里的标签编辑块 */
+.mb-sc-labeledit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 10px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid var(--mb-border-subtle, var(--mb-border));
+}
+.mb-sc-swatches {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.mb-sc-swatch {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  border: 2px solid transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--mb-text-muted);
+  font-size: 11px;
+}
+.mb-sc-swatch.is-on {
+  border-color: var(--mb-text-primary);
+}
+.mb-sc-swatch.is-clear {
+  background: var(--mb-bg-hover);
+}
+
+/* 视图偏好 / 模板 弹窗 */
+.mb-sc-viewprefs,
+.mb-sc-templates {
+  width: min(320px, 92vw);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+}
+.mb-sc-viewprefs-title {
+  font-size: var(--mb-text-h2);
+  font-weight: 600;
+  color: var(--mb-text-primary);
+}
+.mb-sc-viewprefs-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: var(--mb-text-aux);
+  color: var(--mb-text-secondary);
+}
+.mb-sc-viewprefs-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--mb-text-aux);
+  color: var(--mb-text-secondary);
+  cursor: pointer;
+}
+.mb-sc-viewprefs-divider {
+  height: 1px;
+  background: var(--mb-border-subtle, var(--mb-border));
+}
+.mb-sc-seg {
+  display: inline-flex;
+  border: 1px solid var(--mb-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.mb-sc-seg-btn {
+  padding: 4px 10px;
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-secondary);
+  background: transparent;
+  cursor: pointer;
+}
+.mb-sc-seg-btn.is-on {
+  background: var(--mb-accent);
+  color: #fff;
+}
+
+/* 模板列表 */
+.mb-sc-templates-save {
+  display: flex;
+  gap: 6px;
+}
+.mb-sc-templates-save .mb-input {
+  flex: 1;
+}
+.mb-sc-templates-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 40vh;
+  overflow: auto;
+}
+.mb-sc-template-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.mb-sc-template-insert {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: var(--mb-bg-hover);
+  cursor: pointer;
+  text-align: left;
+}
+.mb-sc-template-insert:hover {
+  background: var(--mb-bg-active, var(--mb-bg-hover));
+}
+.mb-sc-template-name {
+  font-size: var(--mb-text-aux);
+  color: var(--mb-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mb-sc-template-count {
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-muted);
+  flex-shrink: 0;
+}
+
+/* 多画布标签栏 */
+.mb-sc-doctabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px 0;
+  overflow-x: auto;
+}
+.mb-sc-doctab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 8px 8px 0 0;
+  background: var(--mb-bg-hover);
+  color: var(--mb-text-secondary);
+  font-size: var(--mb-text-tiny);
+  cursor: pointer;
+  max-width: 180px;
+  flex-shrink: 0;
+  border: 1px solid transparent;
+  border-bottom: none;
+}
+.mb-sc-doctab.is-active {
+  background: var(--mb-bg-card, var(--mb-bg-elevated));
+  color: var(--mb-text-primary);
+  border-color: var(--mb-border);
+}
+.mb-sc-doctab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mb-sc-doctab-x {
+  flex-shrink: 0;
+  width: 15px;
+  height: 15px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  font-size: 14px;
+  line-height: 1;
+}
+.mb-sc-doctab-x:hover {
+  background: var(--mb-danger, #f85149);
+  color: #fff;
+}
+.mb-sc-doctab-add {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  color: var(--mb-text-muted);
+  cursor: pointer;
+}
+.mb-sc-doctab-add:hover {
+  background: var(--mb-bg-hover);
+  color: var(--mb-text-primary);
+}
+
+/* 画布筛选：不匹配节点变暗 */
+.react-flow__node.mb-sc-dim {
+  opacity: 0.22;
+  filter: grayscale(0.5);
+  transition: opacity 0.15s ease;
+}
+
+/* 智能排布按钮（排布弹窗顶部，整宽） */
+.mb-sc-arrange-smart {
+  width: 100%;
+  justify-content: center;
+  margin-bottom: 8px;
+}
+
+/* 带实际分辨率角标的缩略图（结果/工作/ComfyUI 网格用） */
+.mb-sc-thumb-wrap {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+.mb-sc-thumb-dims {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  padding: 0 4px;
+  border-radius: 4px;
+  font-size: 10px;
+  line-height: 1.5;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+  white-space: nowrap;
+}
+/* 图片节点的分辨率角标（左下，避开右上的复制/移除按钮） */
+.mb-sc-img-dims {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  font-size: 11px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+}
+/* 运行耗时 */
+.mb-sc-work-dur {
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-muted);
+}
+
+/* 比例分析节点 */
+.mb-sc-ratio {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-secondary);
+}
+.mb-sc-ratio-row b {
+  color: var(--mb-text-primary);
+}
+.mb-sc-ratio-hit {
+  color: var(--mb-accent);
+}
+.mb-sc-ratio-tiers {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  background: var(--mb-bg-hover);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+.mb-sc-ratio-tier {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.mb-sc-ratio-tier span:first-child {
+  color: var(--mb-text-muted);
+}
+.mb-sc-ratio-tier span:last-child {
+  color: var(--mb-text-primary);
+  font-family: var(--mb-font-mono, monospace);
+}
+
+/* 聊天输入区：加高 + 可纵向拖大 */
+.mb-sc-chat-ta {
+  resize: vertical;
+  min-height: 58px;
+  max-height: 220px;
+  line-height: 1.5;
+}
+
+/* 长文本放大查看 */
+.mb-sc-textviewer-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.42);
+}
+.mb-sc-textviewer {
+  width: min(640px, 92vw);
+  max-height: 82vh;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 18px;
+}
+.mb-sc-textviewer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: var(--mb-text-h2);
+  font-weight: 600;
+  color: var(--mb-text-primary);
+}
+.mb-sc-textviewer-body {
+  flex: 1;
+  min-height: 240px;
+  resize: none;
+  font-size: var(--mb-text-body, 14px);
+  line-height: 1.6;
+}
+.mb-sc-textviewer-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}

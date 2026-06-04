@@ -6,10 +6,11 @@
 
 ## 项目简介
 
-**梦笔** 是一个基于 **Electron** 的跨平台桌面应用，聚合多种 AI 绘画模型与大语言模型，提供从提示词优化、参考图编辑到批量生成、图库管理与提示词反推的一站式创作流。
+**梦笔** 是一个基于 **Electron** 的跨平台桌面应用，聚合多种 AI 绘画模型与大语言模型，提供从提示词优化、画板预编辑、参考图、批量生成、本地放大/修复、ComfyUI 工作流编排到图库管理与提示词反推的一站式创作流。
 
-- ✨ 三模块：**生图 / 提示词管家（含图库） / 实验室**
-- 🎨 二维主题：7 种"材质氛围" × 10 种"主题配色"= 70 种组合
+- ✨ 六大模块：**生图 / 画板 / 图库（提示词管家） / ComfyUI 工作流编排器 / 工具箱 / 提示词实验室**（外加设置）
+- 🎨 二维主题：7 种"材质氛围" × 10 种"主题配色"
+- 🌐 多联网搜索后端可切换：DuckDuckGo / 博查 Bocha / 智谱 / Jina / Tavily / Serper / SearXNG
 - 🔐 本地优先：API Key 走系统 `safeStorage` 加密，所有外网请求由主进程发出
 - 📦 三平台：Windows / macOS / Linux 一致体验
 - 🤖 AI 辅助开发：本仓库由 Claude Code 依据 [`CLAUDE.md`](./CLAUDE.md) 协助实现
@@ -94,9 +95,12 @@ mengbi/
 │   ├── assets/
 │   ├── components/        # 通用组件
 │   ├── pages/
-│   │   ├── Create/        # 生图 (`/`)
-│   │   ├── Manager/       # 提示词管家 + 图库 (`/manager`)
-│   │   └── Laboratory/    # 实验室 (`/lab`)
+│   │   ├── Create/        # 生图 (`/`，Ctrl+1)
+│   │   ├── Canvas/        # 画板 (`/canvas`，Ctrl+2)
+│   │   ├── Manager/       # 提示词管家 + 图库 (`/manager`，Ctrl+3)
+│   │   ├── ComfyUI/       # ComfyUI 工作流编排器 (`/comfyui`，Ctrl+4)
+│   │   ├── Tools/         # 工具箱：保真放大 / AI 修复 / 图像转矢量 (`/tools`，Ctrl+5)
+│   │   └── Laboratory/    # 提示词实验室 (`/lab`，Ctrl+6)
 │   ├── store/             # Zustand stores
 │   ├── hooks/
 │   ├── styles/

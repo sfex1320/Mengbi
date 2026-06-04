@@ -90,6 +90,18 @@ const INTENSITY_OPTIONS: Array<{ value: UpscaleIntensity; label: string; hint: s
   { value: 'strong', label: '强力修复', hint: '严重模糊或压缩损坏才用；可能在高光区域过度锐化' }
 ];
 
+/**
+ * HYPIR 支持的倍率档位(2026-05-29 扩展):
+ *   - 2/3/4: SD2.1 训练范围内,质量稳定
+ *   - 6/8/10: 外推倍率,SD2.1 训的是 4x,这些倍率会有色差 / 纹理拉伸风险
+ *     (Python api.py 已放开 le=10 限制,实际能跑;质量看图)
+ */
+export type HypirScale = 2 | 3 | 4 | 6 | 8 | 10;
+const HYPIR_SCALES: HypirScale[] = [2, 3, 4, 6, 8, 10];
+function isHighScale(s: HypirScale): boolean {
+  return s === 6 || s === 8 || s === 10;
+}
+
 const DEFAULT_NEGATIVE_HYPIR = ''; // HYPIR 不吃 negative；UI 仅展示意图
 
 export function HypirPanel(): JSX.Element {
@@ -114,8 +126,12 @@ export function HypirPanel(): JSX.Element {
   const [mode, setMode] = useState<Mode>('single');
   const [inputDataUri, setInputDataUri] = useState<string | null>(null);
   const [batchFiles, setBatchFiles] = useState<string[]>([]);
-  const [scale, setScale] = useState<2 | 3 | 4>(2);            // 默认 2× 更稳妥
-  const [tileSize, setTileSize] = useState<number>(512);
+  /** HYPIR 支持的倍率档位:2/3/4 是 SD2.1 训练范围内,6/8/10 属外推(可能产生色差/纹理拉伸) */
+  const [scale, setScale] = useState<HypirScale>(4);
+  // 2026-05-29: tile_size 默认 512 → 1024。5090 32GB 上 1024 tile 数减半,
+  // VAE encode/decode 重复开销减半,1024×1024 输出图总时间 -20-30%。
+  // 小显存的用户可在 UI 下拉里改回 512 / 768。
+  const [tileSize, setTileSize] = useState<number>(1024);
   const [intensity, setIntensity] = useState<UpscaleIntensity>('conservative');
   const [highlightProtection, setHighlightProtection] = useState<boolean>(true);
   const [disablePostsharpen, setDisablePostsharpen] = useState<boolean>(true);
@@ -195,7 +211,12 @@ export function HypirPanel(): JSX.Element {
       return;
     }
     if (r.data.alreadyRunning) toast.info('服务已在运行');
-    for (let i = 0; i < 60; i++) {
+    // HYPIR 首次启动: torch import (~10s) + SD2.1 base from disk (~20s) +
+    // HYPIR_sd2.pth 加载 (~20s) + uvicorn 起服 (~5s) ≈ 50-90s 范围
+    // 提到 120s 给慢机器留余量,每 500ms 探测一次 → 最多 240 次
+    const POLL_LIMIT = 240;
+    toast.info('HYPIR 后端启动中', '首次冷启动 60-120s(加载 SD2.1 base + HYPIR 权重 + CUDA 初始化)');
+    for (let i = 0; i < POLL_LIMIT; i++) {
       await new Promise((res) => setTimeout(res, 500));
       const s = await window.electronAPI.hypir.serverStatus();
       if (s.ok && s.data.reachable) {
@@ -206,7 +227,10 @@ export function HypirPanel(): JSX.Element {
       }
     }
     setBusy(null);
-    toast.error('服务启动超时（30s 仍未响应）', '看 HYPIR_Portable/logs/hypir.log');
+    toast.error(
+      '服务启动超时(120s 未响应)',
+      '请到 设置 → 工具箱 → HYPIR 便携包 打开目录看 logs/hypir.log 末尾排错;常见:Python 包冲突 / CUDA 不可见 / 权重缺失'
+    );
     await refreshServer(true);
   }
 
@@ -478,7 +502,48 @@ export function HypirPanel(): JSX.Element {
       toast.error('取消失败', r.error.message);
       return;
     }
-    toast.info('已请求取消');
+    toast.info(
+      '已请求软取消',
+      '当前 tile 跑完后停下,模型留 GPU;想立即停 + 释放显存请点「完全停下」'
+    );
+  }
+
+  /**
+   * 「完全停下」= 杀整个 HYPIR sidecar 进程。
+   *
+   * 为什么这是唯一可靠的"立即停 + 释放显存"方案:
+   * HYPIR _enhancer.enhance() 是上游库不可分割的 CUDA call,内部跑几十个
+   * sampling steps + tile 推理。cancel_event 信号即使 set 了也得等当前 step
+   * 跑完才能响应,而 PyTorch CUDA kernel 一旦丢进 GPU 队列就**线程信号无法打断**。
+   * 唯一能立即终止 + 立即归还显存的方式 = 杀进程。
+   *
+   * 代价:下次任务要重启 sidecar + 重新加载 SD2.1 base + HYPIR LoRA + compile JIT
+   * + warmup,合计 60-90s。
+   *
+   * 跟「软取消」并存:用户想停当前一张但保留模型给下张用 → 点「软取消」。
+   * 用户想真停下、不再发任务 → 点「完全停下」。
+   */
+  async function doForceStop(): Promise<void> {
+    const ok = await confirmDialog({
+      title: '完全停下 HYPIR',
+      message: '任务立即中断,模型从显存释放。',
+      detail:
+        '下次提交任务需重启 sidecar + 重新加载模型(60-90s,含 compile JIT + warmup)。' +
+        '如果只想停当前一张、保留模型给下张用,请选「软取消」。',
+      okText: '完全停下',
+      cancelText: '我再想想',
+      danger: true
+    });
+    if (!ok) return;
+    setBusy('force-stop');
+    const r = await window.electronAPI.hypir.stopServer();
+    setBusy(null);
+    if (!r.ok) {
+      toast.error('停止失败', r.error.message);
+      return;
+    }
+    toast.success('已完全停下', '显存已释放;下次任务需重新启动 sidecar');
+    await refreshServer(true);
   }
 
   // ── render ────────────────────────────────────────
@@ -574,16 +639,22 @@ export function HypirPanel(): JSX.Element {
                 <Field label="倍率">
                   <CustomSelect
                     value={String(scale)}
-                    onChange={(v) => setScale(Number(v) as 2 | 3 | 4)}
-                    options={[2, 3, 4].map((s) => ({ value: String(s), label: `${s}×` }))}
+                    onChange={(v) => setScale(Number(v) as HypirScale)}
+                    options={HYPIR_SCALES.map((s) => ({
+                      value: String(s),
+                      label: isHighScale(s) ? `${s}× 🔗` : `${s}×`,
+                      hint: isHighScale(s)
+                        ? '两段式:HYPIR 4× 重建 + lanczos 后期上采'
+                        : undefined
+                    }))}
                     disabled={state === 'processing'}
                   />
                 </Field>
-                <Field label="Tile 尺寸（爆显存就调小）">
+                <Field label="Tile 尺寸">
                   <CustomSelect
                     value={String(tileSize)}
                     onChange={(v) => setTileSize(Number(v))}
-                    options={[256, 384, 512, 768, 1024].map((s) => ({
+                    options={[256, 384, 512, 768, 1024, 1536, 2048].map((s) => ({
                       value: String(s),
                       label: String(s)
                     }))}
@@ -591,6 +662,27 @@ export function HypirPanel(): JSX.Element {
                   />
                 </Field>
               </div>
+              <div className="mb-tools-field-hint" style={{ marginTop: -4 }}>
+                Tile:爆显存调小;5090 32GB 推荐 1024-2048
+              </div>
+              {isHighScale(scale) && (
+                <div
+                  style={{
+                    margin: '6px 0 0',
+                    padding: '8px 10px',
+                    borderRadius: 6,
+                    background: 'rgba(80,160,230,0.08)',
+                    border: '1px solid rgba(80,160,230,0.25)',
+                    fontSize: 11,
+                    color: 'var(--mb-color-info, #60a5fa)',
+                    lineHeight: 1.5
+                  }}
+                >
+                  🔗 <strong>两段式</strong>:HYPIR 在 SD2.1 训练范围内 4× 重建,然后 lanczos 后期上采到 {scale}×。
+                  质量比直接外推稳得多 — 不会产生色差 / 纹理拉伸 / 面部变形,代价是高频细节略软。
+                  跟 4× 一样的推理时间,只多 lanczos 一两秒。
+                </div>
+              )}
 
               {/* 高级折叠：修复深度 + 提示词 + 高光保护 + 禁用锐化 */}
               <details
@@ -702,9 +794,24 @@ export function HypirPanel(): JSX.Element {
                 </button>
               )}
               {state === 'processing' && !batch.active && (
-                <button className="mb-btn mb-btn-ghost" onClick={() => void doCancel()}>
-                  <XIcon size={13} /> 取消
-                </button>
+                <>
+                  <button
+                    className="mb-btn mb-btn-danger mb-btn-sm"
+                    onClick={() => void doForceStop()}
+                    disabled={busy === 'force-stop'}
+                    title="杀 sidecar 进程 — 任务立即中断,显存立即释放(下次任务需重启 sidecar,60-90s)"
+                  >
+                    <XIcon size={13} />{' '}
+                    {busy === 'force-stop' ? '正在停下…' : '完全停下'}
+                  </button>
+                  <button
+                    className="mb-btn mb-btn-ghost mb-btn-sm"
+                    onClick={() => void doCancel()}
+                    title="只标记本任务取消(当前 tile 跑完后停),模型留 GPU,下次任务立即开始"
+                  >
+                    <XIcon size={13} /> 软取消
+                  </button>
+                </>
               )}
               {/* "卸载模型"按钮已迁移到工具箱顶部统一"清理显存与缓存"栏 */}
             </div>

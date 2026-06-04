@@ -10,7 +10,7 @@ import { isMockMode } from './mocks/runtime';
 import { logger } from '../services/logger';
 
 /**
- * 实验室：当前实现 reverse / translate；split / compare / fuse 留接口骨架。
+ * 实验室：当前实现 reverse / translate（+ history）。
  */
 
 const TranslateSchema = z.object({
@@ -70,24 +70,6 @@ export function registerLabHandlers(): void {
       )
     );
   });
-
-  register(
-    'api:lab:split',
-    z.object({ text: z.string(), modelId: z.string() }),
-    async () => err(makeError('NOT_IMPLEMENTED', 'P1 · 拆解将在 v1.1 实现', { severity: 'toast' }))
-  );
-
-  register(
-    'api:lab:compare',
-    z.object({ text: z.string(), modelIds: z.array(z.string()) }),
-    async () => err(makeError('NOT_IMPLEMENTED', 'P2 · 多模型对比将在 v1.5 实现', { severity: 'toast' }))
-  );
-
-  register(
-    'api:lab:fuse',
-    z.object({ textA: z.string(), textB: z.string(), ratioA: z.number().min(0).max(1) }),
-    async () => err(makeError('NOT_IMPLEMENTED', 'P2 · 融合将在 v1.5 实现', { severity: 'toast' }))
-  );
 
   register(
     'api:lab:history',

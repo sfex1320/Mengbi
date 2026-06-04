@@ -184,3 +184,71 @@
   0%, 100% { transform: translate(0, 0) scale(1); }
   50%      { transform: translate(-6vw, 10vh) scale(1.08); }
 }
+
+/* ──────────────────────────────────────────────
+   暖白玉「光影变换」：几团暖色软光晕在象牙白底上缓慢流转。
+   - blob-1/2/4 用 multiply（在浅底上柔和压暗 → 阴影池）
+   - blob-3 用 normal 暖高光（亮起的光斑）
+   全部低透明 + 大 blur，永远在内容之下，不影响读字。
+   ────────────────────────────────────────────── */
+.mb-lightshadow {
+  /* 与 .mb-stars 共用：position fixed / inset 0 / z-index 0 / overflow hidden */
+}
+.mb-ls-blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(80px);
+  will-change: transform, opacity;
+}
+.mb-ls-blob-1 {
+  width: 46vw;
+  height: 46vw;
+  top: -14vw;
+  left: -10vw;
+  background: radial-gradient(circle, rgba(196, 162, 96, 0.26), transparent 70%);
+  mix-blend-mode: multiply;
+  animation: mb-ls-drift-1 30s ease-in-out infinite;
+}
+.mb-ls-blob-2 {
+  width: 40vw;
+  height: 40vw;
+  bottom: -12vw;
+  right: -10vw;
+  background: radial-gradient(circle, rgba(110, 156, 128, 0.22), transparent 70%);
+  mix-blend-mode: multiply;
+  animation: mb-ls-drift-2 38s ease-in-out infinite;
+}
+.mb-ls-blob-3 {
+  width: 34vw;
+  height: 34vw;
+  top: 26%;
+  left: 54%;
+  background: radial-gradient(circle, rgba(255, 246, 224, 0.6), transparent 70%);
+  animation: mb-ls-drift-3 44s ease-in-out infinite;
+}
+.mb-ls-blob-4 {
+  width: 30vw;
+  height: 30vw;
+  top: 50%;
+  left: 8%;
+  background: radial-gradient(circle, rgba(150, 132, 102, 0.16), transparent 70%);
+  mix-blend-mode: multiply;
+  animation: mb-ls-drift-4 52s ease-in-out infinite;
+}
+
+@keyframes mb-ls-drift-1 {
+  0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.85; }
+  50%      { transform: translate(9vw, 7vh) scale(1.12); opacity: 1; }
+}
+@keyframes mb-ls-drift-2 {
+  0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.8; }
+  50%      { transform: translate(-11vw, -8vh) scale(1.16); opacity: 1; }
+}
+@keyframes mb-ls-drift-3 {
+  0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.5; }
+  50%      { transform: translate(-7vw, 9vh) scale(1.1); opacity: 0.85; }
+}
+@keyframes mb-ls-drift-4 {
+  0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.7; }
+  50%      { transform: translate(8vw, -7vh) scale(1.14); opacity: 1; }
+}

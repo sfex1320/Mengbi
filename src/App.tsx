@@ -1,24 +1,36 @@
 import { HashRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
-import { useEffect } from 'react';
-import { motion } from 'framer-motion';
+import { useEffect, useRef } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { Sidebar } from '@/components/Sidebar';
 import { ThemePicker } from '@/components/ThemePicker';
 import { ToastViewport } from '@/components/ToastViewport';
 import { WindowControls } from '@/components/WindowControls';
+import { NotificationCenter } from '@/components/NotificationCenter';
 import { Stars } from '@/components/Stars';
 import { ContextMenuRoot } from '@/components/ContextMenu';
 import { ConfirmDialogRoot } from '@/components/ConfirmDialog';
+import { CursorHalo } from '@/components/CursorHalo';
 import CreatePage from '@/pages/Create';
 import ManagerPage from '@/pages/Manager';
 import LaboratoryPage from '@/pages/Laboratory';
+import CanvasPage from '@/pages/Canvas';
 import SettingsPage from '@/pages/Settings';
+import ToolsPage from '@/pages/Tools';
+import ComfyUIPage from '@/pages/ComfyUI';
+import SmartCanvasPage from '@/pages/SmartCanvas';
 import { applyThemeToDocument } from '@/store/themeStore';
 import { useSettingsStore } from '@/store/settingsStore';
+import { useNotificationStore } from '@/store/notificationStore';
+import type { NotificationAppendPayload } from '@shared/ipc';
 
 const ROUTE_LABEL: Record<string, string> = {
   '/': '生图',
-  '/manager': '提示词管家',
+  '/manager': '图库',
   '/lab': '实验室',
+  '/canvas': '画板',
+  '/tools': '工具箱',
+  '/comfyui': '工作流',
+  '/smart-canvas': '智能画布',
   '/settings': '设置'
 };
 
@@ -39,6 +51,18 @@ function Shell(): JSX.Element {
     applyThemeToDocument();
     load().catch((e) => console.error('settings load failed', e));
   }, [load]);
+
+  // 订阅主进程推送的通知中心条目，写入 notificationStore。
+  useEffect(() => {
+    const off = window.electronAPI?.on('notification:append', (payload) => {
+      const entry = payload as NotificationAppendPayload;
+      if (!entry || typeof entry.id !== 'string') return;
+      useNotificationStore.getState().append(entry);
+    });
+    return () => {
+      off?.();
+    };
+  }, []);
 
   // 待机静默模式：窗口失焦 / 最小化 / 切到其它桌面 时，
   // 在 <html> 上打 data-idle，CSS 把所有 animation-play-state 设为 paused，
@@ -67,34 +91,34 @@ function Shell(): JSX.Element {
     };
   }, []);
 
+  // 当前路径放 ref，键盘处理器读最新值（避免把 location 进 effect 依赖反复重订阅）
+  const pathRef = useRef(location.pathname);
+  pathRef.current = location.pathname;
   useEffect(() => {
+    const NAV_MAP: Record<string, string> = {
+      '1': '/',
+      '2': '/canvas',
+      '3': '/manager',
+      '4': '/comfyui',
+      '5': '/tools',
+      '6': '/lab',
+      '7': '/smart-canvas',
+      ',': '/settings'
+    };
     function onKey(e: KeyboardEvent): void {
       const ctrl = e.ctrlKey || e.metaKey;
-      if (!ctrl) return;
-      switch (e.key) {
-        case '1':
-          e.preventDefault();
-          navigate('/');
-          break;
-        case '2':
-          e.preventDefault();
-          navigate('/manager');
-          break;
-        case '3':
-          e.preventDefault();
-          navigate('/lab');
-          break;
-        case ',':
-          e.preventDefault();
-          navigate('/settings');
-          break;
-      }
+      // e.repeat：忽略长按自动重复，避免排队多次跳转
+      if (!ctrl || e.repeat) return;
+      const target = NAV_MAP[e.key];
+      if (!target) return;
+      e.preventDefault();
+      if (pathRef.current !== target) navigate(target); // 已在目标页就不再重复跳
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [navigate]);
 
-  const label = ROUTE_LABEL[location.pathname] ?? '梦笔';
+  const label = ROUTE_LABEL[location.pathname] ?? 'Mengbi';
 
   return (
     <div className="mb-app">
@@ -103,14 +127,10 @@ function Shell(): JSX.Element {
       <main className="mb-app-main">
         <header className="mb-header">
           <div className="mb-header-brand">
-            <span className="mb-header-brand-logo">
-              <img
-                src={new URL('./assets/icon-121.svg', import.meta.url).toString()}
-                alt="梦笔 logo"
-                className="mb-header-brand-logo-img"
-                draggable={false}
-              />
-            </span>
+            <div className="mb-header-brand-title">
+              <span className="mb-header-brand-name">MENGBI</span>
+              <span className="mb-header-brand-tagline">AI绘画智能工作站</span>
+            </div>
             <span className="mb-header-divider">·</span>
             <motion.span
               key={label}
@@ -124,21 +144,39 @@ function Shell(): JSX.Element {
           </div>
           <div className="mb-header-actions">
             <ThemePicker />
+            <NotificationCenter />
             <WindowControls />
           </div>
         </header>
         <div className="mb-page-container">
-          <Routes location={location}>
-            <Route path="/" element={<CreatePage />} />
-            <Route path="/manager" element={<ManagerPage />} />
-            <Route path="/lab" element={<LaboratoryPage />} />
-            <Route path="/settings" element={<SettingsPage />} />
-          </Routes>
+          {/* 页面切换淡入淡出（短时长、mode=wait）：替代原来的瞬切，过渡更顺。仅 opacity，不动布局 */}
+          <AnimatePresence mode="wait" initial={false}>
+            <motion.div
+              key={location.pathname}
+              className="mb-page-motion"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.14 }}
+            >
+              <Routes location={location}>
+                <Route path="/" element={<CreatePage />} />
+                <Route path="/manager" element={<ManagerPage />} />
+                <Route path="/lab" element={<LaboratoryPage />} />
+                <Route path="/canvas" element={<CanvasPage />} />
+                <Route path="/tools" element={<ToolsPage />} />
+                <Route path="/comfyui" element={<ComfyUIPage />} />
+                <Route path="/smart-canvas" element={<SmartCanvasPage />} />
+                <Route path="/settings" element={<SettingsPage />} />
+              </Routes>
+            </motion.div>
+          </AnimatePresence>
         </div>
       </main>
       <ToastViewport />
       <ContextMenuRoot />
       <ConfirmDialogRoot />
+      <CursorHalo />
     </div>
   );
 }

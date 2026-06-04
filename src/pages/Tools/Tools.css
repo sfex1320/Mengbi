@@ -1856,6 +1856,14 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* 跟上方 TaskList 拉开视觉距离,避免 action bar 跟选中的任务行视觉黏在一起 */
+  border-top: 1px solid var(--mb-border-soft, rgba(255, 255, 255, 0.06));
+  padding-top: 10px;
+  margin-top: 4px;
+}
+/* action bar 自身也加一点 vertical 内边距,让按钮和上方分隔线之间不挤 */
+.mb-tlx-result-single > .mb-result-actions-bar {
+  padding: 2px 0;
 }
 .mb-tlx-result-img {
   max-width: 100%;
@@ -2135,40 +2143,14 @@
 }
 
 /* ──────────────────────────────────────────────────────
- * ImageCompareViewer(原图 / 结果对比,缩放 / 拖动 / 滑条)
+ * 结果图预览(2026-05-29:取消 wipe 对比,改纯结果展示)
  * ──────────────────────────────────────────────────────*/
 
-.mb-icv {
+.mb-tlx-result-image-wrap {
   position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  width: 100%;
-  height: 100%;
+  flex: 1;
   min-height: 280px;
-}
-.mb-icv-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 8px;
-  background: var(--mb-color-surface-2, rgba(255, 255, 255, 0.04));
-  border-radius: 8px;
-  font-size: 11px;
-}
-.mb-icv-toolbar-info {
-  flex: 1;
-  color: var(--mb-color-text-muted, #888);
-}
-.mb-icv-toolbar-zoom {
-  font-variant-numeric: tabular-nums;
-  min-width: 50px;
-  text-align: center;
-}
-.mb-icv-stage {
-  position: relative;
-  flex: 1;
-  overflow: hidden;
+  overflow: auto;
   border-radius: 10px;
   background:
     linear-gradient(45deg, rgba(255, 255, 255, 0.04) 25%, transparent 25%),
@@ -2177,88 +2159,19 @@
     linear-gradient(-45deg, transparent 75%, rgba(255, 255, 255, 0.04) 75%);
   background-size: 16px 16px;
   background-position: 0 0, 0 8px, 8px -8px, -8px 0;
-  cursor: grab;
-  user-select: none;
-}
-.mb-icv-stage.is-dragging {
-  cursor: grabbing;
-}
-.mb-icv-canvas {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform-origin: 0 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  pointer-events: none;
+  padding: 8px;
 }
-.mb-icv-img {
+.mb-tlx-result-image {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
   display: block;
-  max-width: none;
-  max-height: none;
-  pointer-events: none;
   user-select: none;
-}
-/* 上下层叠用于"切换"模式;wipe 模式用 clip-path */
-.mb-icv-layer {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  pointer-events: none;
-}
-.mb-icv-layer.is-wipe {
-  /* clip-path 由 inline style 动态控制 */
-}
-.mb-icv-wipe-line {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 2px;
-  background: var(--mb-color-primary, #f59e0b);
-  pointer-events: none;
-  box-shadow: 0 0 6px var(--mb-color-primary, #f59e0b);
-}
-.mb-icv-wipe-handle {
-  position: absolute;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  background: var(--mb-color-primary, #f59e0b);
-  color: #1a1108;
-  font-size: 14px;
-  font-weight: 700;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: ew-resize;
-  pointer-events: auto;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
-}
-.mb-icv-mode-toggle {
-  display: inline-flex;
-  border-radius: 6px;
-  background: var(--mb-color-surface-3, rgba(255, 255, 255, 0.06));
-  padding: 2px;
-  gap: 2px;
-}
-.mb-icv-mode-toggle button {
-  padding: 3px 8px;
-  border-radius: 4px;
-  background: transparent;
-  border: none;
-  color: var(--mb-color-text-2, #b8b8b8);
-  font-size: 10.5px;
-  cursor: pointer;
-}
-.mb-icv-mode-toggle button.is-active {
-  background: var(--mb-color-primary, #f59e0b);
-  color: #1a1108;
-  font-weight: 600;
 }
 
 /* ──────────────────────────────────────────────────────
@@ -2384,83 +2297,9 @@
 }
 
 /* ──────────────────────────────────────────────────────
- * PyTorch 后端 sub-panel
+ * (旧 PyTorch 模型清单样式已随 PyTorch 后端整体砍除,
+ *  Settings → 工具箱 → ONNX 模型库 用 mb-mapping-row 通用样式)
  * ──────────────────────────────────────────────────────*/
-
-.mb-tlx-pytorch-section {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.mb-tlx-pytorch-status {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.mb-tlx-pytorch-models {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  max-height: 360px;
-  overflow-y: auto;
-}
-.mb-tlx-pytorch-model-row {
-  display: flex;
-  gap: 10px;
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: var(--mb-color-surface-2, rgba(255, 255, 255, 0.04));
-  border: 1px solid var(--mb-color-border-soft, rgba(255, 255, 255, 0.05));
-  align-items: flex-start;
-}
-.mb-tlx-pytorch-model-info {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-.mb-tlx-pytorch-model-name {
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--mb-color-text-1, #e6e6e6);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.mb-tlx-pytorch-installed-tag {
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: rgba(34, 197, 94, 0.18);
-  color: #86efac;
-  font-size: 10px;
-  font-weight: 500;
-}
-.mb-tlx-pytorch-model-meta {
-  font-size: 11px;
-  color: var(--mb-color-text-muted, #888);
-}
-.mb-tlx-pytorch-model-path {
-  font-family: ui-monospace, Consolas, monospace;
-  font-size: 10.5px;
-  color: var(--mb-color-text-muted, #888);
-  word-break: break-all;
-}
-.mb-tlx-pytorch-model-progress {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-top: 4px;
-  font-size: 10.5px;
-  color: var(--mb-color-text-muted, #888);
-}
-.mb-tlx-pytorch-model-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  align-items: stretch;
-}
 
 /* ── 响应式 ─────────────────────────────────────────── */
 

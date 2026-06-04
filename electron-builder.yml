@@ -1,7 +1,7 @@
 appId: cn.mengbi.app
 productName: 梦笔
 directories:
-  output: release/${version}
+  output: app
   buildResources: resources
 files:
   - out/**
@@ -21,17 +21,25 @@ asarUnpack:
   # sharp 是 native 模块，prebuilt 二进制放在 @img/sharp-* 子包；asar 里加载不到 .node 必失败
   - "node_modules/sharp/**"
   - "node_modules/@img/**"
+  # onnxruntime-node:含 onnxruntime.dll / DirectML.dll / dxcompiler.dll(Windows EP),
+  # native .node 加载时需要侧载 DLL,asar 里 dlopen 会失败
+  - "node_modules/onnxruntime-node/**"
 win:
   target:
     - target: nsis
       arch:
         - x64
-  artifactName: mengbi-${version}-setup.${ext}
+    - target: portable
+      arch:
+        - x64
 nsis:
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true
   deleteAppDataOnUninstall: false
+  artifactName: mengbi-${version}-setup.${ext}
+portable:
+  artifactName: mengbi-${version}-portable.${ext}
 mac:
   target:
     - target: dmg

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
+import { useSmartInboxStore } from '@/store/smartInboxStore';
 import { useSettingsStore } from '@/store/settingsStore';
 import { useImageParamsStore } from '@/store/imageParamsStore';
 import { toast } from '@/store/toastStore';
@@ -9,15 +10,17 @@ import {
   SparkleIcon,
   ImageIcon,
   PlusIcon,
-  TrashIcon,
   GalleryIcon,
   FolderIcon
 } from '@/components/Icon';
 import { Lightbox } from '@/components/Lightbox';
-import { RefEditor } from '@/components/RefEditor';
+import { ImportTargetDialog } from '@/pages/Canvas/ImportTargetDialog';
+import { importImageToCanvas, type ImportSource } from '@/pages/Canvas/importToCanvas';
 import { openContextMenu } from '@/components/ContextMenu';
 import { confirmDialog } from '@/components/ConfirmDialog';
-import { localPathToImageUrl } from '@/lib/imageUrl';
+import { LoraSelector } from '@/components/LoraSelector';
+import { detectFamily, FAMILIES, getFamilyById, type ImageFamily } from '@shared/imageModelFamilies';
+import { localPathToImageUrl, thumbUrlFromOriginalPath } from '@/lib/imageUrl';
 import './Create.css';
 
 /**
@@ -87,9 +90,9 @@ function complementaryDim(known: number): number {
 
 const IMAGE_SIZES = [
   { value: '', label: '自动' },
-  { value: '1K', label: '1K (~1 MP 总像素)' },
-  { value: '2K', label: '2K (~4 MP 总像素)' },
-  { value: '4K', label: '4K (~8.3 MP 总像素，4K UHD)' }
+  { value: '1K', label: '1K · ~1 MP' },
+  { value: '2K', label: '2K · ~4 MP' },
+  { value: '4K', label: '4K · ~8.3 MP' }
 ];
 
 const QUALITIES = [
@@ -105,6 +108,25 @@ interface QueueItem {
   status: string;
   result_paths?: string;
   created_at?: string;
+  finished_at?: string;
+  /** 失败任务的错误文案；Change 1 起 IPC 已返回 */
+  error_message?: string | null;
+  /** 原始参数 JSON（提交时序列化的 params）；「降一档重试」要解析它 */
+  params?: string;
+}
+
+/** 把毫秒数渲染为人类可读的耗时（提交→完成 墙钟时间） */
+function formatElapsed(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '';
+  if (ms < 1000) return `${(ms / 1000).toFixed(1)}s`;
+  const totalSec = ms / 1000;
+  if (totalSec < 60) return `${totalSec.toFixed(1)}s`;
+  const totalMin = Math.floor(totalSec / 60);
+  const sec = Math.floor(totalSec - totalMin * 60);
+  if (totalMin < 60) return `${totalMin}m${String(sec).padStart(2, '0')}s`;
+  const hr = Math.floor(totalMin / 60);
+  const min = totalMin - hr * 60;
+  return `${hr}h${String(min).padStart(2, '0')}m`;
 }
 
 export default function CreatePage(): JSX.Element {
@@ -132,13 +154,59 @@ function GeneratorForm(): JSX.Element {
   const params = useImageParamsStore();
   const navigate = useNavigate();
 
+  // ComfyUI（image_kind='comfyui'）在「本地大模型」页独立管理，此处剔除
   const imageModels = useMemo(
     () =>
       configs
-        .filter((c) => c.plan_id === activePlanId && c.type === 'image')
+        .filter(
+          (c) =>
+            c.plan_id === activePlanId &&
+            c.type === 'image' &&
+            c.image_kind !== 'comfyui'
+        )
         .flatMap((c) => Object.keys(c.model_mapping ?? {})),
     [configs, activePlanId]
   );
+
+  // 当前选中显示名 → 真实模型 ID → family。auto-detect 加 user override。
+  const currentImageConfig = useMemo(
+    () =>
+      configs.find(
+        (c) =>
+          c.plan_id === activePlanId &&
+          c.type === 'image' &&
+          c.image_kind !== 'comfyui' &&
+          (c.model_mapping ?? {})[params.imageModelId] !== undefined
+      ),
+    [configs, activePlanId, params.imageModelId]
+  );
+  const actualModelId =
+    currentImageConfig?.model_mapping?.[params.imageModelId] ?? params.imageModelId;
+  const detectedFamily = useMemo(
+    () => detectFamily(actualModelId),
+    [actualModelId]
+  );
+  const family =
+    params.familyOverride && params.familyOverride !== 'auto'
+      ? getFamilyById(params.familyOverride as ImageFamily)
+      : detectedFamily;
+
+  // 切换系列后，如果当前 aspect / 档位 不在新 family 的支持列表里，回落到 'auto' / ''
+  useEffect(() => {
+    if (
+      params.aspect !== 'auto' &&
+      !family.supportedAspects.includes(params.aspect)
+    ) {
+      params.setAspect('auto');
+    }
+    if (
+      params.imageSize &&
+      !family.supportedTiers.includes(params.imageSize as '1K' | '2K' | '4K')
+    ) {
+      params.setImageSize('');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [family.id]);
 
   // 自定义尺寸输入框的"草稿态"——保持字符串形态便于编辑（中间允许空、连删等）
   const [wDraft, setWDraft] = useState(String(params.customW));
@@ -146,7 +214,11 @@ function GeneratorForm(): JSX.Element {
   // 最近三个任务（按时间倒序）——支持并发跑，所以同时能有 3 条 running
   const [latestThree, setLatestThree] = useState<QueueItem[]>([]);
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
-  const [editingRefIdx, setEditingRefIdx] = useState<number | null>(null);
+  const [importDialog, setImportDialog] = useState<{
+    open: boolean;
+    source: { width: number; height: number; name?: string } | null;
+    src: ImportSource | null;
+  }>({ open: false, source: null, src: null });
 
   // 草稿态跟着 store 同步（store 是 persist 的，下次启动也回填）
   useEffect(() => {
@@ -175,13 +247,24 @@ function GeneratorForm(): JSX.Element {
     if (!window.electronAPI?.on) return;
     refreshLatest();
     const offDone = window.electronAPI.on('image:done', (payload) => {
+      const v = payload as {
+        taskId: number;
+        imageKind?: string | null;
+        cancelled?: boolean;
+        error?: string;
+      };
+      // ComfyUI 任务归 LocalModel 页负责，云端 Create 页不响应
+      if (v.imageKind === 'comfyui') return;
       refreshLatest();
-      const v = payload as { taskId: number; cancelled?: boolean; error?: string };
       if (v.error) toast.error('生图失败', v.error);
       else if (v.cancelled) toast.info('已取消');
       else toast.success('生图完成', `任务 #${v.taskId} · 已自动归入图库`);
     });
-    const offProgress = window.electronAPI.on('image:progress', () => refreshLatest());
+    const offProgress = window.electronAPI.on('image:progress', (payload) => {
+      const v = payload as { imageKind?: string | null };
+      if (v?.imageKind === 'comfyui') return;
+      refreshLatest();
+    });
     return () => {
       offDone();
       offProgress();
@@ -191,7 +274,9 @@ function GeneratorForm(): JSX.Element {
   async function refreshLatest(): Promise<void> {
     const r = await window.electronAPI.image.queue();
     if (r.ok) {
-      const arr = r.data as QueueItem[];
+      const arr = (r.data as QueueItem[]).filter(
+        (t) => (t as QueueItem & { image_kind?: string | null }).image_kind !== 'comfyui'
+      );
       setLatestThree(arr.slice(0, 3));
     }
   }
@@ -259,85 +344,13 @@ function GeneratorForm(): JSX.Element {
     });
   }
 
-  /** 从拖拽进来的 File 列表加 ref，复用同一份探测尺寸 + 上限逻辑 */
-  async function addRefFiles(files: FileList | File[]): Promise<void> {
-    const arr = Array.from(files).filter((f) => f.type.startsWith('image/'));
-    if (arr.length === 0) {
-      toast.error('只支持图片文件');
-      return;
-    }
-    const remaining = 10 - params.refs.length;
-    if (remaining <= 0) {
-      toast.error('参考图已达上限', '最多 10 张');
-      return;
-    }
-    const accepted = arr.slice(0, remaining);
-    const enriched = await Promise.all(
-      accepted.map(async (file) => {
-        const dataUri = await new Promise<string>((res) => {
-          const r = new FileReader();
-          r.onload = () => res(typeof r.result === 'string' ? r.result : '');
-          r.onerror = () => res('');
-          r.readAsDataURL(file);
-        });
-        const { w, h } = await probeImageSize(dataUri);
-        // Electron 给原生 File 加了 path 字段
-        const path = (file as File & { path?: string }).path ?? '';
-        return { path, dataUri, width: w, height: h };
-      })
-    );
-    params.addRefs(enriched.filter((r) => r.path && r.dataUri));
-    if (arr.length > remaining) {
-      toast.info('已截断到 10 张上限', `丢弃 ${arr.length - remaining} 张`);
-    }
-  }
-
-  const [refDragOver, setRefDragOver] = useState(false);
-  function onRefDragOver(e: React.DragEvent): void {
-    e.preventDefault();
-    setRefDragOver(true);
-  }
-  function onRefDragLeave(): void {
-    setRefDragOver(false);
-  }
-  function onRefDrop(e: React.DragEvent): void {
-    e.preventDefault();
-    setRefDragOver(false);
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      void addRefFiles(e.dataTransfer.files);
-    }
-  }
-
-  async function pickRefs(): Promise<void> {
-    if (!window.electronAPI?.storage?.pickImages) return;
-    const r = await window.electronAPI.storage.pickImages();
-    if (!r.ok) {
-      toast.error('选择参考图失败', r.error.message);
-      return;
-    }
-    if (r.data.files.length === 0) return;
-    const remaining = 10 - params.refs.length;
-    if (remaining <= 0) {
-      toast.error('参考图已达上限', '最多 10 张');
-      return;
-    }
-    const accepted = r.data.files.slice(0, remaining);
-    // 探测每张参考图真实尺寸，给"自动比例"用
-    const enriched = await Promise.all(
-      accepted.map(async (f) => {
-        const { w, h } = await probeImageSize(f.dataUri);
-        return { ...f, width: w, height: h };
-      })
-    );
-    params.addRefs(enriched);
-    if (r.data.files.length > remaining) {
-      toast.info('已截断到 10 张上限', `丢弃 ${r.data.files.length - remaining} 张`);
-    }
-  }
+  // 旧的右侧参考图区已删除：拖拽 / 选择 / 上限校验 全部移交 ChatPanel 的统一附图托盘。
+  // 若日后还需"从画板拖图回参考图"等专属流程，可重新加。
 
   async function copyTaskImage(filePath: string): Promise<void> {
     try {
       const r = await fetch(localPathToImageUrl(filePath));
+      if (!r.ok) throw new Error(`图片读取失败（HTTP ${r.status}）`);
       const blob = await r.blob();
       const pngBlob =
         blob.type === 'image/png' ? blob : await blobToPng(blob);
@@ -351,10 +364,12 @@ function GeneratorForm(): JSX.Element {
   async function sendTaskToRefs(filePath: string): Promise<void> {
     try {
       const r = await fetch(localPathToImageUrl(filePath));
+      if (!r.ok) throw new Error(`图片读取失败（HTTP ${r.status}）`);
       const blob = await r.blob();
-      const dataUri = await new Promise<string>((res) => {
+      const dataUri = await new Promise<string>((res, rej) => {
         const fr = new FileReader();
         fr.onload = () => res(typeof fr.result === 'string' ? fr.result : '');
+        fr.onerror = () => rej(new Error('图片解码失败')); // 原先无 onerror → 失败时 Promise 永不 resolve 卡死
         fr.readAsDataURL(blob);
       });
       const dim = await probeImageSize(dataUri);
@@ -367,7 +382,7 @@ function GeneratorForm(): JSX.Element {
     }
   }
 
-  function showTaskImageMenu(e: React.MouseEvent, filePath: string): void {
+  function showTaskImageMenu(e: React.MouseEvent, filePath: string, task: QueueItem): void {
     e.preventDefault();
     e.stopPropagation();
     openContextMenu({
@@ -375,9 +390,25 @@ function GeneratorForm(): JSX.Element {
       y: e.clientY,
       items: [
         {
-          label: '复制图片',
+          label: '放大预览',
+          onClick: () => setPreviewSrc(localPathToImageUrl(filePath))
+        },
+        {
+          label: '复制图片到剪贴板',
           onClick: () => copyTaskImage(filePath)
         },
+        {
+          label: '复制本地路径',
+          onClick: async () => {
+            try {
+              await navigator.clipboard.writeText(filePath);
+              toast.success('已复制路径');
+            } catch {
+              toast.error('复制失败');
+            }
+          }
+        },
+        { separator: true },
         {
           label: '置入参考图',
           variant: 'accent',
@@ -385,12 +416,165 @@ function GeneratorForm(): JSX.Element {
           onClick: () => sendTaskToRefs(filePath)
         },
         {
-          label: '放大预览',
+          label: '导入画板',
+          onClick: () => void sendTaskToCanvas(filePath)
+        },
+        {
+          label: '发送到智能画布',
+          onClick: () => {
+            useSmartInboxStore.getState().push([{ src: filePath, name: task.positive_prompt?.slice(0, 20) || '生成图' }]);
+            navigate('/smart-canvas');
+            toast.success('已发送到智能画布');
+          }
+        },
+        {
+          label: '转入工具箱…',
           icon: <SparkleIcon size={12} />,
-          onClick: () => setPreviewSrc(localPathToImageUrl(filePath))
+          children: [
+            {
+              label: '保真放大（Real-ESRGAN）',
+              icon: <SparkleIcon size={11} />,
+              onClick: () => void sendTaskToTools(filePath, 'upscale')
+            },
+            {
+              label: 'AI 修复放大 · HYPIR',
+              icon: <SparkleIcon size={11} />,
+              onClick: () => void sendTaskToTools(filePath, 'hypir')
+            }
+          ]
+        },
+        { separator: true },
+        {
+          label: '用此提示词再来一张',
+          icon: <SparkleIcon size={12} />,
+          onClick: () => void regenerateFromTask(task)
+        },
+        {
+          label: '复制此任务提示词',
+          onClick: async () => {
+            try {
+              await navigator.clipboard.writeText(task.positive_prompt);
+              toast.success('已复制提示词');
+            } catch {
+              toast.error('复制失败');
+            }
+          }
+        },
+        { separator: true },
+        {
+          label: '在文件夹中显示',
+          onClick: () => void openTaskFolder(task)
+        },
+        {
+          label: '从图库删除（软删除）',
+          variant: 'danger',
+          onClick: () => void deleteTaskImage(filePath)
         }
       ]
     });
+  }
+
+  /** 把任务的产出图直接送进画板（复用既有 ImportTargetDialog 流程） */
+  async function sendTaskToCanvas(filePath: string): Promise<void> {
+    try {
+      const url = localPathToImageUrl(filePath);
+      const blob = await (await fetch(url)).blob();
+      const dataUri = await new Promise<string>((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(typeof r.result === 'string' ? r.result : '');
+        r.onerror = () => rej(r.error);
+        r.readAsDataURL(blob);
+      });
+      const dim = await probeImageSize(dataUri);
+      const base = filePath.replace(/\\/g, '/').split('/').pop() ?? '生图结果';
+      const name = base.replace(/\.[^.]+$/, '').slice(0, 30);
+      const src: ImportSource = {
+        sourcePath: filePath,
+        dataUri,
+        width: dim.w,
+        height: dim.h,
+        name
+      };
+      setImportDialog({
+        open: true,
+        source: { width: dim.w, height: dim.h, name },
+        src
+      });
+    } catch (e) {
+      toast.error('发送到画板失败', (e as Error).message);
+    }
+  }
+
+  /** 用任务原提示词 + 当前面板参数立刻再提交一张 */
+  async function regenerateFromTask(task: QueueItem): Promise<void> {
+    const modelToUse = params.imageModelId || task.model_id;
+    if (!modelToUse) {
+      toast.error('未选择绘画模型');
+      return;
+    }
+    const r = await window.electronAPI.image.generate({
+      modelId: modelToUse,
+      positivePrompt: task.positive_prompt,
+      params: params.buildParams(),
+      referenceImages: params.refPaths().length > 0 ? params.refPaths() : undefined
+    });
+    if (!r.ok) {
+      toast.error('再生成失败', r.error.message);
+      return;
+    }
+    toast.info('已提交再生成', `任务 #${r.data.taskId}`);
+  }
+
+
+  /** 软删除：通过 task.result_paths 找到对应 images 记录并打 deleted_at */
+  async function deleteTaskImage(filePath: string): Promise<void> {
+    const ok = await confirmDialog({
+      title: '从图库移除该图？',
+      message: '会软删除（30 天内可在回收站恢复），上游已扣的费用不可退。',
+      okText: '移除',
+      danger: true
+    });
+    if (!ok) return;
+    const list = await window.electronAPI.gallery.list({});
+    if (!list.ok) {
+      toast.error('查询图库失败', list.error.message);
+      return;
+    }
+    // gallery.list 在 IPC 类型上是 unknown[]，运行时是 images 表的行
+    const rows = list.data as Array<{ id: number; file_path: string }>;
+    const hit = rows.find((im) => im.file_path === filePath);
+    if (!hit) {
+      toast.error('图库里没找到这张图');
+      return;
+    }
+    const r = await window.electronAPI.gallery.update({
+      id: hit.id,
+      patch: { deleted_at: new Date().toISOString() }
+    });
+    if (r.ok) toast.success('已移到回收站');
+    else toast.error('删除失败', r.error.message);
+  }
+
+  /** 把当前任务这张图发到 /tools，可指定目标 tab；工具箱面板自动消费 pendingImport */
+  async function sendTaskToTools(
+    filePath: string,
+    target: 'upscale' | 'hypir' = 'upscale'
+  ): Promise<void> {
+    try {
+      const url = localPathToImageUrl(filePath);
+      const blob = await (await fetch(url)).blob();
+      const dataUri = await new Promise<string>((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(typeof r.result === 'string' ? r.result : '');
+        r.onerror = () => rej(r.error);
+        r.readAsDataURL(blob);
+      });
+      const { useToolsStore } = await import('@/store/toolsStore');
+      useToolsStore.setState({ pendingImport: dataUri, activeTab: target });
+      navigate('/tools');
+    } catch (e) {
+      toast.error('发送失败', String(e));
+    }
   }
 
   function showTaskPromptMenu(e: React.MouseEvent, prompt: string): void {
@@ -412,17 +596,59 @@ function GeneratorForm(): JSX.Element {
             }
           }
         },
+        { separator: true },
         {
-          label: '用于对话框生图',
+          label: '用于生图（填入并切到生图模式）',
           variant: 'accent',
           icon: <SparkleIcon size={12} />,
           onClick: () => {
             params.setChatDraft(prompt);
-            toast.success('已填到生图输入框', '左侧切到生图模式回车即可');
+            // 用 uiStore.setChatMode 切到生图；通过订阅 store 模拟
+            void import('@/store/uiStore').then(({ useUIStore }) => {
+              useUIStore.getState().setChatMode('image');
+            });
+            toast.success('已填入生图输入框', '回车即可');
+          }
+        },
+        {
+          label: '用作对话内容（视觉模型聊聊看）',
+          onClick: () => {
+            params.setChatDraft(prompt);
+            void import('@/store/uiStore').then(({ useUIStore }) => {
+              useUIStore.getState().setChatMode('chat');
+            });
+            toast.info('已填入对话框');
+          }
+        },
+        { separator: true },
+        {
+          label: '加到图库（图片类）',
+          onClick: () => void saveTaskPromptToLibrary(prompt)
+        },
+        {
+          label: '到实验室翻译 / 拆解',
+          onClick: () => {
+            params.setChatDraft(prompt);
+            navigate('/lab');
           }
         }
       ]
     });
+  }
+
+  /** 把任务的提示词归档到图库（kind=image，自动打标签） */
+  async function saveTaskPromptToLibrary(prompt: string): Promise<void> {
+    const t = prompt.trim();
+    if (!t) return;
+    const r = await window.electronAPI.prompt.upsert({
+      title: t.slice(0, 40),
+      text: t,
+      kind: 'image',
+      tags: [],
+      notes: '从生图任务卡片归档'
+    });
+    if (r.ok) toast.success('已加入图库');
+    else toast.error('归档失败', r.error.message);
   }
 
   async function openTaskFolder(task: QueueItem): Promise<void> {
@@ -456,6 +682,33 @@ function GeneratorForm(): JSX.Element {
         </select>
       </div>
 
+      {imageModels.length > 0 && (
+        <div className="mb-gen-family-row" title={family.description}>
+          <span className="mb-gen-family-badge">{family.label}</span>
+          <span className="mb-gen-family-hint">
+            {params.familyOverride === 'auto'
+              ? `自动嗅探（按 ${actualModelId}）`
+              : '已手动覆盖'}
+          </span>
+          <select
+            className="mb-select"
+            style={{ width: 'auto', flex: 'none' }}
+            value={params.familyOverride}
+            onChange={(e) =>
+              params.setFamilyOverride(e.target.value as typeof params.familyOverride)
+            }
+            title="如果自动判定不对（比如你给模型起了别名），手动选一个 family"
+          >
+            <option value="auto">自动嗅探</option>
+            {FAMILIES.map((f) => (
+              <option key={f.id} value={f.id}>
+                {f.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
       <div className="mb-gen-form">
         <div>
           <div className="mb-gen-mode-row">
@@ -477,26 +730,16 @@ function GeneratorForm(): JSX.Element {
 
           {params.sizeMode === 'aspect' ? (
             <div className="mb-gen-aspects">
-              {ASPECTS.map((a) => (
+              {ASPECTS.filter(
+                (a) => a.value === 'auto' || family.supportedAspects.includes(a.value)
+              ).map((a) => (
                 <motion.button
                   key={a.value}
                   className={`mb-gen-aspect ${params.aspect === a.value ? 'is-active' : ''}`}
                   onClick={() => params.setAspect(a.value)}
                   whileTap={{ scale: 0.94 }}
-                  title={
-                    a.tags.length === 0
-                      ? '通用比例（部分模型可能不识别）'
-                      : `兼容：${a.tags.join(' + ')}`
-                  }
+                  title={a.value === 'auto' ? '由模型自行决定' : `${family.label} 兼容`}
                 >
-                  <span className="mb-gen-aspect-tags">
-                    {a.tags.includes('GI2') && (
-                      <span className="mb-gen-aspect-tag mb-gen-tag-gi2">GI2</span>
-                    )}
-                    {a.tags.includes('NB') && (
-                      <span className="mb-gen-aspect-tag mb-gen-tag-nb">NB</span>
-                    )}
-                  </span>
                   <span className="mb-gen-aspect-label">{a.label}</span>
                 </motion.button>
               ))}
@@ -565,7 +808,7 @@ function GeneratorForm(): JSX.Element {
           )}
           <div className="mb-gen-hint">
             {params.sizeMode === 'aspect'
-              ? '"GI2" 标 GPT Image 2 兼容；"NB" 标 Nano Banana 系列兼容。蓝点表示同时支持。'
+              ? `当前仅显示 ${family.label} 支持的比例；切换右上角"系列"可调整。`
               : params.autoCalcCustomSize
                 ? '失焦后自动 snap 到 16 整数倍；改宽 → 自动算高，改高 → 自动算宽（8.3 MP 预算）。'
                 : '已关闭自动计算：宽 / 高 互不联动，由你直接输入。'}
@@ -587,9 +830,12 @@ function GeneratorForm(): JSX.Element {
               ))}
             </select>
           </div>
-          {params.sizeMode === 'aspect' && (
-            <div style={{ flex: 1 }}>
-              <label className="mb-label">分辨率档位</label>
+          {params.sizeMode === 'aspect' && family.supportedTiers.length > 0 && (
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <label className="mb-label-row" title={`分辨率档位（${family.label}）`}>
+                <span>分辨率档位</span>
+                <span className="mb-gen-family-tag">{family.label}</span>
+              </label>
               <select
                 className="mb-select"
                 value={params.imageSize}
@@ -597,14 +843,31 @@ function GeneratorForm(): JSX.Element {
                   params.setImageSize(e.target.value as '' | '1K' | '2K' | '4K')
                 }
               >
-                {IMAGE_SIZES.map((v) => (
-                  <option key={v.value || 'auto'} value={v.value}>
-                    {v.label}
-                  </option>
-                ))}
+                <option value="">自动</option>
+                {IMAGE_SIZES.filter(
+                  (v) => !v.value || family.supportedTiers.includes(v.value as '1K' | '2K' | '4K')
+                )
+                  .filter((v) => v.value !== '') /* 上面已加过 "自动" */
+                  .map((v) => (
+                    <option key={v.value} value={v.value}>
+                      {v.label}
+                    </option>
+                  ))}
               </select>
             </div>
           )}
+          {params.sizeMode === 'aspect' && family.supportedTiers.length === 0 && (
+            <div style={{ flex: 1, minWidth: 0 }} title={`${family.label} 用 size=WxH 表达分辨率，没有 1K/2K/4K 档`}>
+              <label className="mb-label-row">
+                <span>分辨率档位</span>
+                <span className="mb-gen-family-tag mb-gen-family-tag-disabled">不适用</span>
+              </label>
+              <select className="mb-select" value="" disabled>
+                <option value="">由 size 决定</option>
+              </select>
+            </div>
+          )}
+          {family.supportsQuality && (
           <div style={{ flex: 1 }}>
             <label className="mb-label">质量</label>
             <select
@@ -621,61 +884,13 @@ function GeneratorForm(): JSX.Element {
               ))}
             </select>
           </div>
+          )}
         </div>
 
-        <div>
-          <label className="mb-label">参考图（{params.refs.length}/10）</label>
-          <div
-            className={`mb-gen-refs ${refDragOver ? 'is-dragover' : ''}`}
-            onDragOver={onRefDragOver}
-            onDragLeave={onRefDragLeave}
-            onDrop={onRefDrop}
-          >
-            {params.refs.map((r, i) => (
-              <div
-                key={r.path + i}
-                className="mb-gen-ref-thumb"
-                draggable
-                onDragStart={(e) => {
-                  e.dataTransfer.setData('mb-ref-uri', r.dataUri);
-                  e.dataTransfer.effectAllowed = 'copy';
-                }}
-                title="拖到左侧对话区作附图 / 鼠标悬停有编辑+删除"
-              >
-                <img src={r.dataUri} alt={`ref ${i + 1}`} draggable={false} />
-                <div className="mb-gen-ref-actions">
-                  <button
-                    type="button"
-                    className="mb-gen-ref-act"
-                    onClick={() => setEditingRefIdx(i)}
-                    title="编辑"
-                  >
-                    ✎
-                  </button>
-                  <button
-                    type="button"
-                    className="mb-gen-ref-act mb-gen-ref-act-danger"
-                    onClick={() => params.removeRefAt(i)}
-                    title="删除"
-                  >
-                    <TrashIcon size={11} />
-                  </button>
-                </div>
-              </div>
-            ))}
-            {params.refs.length < 10 && (
-              <button
-                type="button"
-                className="mb-gen-ref-add"
-                onClick={pickRefs}
-                title="点击选择 / 拖图进来 都行"
-              >
-                <PlusIcon size={20} />
-                <span>{refDragOver ? '松手添加' : '拖入 / 点击'}</span>
-              </button>
-            )}
-          </div>
-        </div>
+        {/* 参考图区已合并到左侧对话框上方的统一附图托盘。
+            对话模式时这些图作为视觉模型的多模态输入，生图模式时作为参考图。 */}
+
+        <LoraSelector />
 
       </div>
 
@@ -702,10 +917,22 @@ function GeneratorForm(): JSX.Element {
                       type="button"
                       className="mb-gen-task-thumb"
                       onClick={() => setPreviewSrc(localPathToImageUrl(filePath))}
-                      onContextMenu={(e) => showTaskImageMenu(e, filePath)}
+                      onContextMenu={(e) => showTaskImageMenu(e, filePath, task)}
                       title="左键放大预览 · 右键复制 / 置入参考"
                     >
-                      <img src={localPathToImageUrl(filePath)} alt="" draggable={false} />
+                      <img
+                        src={thumbUrlFromOriginalPath(filePath)}
+                        alt=""
+                        draggable={false}
+                        loading="lazy"
+                        decoding="async"
+                        // 缩略图缺就回退原图
+                        onError={(e) => {
+                          const orig = localPathToImageUrl(filePath);
+                          const cur = (e.currentTarget as HTMLImageElement).src;
+                          if (cur !== orig) (e.currentTarget as HTMLImageElement).src = orig;
+                        }}
+                      />
                     </button>
                   ) : (
                     <div className="mb-gen-task-thumb is-empty">
@@ -716,6 +943,17 @@ function GeneratorForm(): JSX.Element {
                     <div className="mb-gen-task-row">
                       <span className="mb-gen-task-id">#{task.id}</span>
                       <span className="mb-gen-task-status">{task.status}</span>
+                      {task.created_at && task.finished_at && (
+                        <span
+                          className="mb-gen-task-elapsed"
+                          title="提交→完成 总耗时"
+                        >
+                          {formatElapsed(
+                            new Date(task.finished_at).getTime() -
+                              new Date(task.created_at).getTime()
+                          )}
+                        </span>
+                      )}
                     </div>
                     <div
                       className="mb-gen-task-prompt-full"
@@ -756,35 +994,17 @@ function GeneratorForm(): JSX.Element {
         onClose={() => setPreviewSrc(null)}
       />
 
-      <RefEditor
-        open={editingRefIdx !== null}
-        srcDataUri={
-          editingRefIdx !== null
-            ? params.refs[editingRefIdx]?.dataUri ?? ''
-            : ''
-        }
-        onClose={() => setEditingRefIdx(null)}
-        onSave={async (newUri) => {
-          if (editingRefIdx === null) return;
-          const cur = params.refs[editingRefIdx];
-          if (!cur) {
-            setEditingRefIdx(null);
-            return;
+      <ImportTargetDialog
+        open={importDialog.open}
+        source={importDialog.source}
+        onClose={() => setImportDialog({ open: false, source: null, src: null })}
+        onChoose={(mode) => {
+          if (importDialog.src) {
+            importImageToCanvas(importDialog.src, mode);
+            toast.success('已导入到画板', '正在跳转 …');
+            navigate('/canvas');
           }
-          // 保存涂鸦后的图片到 refs 同一索引；W×H 重新探测
-          const dim = await probeImageSize(newUri);
-          const next = [...params.refs];
-          next[editingRefIdx] = {
-            ...cur,
-            dataUri: newUri,
-            width: dim.w,
-            height: dim.h
-          };
-          // store 没有"按 idx 替换"动作，clear + 重新加；保留其它索引顺序
-          params.clearRefs();
-          params.addRefs(next);
-          setEditingRefIdx(null);
-          toast.success('已保存编辑后的参考图');
+          setImportDialog({ open: false, source: null, src: null });
         }}
       />
     </div>
@@ -820,7 +1040,7 @@ function CustomSizePresets({
    */
   function autoLabel(): string {
     const ratio = gcdAspect(w, h); // e.g. "16:9", "1:1"
-    let base = ratio.length <= 6 ? ratio : `${w}`.slice(0, 6);
+    const base = ratio.length <= 6 ? ratio : `${w}`.slice(0, 6);
     let candidate = base;
     let n = 2;
     while (merged.some((p) => p.label === candidate)) {
@@ -1071,36 +1291,32 @@ function SizeCalculator({
             </button>
           </div>
 
-          {/* 比例（W:H）一行：左 W 右 H */}
-          <div className="mb-size-calc-pair">
-            <div className="mb-size-calc-cell">
-              <span className="mb-size-calc-label">比例 W</span>
-              <input
-                type="number"
-                className="mb-input mb-size-calc-input"
-                value={ratioW}
-                onChange={(e) => setRatioW(e.target.value)}
-                min={1}
-                placeholder="W"
-              />
-            </div>
-            <div className="mb-size-calc-cell">
-              <span className="mb-size-calc-label">比例 H</span>
-              <input
-                type="number"
-                className="mb-input mb-size-calc-input"
-                value={ratioH}
-                onChange={(e) => setRatioH(e.target.value)}
-                min={1}
-                placeholder="H"
-              />
-            </div>
-          </div>
-
           {mode === 'aspect-budget' ? (
             <>
-              {/* 比较符 + 总像素值，左右排 */}
-              <div className="mb-size-calc-pair">
+              {/* 第 1 行（3 列）：比例 W · 比例 H · 关系 */}
+              <div className="mb-size-calc-triple">
+                <div className="mb-size-calc-cell">
+                  <span className="mb-size-calc-label">W</span>
+                  <input
+                    type="number"
+                    className="mb-input mb-size-calc-input"
+                    value={ratioW}
+                    onChange={(e) => setRatioW(e.target.value)}
+                    min={1}
+                    placeholder="W"
+                  />
+                </div>
+                <div className="mb-size-calc-cell">
+                  <span className="mb-size-calc-label">H</span>
+                  <input
+                    type="number"
+                    className="mb-input mb-size-calc-input"
+                    value={ratioH}
+                    onChange={(e) => setRatioH(e.target.value)}
+                    min={1}
+                    placeholder="H"
+                  />
+                </div>
                 <div className="mb-size-calc-cell">
                   <span className="mb-size-calc-label">关系</span>
                   <select
@@ -1108,14 +1324,17 @@ function SizeCalculator({
                     value={cmp}
                     onChange={(e) => setCmp(e.target.value as Cmp)}
                   >
-                    <option value="lt">小于 &lt;</option>
-                    <option value="gt">大于 &gt;</option>
-                    <option value="approx">约等于 ≈</option>
-                    <option value="eq">强制等于 =</option>
+                    <option value="lt">&lt;</option>
+                    <option value="gt">&gt;</option>
+                    <option value="approx">≈</option>
+                    <option value="eq">=</option>
                   </select>
                 </div>
+              </div>
+              {/* 第 2 行（3 列）：总像素 · 快速填值 · 对齐 ×16 */}
+              <div className="mb-size-calc-triple">
                 <div className="mb-size-calc-cell">
-                  <span className="mb-size-calc-label">总像素</span>
+                  <span className="mb-size-calc-label">像素</span>
                   <input
                     type="number"
                     className="mb-input mb-size-calc-input"
@@ -1125,11 +1344,8 @@ function SizeCalculator({
                     placeholder="像素"
                   />
                 </div>
-              </div>
-              {/* 预设 + snap16 一行 */}
-              <div className="mb-size-calc-pair">
                 <div className="mb-size-calc-cell">
-                  <span className="mb-size-calc-label">快速填值</span>
+                  <span className="mb-size-calc-label">预设</span>
                   <select
                     className="mb-select mb-size-calc-input"
                     value=""
@@ -1137,7 +1353,7 @@ function SizeCalculator({
                       if (e.target.value) setBudget(e.target.value);
                     }}
                   >
-                    <option value="">预设…</option>
+                    <option value="">…</option>
                     {PIXEL_PRESETS.map((p) => (
                       <option key={p.value} value={p.value}>
                         {p.label}
@@ -1154,13 +1370,36 @@ function SizeCalculator({
                     checked={snap16}
                     onChange={(e) => setSnap16(e.target.checked)}
                   />
-                  <span>对齐 ×16</span>
+                  <span>×16</span>
                 </label>
               </div>
             </>
           ) : (
             <>
-              <div className="mb-size-calc-pair">
+              {/* 第 1 行（3 列）：比例 W · 比例 H · 已知边 */}
+              <div className="mb-size-calc-triple">
+                <div className="mb-size-calc-cell">
+                  <span className="mb-size-calc-label">W</span>
+                  <input
+                    type="number"
+                    className="mb-input mb-size-calc-input"
+                    value={ratioW}
+                    onChange={(e) => setRatioW(e.target.value)}
+                    min={1}
+                    placeholder="W"
+                  />
+                </div>
+                <div className="mb-size-calc-cell">
+                  <span className="mb-size-calc-label">H</span>
+                  <input
+                    type="number"
+                    className="mb-input mb-size-calc-input"
+                    value={ratioH}
+                    onChange={(e) => setRatioH(e.target.value)}
+                    min={1}
+                    placeholder="H"
+                  />
+                </div>
                 <div className="mb-size-calc-cell">
                   <span className="mb-size-calc-label">已知</span>
                   <select
@@ -1168,10 +1407,13 @@ function SizeCalculator({
                     value={base}
                     onChange={(e) => setBase(e.target.value as 'w' | 'h')}
                   >
-                    <option value="w">宽 W</option>
-                    <option value="h">高 H</option>
+                    <option value="w">宽</option>
+                    <option value="h">高</option>
                   </select>
                 </div>
+              </div>
+              {/* 第 2 行（3 列）：像素值 · 占位 · 对齐 ×16 */}
+              <div className="mb-size-calc-triple">
                 <div className="mb-size-calc-cell">
                   <span className="mb-size-calc-label">像素</span>
                   <input
@@ -1183,18 +1425,19 @@ function SizeCalculator({
                     placeholder="像素"
                   />
                 </div>
+                <span />
+                <label
+                  className="mb-size-calc-snap"
+                  title="勾上则结果对齐到 16 的倍数（多数模型要求）"
+                >
+                  <input
+                    type="checkbox"
+                    checked={snap16}
+                    onChange={(e) => setSnap16(e.target.checked)}
+                  />
+                  <span>×16</span>
+                </label>
               </div>
-              <label
-                className="mb-size-calc-snap"
-                title="勾上则结果对齐到 16 的倍数（多数模型要求）"
-              >
-                <input
-                  type="checkbox"
-                  checked={snap16}
-                  onChange={(e) => setSnap16(e.target.checked)}
-                />
-                <span>对齐到 ×16（多数模型要求）</span>
-              </label>
             </>
           )}
 

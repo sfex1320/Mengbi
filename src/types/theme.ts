@@ -3,23 +3,29 @@
  */
 
 export const ATMOSPHERES = [
+  'none',
   'deep-quiet',
   'misty-fog',
   'warm-stone',
   'deep-city',
   'flowing-light',
   'dream-galaxy',
-  'wave-layer'
+  'wave-layer',
+  'warm-jade',
+  'glass'
 ] as const;
 
 export const ATMOSPHERE_LABELS: Record<Atmosphere, string> = {
+  none: '无（关闭动效）',
   'deep-quiet': '沉稳质感',
   'misty-fog': '朦胧雾感',
   'warm-stone': '暖石金属',
   'deep-city': '固定深城',
   'flowing-light': '渐隐流光',
   'dream-galaxy': '幻梦星空',
-  'wave-layer': '浪绪图层'
+  'wave-layer': '浪绪图层',
+  'warm-jade': '暖白玉',
+  glass: '光影玻璃'
 };
 
 export type Atmosphere = (typeof ATMOSPHERES)[number];

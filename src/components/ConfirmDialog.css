@@ -5,6 +5,7 @@
   background: rgba(8, 8, 12, 0.55);
   backdrop-filter: blur(6px) saturate(140%);
   -webkit-backdrop-filter: blur(6px) saturate(140%);
+  will-change: backdrop-filter; /* GPU 提示：弹出/切主题时 blur 重算更顺 */
   display: flex;
   align-items: center;
   justify-content: center;

@@ -7,28 +7,168 @@
 
 .mb-chat-header {
   display: flex;
-  gap: 8px;
-  padding: 12px 14px;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px;
   border-bottom: 1px solid var(--mb-border-soft);
   flex-shrink: 0;
+  min-width: 0;
 }
 
 .mb-chat-conv-select,
 .mb-chat-model-select {
-  flex: 1;
-  background: var(--mb-bg-hover);
-  border: 1px solid var(--mb-border);
-  color: var(--mb-text-primary);
-  border-radius: 10px;
-  padding: 7px 10px;
-  font-size: 13px;
-  outline: none;
-  transition: border-color var(--mb-duration-fast) var(--mb-ease);
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 50%;
 }
 
-.mb-chat-conv-select:hover,
-.mb-chat-model-select:hover {
+.mb-chat-conv-select:hover {
   border-color: var(--mb-border-strong);
+}
+
+/* 模型下拉项的"模型名 + 能力 tag"布局 */
+.mb-chat-model-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  width: 100%;
+}
+.mb-chat-model-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mb-chat-model-tags {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.mb-chat-model-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-size: 10px;
+  line-height: 1.4;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.mb-chat-model-tag.is-web {
+  color: #93c5fd;
+  background: rgba(147, 197, 253, 0.13);
+  border: 1px solid rgba(147, 197, 253, 0.28);
+}
+.mb-chat-model-tag.is-vision {
+  color: #c4b5fd;
+  background: rgba(196, 181, 253, 0.13);
+  border: 1px solid rgba(196, 181, 253, 0.28);
+}
+.mb-chat-model-tag.is-thinking {
+  color: #fda4af;
+  background: rgba(253, 164, 175, 0.13);
+  border: 1px solid rgba(253, 164, 175, 0.28);
+}
+.mb-chat-model-tag.is-default {
+  color: var(--mb-text-muted);
+  background: var(--mb-bg-hover);
+  border: 1px solid var(--mb-border);
+}
+/* 浅主题：能力 tag 的浅彩字在浅底对比不足，换深一档（背景/描边的低透明彩色仍可用） */
+[data-atmosphere='warm-jade'] .mb-chat-model-tag.is-web {
+  color: #1d4ed8;
+  border-color: rgba(29, 78, 216, 0.32);
+}
+[data-atmosphere='warm-jade'] .mb-chat-model-tag.is-vision {
+  color: #6d28d9;
+  border-color: rgba(109, 40, 217, 0.32);
+}
+[data-atmosphere='warm-jade'] .mb-chat-model-tag.is-thinking {
+  color: #be123c;
+  border-color: rgba(190, 18, 60, 0.32);
+}
+
+.mb-chat-icon-btn {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  border: 1px solid var(--mb-border);
+  background: var(--mb-bg-hover);
+  color: var(--mb-text-primary);
+  cursor: pointer;
+  transition: all var(--mb-duration-fast) var(--mb-ease);
+}
+
+.mb-chat-icon-btn:hover {
+  border-color: var(--mb-border-strong);
+  background: var(--mb-bg-elev);
+}
+
+.mb-chat-icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.mb-chat-more {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.mb-chat-more-dots {
+  font-size: 18px;
+  line-height: 1;
+  letter-spacing: 1px;
+  margin-top: -3px;
+}
+
+.mb-chat-more-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 30;
+  min-width: 168px;
+  padding: 6px;
+  background: var(--mb-bg-elev);
+  border: 1px solid var(--mb-border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mb-chat-more-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  color: var(--mb-text-primary);
+  font-size: 13px;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.mb-chat-more-item:hover:not(:disabled) {
+  background: var(--mb-bg-hover);
+}
+
+.mb-chat-more-item:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.mb-chat-more-item.is-danger {
+  color: var(--mb-danger, #ef4444);
 }
 
 .mb-chat-messages {
@@ -244,16 +384,69 @@
   font-size: 11px;
 }
 
+/* 思考过程折叠区 —— 仅 assistant 气泡里、且 reasoning_content 非空时渲染 */
+.mb-chat-reasoning {
+  margin: 4px 0 8px;
+  border: 1px solid var(--mb-border-soft);
+  background: var(--mb-bg-hover);
+  border-radius: 10px;
+  font-size: 12.5px;
+  color: var(--mb-text-secondary);
+}
+.mb-chat-reasoning-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  color: var(--mb-text-secondary);
+  text-align: left;
+  transition: background var(--mb-duration-fast) var(--mb-ease);
+}
+.mb-chat-reasoning-toggle:hover {
+  background: var(--mb-bg-card);
+}
+.mb-chat-reasoning-live {
+  color: var(--mb-accent);
+  font-size: 11px;
+}
+.mb-chat-reasoning-caret {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--mb-text-muted);
+}
+.mb-chat-reasoning-body {
+  padding: 4px 10px 10px;
+  white-space: pre-wrap;
+  line-height: 1.55;
+  color: var(--mb-text-muted);
+  font-family: var(--mb-font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  border-top: 1px dashed var(--mb-border-soft);
+  max-height: 320px;
+  overflow-y: auto;
+}
+
 .mb-chat-composer {
   padding: 12px 14px;
   border-top: 1px solid var(--mb-border-soft);
   flex-shrink: 0;
   position: relative;
+  /* 跟随面板底部圆角，避免拖入高亮环在左下/右下角被裁出缺口 */
+  border-bottom-left-radius: var(--mb-radius-card);
+  border-bottom-right-radius: var(--mb-radius-card);
   transition: background 200ms var(--mb-ease);
 }
 .mb-chat-composer.is-dragover {
   background: var(--mb-accent-soft);
+  /* 内描边环：圆角跟随上面的 border-radius，整圈与模块完美贴合 */
   box-shadow: inset 0 0 0 2px var(--mb-accent);
+  border-bottom-left-radius: var(--mb-radius-card);
+  border-bottom-right-radius: var(--mb-radius-card);
 }
 
 .mb-chat-attach-row {
@@ -261,11 +454,8 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  padding: 6px;
-  margin-bottom: 8px;
-  border: 1px dashed var(--mb-border);
-  border-radius: 10px;
-  background: var(--mb-bg-hover);
+  padding: 4px 2px;
+  margin-bottom: 6px;
 }
 
 .mb-chat-attach-thumb {
@@ -276,7 +466,11 @@
   overflow: hidden;
   border: 1px solid var(--mb-border);
   background: var(--mb-bg-active);
-  cursor: context-menu;
+  cursor: zoom-in;
+  transition: transform 120ms var(--mb-ease-default);
+}
+.mb-chat-attach-thumb:hover {
+  transform: scale(1.04);
 }
 .mb-chat-attach-thumb img {
   width: 100%;
@@ -306,6 +500,26 @@
   color: #fff;
 }
 
+.mb-chat-attach-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 56px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1.5px dashed var(--mb-border);
+  background: transparent;
+  color: var(--mb-text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all var(--mb-duration-fast) var(--mb-ease);
+}
+.mb-chat-attach-add:hover {
+  border-color: var(--mb-accent);
+  color: var(--mb-accent);
+  background: var(--mb-accent-soft);
+}
+
 .mb-chat-attach-hint {
   font-size: 11px;
   color: var(--mb-text-muted);
@@ -325,19 +539,10 @@
   margin-top: 8px;
 }
 
-.mb-chat-tip {
-  font-size: 12px;
-  color: var(--mb-text-muted);
-}
-
-/* 模式切换：对话 / 生图 */
-.mb-chat-mode-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
-  gap: 8px;
-  flex-wrap: wrap;
+/* 发送 / 开始生图 按钮统一尺寸,贴在右侧 */
+.mb-chat-send-btn {
+  min-width: 96px;
+  justify-content: center;
 }
 
 .mb-chat-optimize-group {
@@ -422,6 +627,27 @@
   box-shadow: var(--mb-accent-glow);
 }
 
+/* 输入框右下角一键清空：4 字纯文字按钮一行排开 */
+.mb-chat-quick-clear {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 4px;
+}
+.mb-chat-quick-clear-btn {
+  padding: 4px 10px;
+  background: transparent;
+  border: none;
+  font-size: 12px;
+  line-height: 1.2;
+  color: var(--mb-text-muted);
+  cursor: pointer;
+  transition: color var(--mb-duration-fast) var(--mb-ease);
+}
+.mb-chat-quick-clear-btn:hover {
+  color: var(--mb-accent);
+}
+
 /* AI 优化开关（只在生图模式显示） */
 .mb-chat-optimize {
   display: inline-flex;
@@ -455,4 +681,59 @@
 .mb-chat-optimize.is-on .mb-chat-optimize-dot {
   background: var(--mb-accent);
   box-shadow: 0 0 6px var(--mb-accent);
+}
+
+/* ─── 代搜参考来源卡片 ─────────────────────── */
+.mb-chat-sources {
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.mb-chat-sources-toggle {
+  background: transparent;
+  border: 1px solid var(--mb-border-soft);
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--mb-text-secondary);
+  cursor: pointer;
+}
+
+.mb-chat-sources-toggle:hover {
+  border-color: var(--mb-accent);
+  color: var(--mb-text-primary);
+}
+
+.mb-chat-sources-list {
+  margin: 8px 0 0;
+  padding: 0 0 0 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mb-chat-sources-item {
+  list-style: decimal;
+}
+
+.mb-chat-sources-title {
+  color: var(--mb-accent);
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.mb-chat-sources-title:hover {
+  text-decoration: underline;
+}
+
+.mb-chat-sources-host {
+  color: var(--mb-text-muted);
+  font-size: 10.5px;
+}
+
+.mb-chat-sources-snippet {
+  color: var(--mb-text-secondary);
+  font-size: 11.5px;
+  margin-top: 2px;
+  line-height: 1.5;
 }

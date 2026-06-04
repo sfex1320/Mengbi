@@ -139,7 +139,7 @@ function slugifyDesc(s: string): string {
     s
       .slice(0, 60)
       .replace(/[\\/:*?"<>|]+/g, '')
-      .replace(/[\s　\-_]+/g, '-')
+      .replace(/[\s\-_]+/g, '-')
       .replace(/^-+|-+$/g, '')
       .slice(0, 40) || 'untitled'
   );
@@ -183,9 +183,18 @@ function buildToken(part: FilenamePartConfig, ctx: FilenameContext): string {
     case 'datetime':
       return formatDateTime(d, part.format);
     case 'resolution':
+      // 探测失败时（w 或 h 为 0）整个 token 返空，让 applyFilenameTemplate 的
+      // .filter(s => s.length > 0) 把它从文件名里丢掉，避免出现「--0x0--」废段
+      if (!ctx.width || !ctx.height) return '';
       return `${ctx.width}x${ctx.height}`;
-    case 'aspect':
-      return ctx.aspect ?? `${ctx.width}:${ctx.height}`;
+    case 'aspect': {
+      // 冒号在 Windows 上是 NTFS 备用数据流（ADS）的分隔符——直接进文件名会
+      // 让 Explorer 只看到冒号前的部分，PNG 字节流被塞进不可见的 ADS 流。
+      // 统一替换成 'x'：3:2 → [3x2]，16:9 → [16x9]。外面再加方括号，
+      // 让比例段在文件名里更醒目，方便和分辨率（2048x1152）肉眼区分。
+      const raw = ctx.aspect ?? `${ctx.width}:${ctx.height}`;
+      return `[${raw.replace(/[\\/:*?"<>|]+/g, 'x')}]`;
+    }
     case 'desc':
       return slugifyDesc(ctx.prompt ?? '');
     case 'model':

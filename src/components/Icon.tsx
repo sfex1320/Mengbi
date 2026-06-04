@@ -35,7 +35,7 @@ export const SparkleIcon = (p: IconProps) => (
   </Base>
 );
 
-// 提示词管家：带书签的笔记本 + 三行文字（一眼看出"提示词卡片库 / 收藏"）
+// 图库：带书签的笔记本 + 三行文字（一眼看出"提示词卡片库 / 收藏"）
 export const GalleryIcon = (p: IconProps) => (
   <Base {...p}>
     {/* 笔记本外框（左侧装订） */}
@@ -282,3 +282,24 @@ export const WrenchIcon = (p: IconProps) => (
   </Base>
 );
 
+
+// ComfyUI 工作流编排器：两个节点 + 连线（节点图意象）
+export const WorkflowIcon = (p: IconProps) => (
+  <Base {...p}>
+    <rect x="3" y="4" width="7" height="5" rx="1.2" />
+    <rect x="14" y="15" width="7" height="5" rx="1.2" />
+    <path d="M6.5 9v3.5a2 2 0 0 0 2 2H14" />
+    <circle cx="6.5" cy="17" r="1" />
+  </Base>
+);
+
+// 智能画布（AI 工作流）：一个输入节点扇出到两个节点（节点图 / 工作流）
+export const SmartCanvasIcon = (p: IconProps) => (
+  <Base {...p}>
+    <rect x="2.5" y="9" width="6" height="6" rx="1.5" />
+    <rect x="15.5" y="3" width="6" height="6" rx="1.5" />
+    <rect x="15.5" y="15" width="6" height="6" rx="1.5" />
+    <path d="M8.5 11.5h3.5a2 2 0 0 0 2-2V6.2" />
+    <path d="M8.5 12.5h3.5a2 2 0 0 1 2 2v3.3" />
+  </Base>
+);

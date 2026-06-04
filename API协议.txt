@@ -1,0 +1,5 @@
+OpenAI Compatible (Chat Completions) —— OpenAI兼容聊天协议
+Anthropic Messages API —— Claude对话协议
+Gemini API —— Google Gemini多模态协议
+Image Generation API —— 图像生成协议
+Video Generation API —— 视频生成协议

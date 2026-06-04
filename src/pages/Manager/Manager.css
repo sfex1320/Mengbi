@@ -1,10 +1,14 @@
 .mb-manager-root {
   height: 100%;
   display: grid;
-  grid-template-columns: 240px 1fr;
+  grid-template-columns: 260px 1fr;
   gap: 18px;
   padding: 18px;
   min-height: 0;
+  /* 自成合成层：隔离背后流星/光晕动画的重绘，缓解全屏时图库背景（尤其左下角）闪烁。
+     彻底关闭可在「设置外观」选「无」氛围。 */
+  isolation: isolate;
+  transform: translateZ(0);
 }
 
 .mb-manager-sidebar {
@@ -12,6 +16,8 @@
   display: flex;
   flex-direction: column;
   gap: 16px;
+  overflow-y: auto;
+  /* 侧栏自身可滚——批量工具条多按钮时不会挤掉上方分类 */
 }
 
 .mb-manager-sidebar-head h2 {
@@ -89,12 +95,12 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 14px;
+  padding: 9px 12px;
   border-radius: 12px;
   background: var(--mb-bg-hover);
   border: 1px solid var(--mb-border);
-  flex: 1;
-  max-width: 360px;
+  /* 侧栏内自适应宽度——不再 flex:1 / max-width 那一套 header 布局 */
+  width: 100%;
   color: var(--mb-text-muted);
   transition: all var(--mb-duration-fast) var(--mb-ease);
 }
@@ -143,8 +149,9 @@
 
 .mb-manager-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 14px;
+  /* 自适应：每张卡片最小 184px（较上一版缩小约 20%），按容器宽度自动决定列数 */
+  grid-template-columns: repeat(auto-fill, minmax(184px, 1fr));
+  gap: 12px;
 }
 
 .mb-prompt-card {
@@ -479,28 +486,56 @@
   letter-spacing: 0.02em;
 }
 
-/* 批量操作工具条 */
+/* 侧栏底部「搜索 + 共 N 条 + 批量工具条」共用容器 */
+.mb-manager-side-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--mb-border-soft);
+}
+
+/* 批量操作工具条（已从右侧 header 搬到侧栏）：按钮纵向铺满 */
 .mb-gallery-toolbar {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 0 10px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
 }
 .mb-gallery-toolbar-count {
   font-size: 12px;
   color: var(--mb-text-secondary);
-  margin-right: 4px;
+  padding: 2px 0;
 }
 .mb-gallery-toolbar-count strong {
   color: var(--mb-accent);
   font-family: var(--mb-font-mono);
 }
+.mb-gallery-toolbar-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--mb-text-secondary);
+  cursor: pointer;
+  user-select: none;
+  padding: 4px 0;
+}
+.mb-gallery-toolbar-checkbox input {
+  margin: 0;
+  cursor: pointer;
+}
+.mb-gallery-toolbar-btn {
+  width: 100%;
+  justify-content: center;
+}
 
 .mb-gallery-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 14px;
+  /* 自适应：每张卡片最小 176px（较上一版缩小约 20%），按容器宽度自动决定列数 */
+  grid-template-columns: repeat(auto-fill, minmax(176px, 1fr));
+  gap: 12px;
   padding: 4px 2px 12px;
 }
 
@@ -700,4 +735,161 @@
 }
 .mb-tag-editor-input::placeholder {
   color: var(--mb-text-muted);
+}
+
+/* ═══ 批 7：图库/提示词卡片闪烁修复 ═══
+ * 根因：.mb-card 自带 backdrop-filter: blur(28px)，密集卡片叠在动画背景（流星/光晕）之上时，
+ * 每帧都要重采样模糊背景；全屏放大后可见卡片更多 → GPU 合成过载 → 疯狂闪烁 + 排版错乱。
+ * 修复：图库/提示词这类"成片密集"卡片改用不透明底色 + 关闭 backdrop-filter，并稳定合成层。
+ * 高特异度选择器（祖先 + 自身）确保覆盖 global.css 的 .mb-card。 */
+.mb-gallery-grid .mb-gallery-card,
+.mb-manager-grid .mb-prompt-card {
+  background: var(--mb-bg-card-solid) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+.mb-gallery-grid .mb-gallery-card:hover,
+.mb-manager-grid .mb-prompt-card:hover {
+  background: var(--mb-bg-card-solid) !important;
+}
+
+/* ── 相册（图库侧栏） ─────────────────────────── */
+.mb-manager-albums {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 6px;
+}
+.mb-manager-albums .mb-manager-cat-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-right: 6px;
+}
+.mb-manager-album-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 8px;
+  color: var(--mb-text-secondary);
+  transition: color var(--mb-duration-fast) var(--mb-ease),
+    background var(--mb-duration-fast) var(--mb-ease);
+}
+.mb-manager-album-add:hover {
+  color: var(--mb-text-on-accent);
+  background: var(--mb-accent-gradient);
+}
+.mb-manager-album-empty {
+  font-size: 12px;
+  color: var(--mb-text-muted);
+  padding: 6px 12px;
+  line-height: 1.5;
+}
+
+/* ── 相册新建 / 编辑弹窗 ─────────────────────── */
+.mb-album-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.mb-album-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mb-album-field > span {
+  font-size: 13px;
+  color: var(--mb-text-secondary);
+}
+.mb-album-type {
+  display: flex;
+  gap: 10px;
+}
+.mb-album-type-btn {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 12px 14px;
+  text-align: left;
+  border-radius: var(--mb-radius-input);
+  border: 1px solid var(--mb-border);
+  color: var(--mb-text-secondary);
+  transition: all var(--mb-duration-fast) var(--mb-ease);
+}
+.mb-album-type-btn em {
+  font-style: normal;
+  font-size: 12px;
+  color: var(--mb-text-muted);
+}
+.mb-album-type-btn:hover {
+  border-color: var(--mb-accent);
+  color: var(--mb-text-primary);
+}
+.mb-album-type-btn.is-active {
+  border-color: transparent;
+  background: var(--mb-accent-gradient);
+  color: var(--mb-text-on-accent);
+  box-shadow: var(--mb-accent-glow);
+}
+.mb-album-type-btn.is-active em {
+  color: var(--mb-text-on-accent);
+  opacity: 0.85;
+}
+.mb-album-rules {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px;
+  border-radius: var(--mb-radius-input);
+  background: var(--mb-bg-elevated, rgba(255, 255, 255, 0.03));
+  border: 1px solid var(--mb-border);
+}
+.mb-album-rules-hint {
+  font-size: 12px;
+  color: var(--mb-text-muted);
+  line-height: 1.5;
+}
+.mb-album-models {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 132px;
+  overflow: auto;
+}
+.mb-album-models-empty {
+  font-size: 12px;
+  color: var(--mb-text-muted);
+}
+.mb-album-chip {
+  padding: 5px 10px;
+  font-size: 12px;
+  border-radius: 999px;
+  border: 1px solid var(--mb-border);
+  color: var(--mb-text-secondary);
+  transition: all var(--mb-duration-fast) var(--mb-ease);
+}
+.mb-album-chip:hover {
+  border-color: var(--mb-accent);
+  color: var(--mb-text-primary);
+}
+.mb-album-chip.is-active {
+  border-color: transparent;
+  background: var(--mb-accent-gradient);
+  color: var(--mb-text-on-accent);
+}
+.mb-album-dates {
+  display: flex;
+  gap: 12px;
+}
+.mb-album-dates .mb-album-field {
+  flex: 1;
+}
+.mb-album-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 4px;
 }

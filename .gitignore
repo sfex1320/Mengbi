@@ -13,3 +13,16 @@ release
 *.sqlite
 *.sqlite-journal
 images-dev/
+
+# electron-builder 输出目录（安装包 / 便携 exe / win-unpacked / *.zip，体积巨大，绝不入库）
+app/
+
+# HYPIR 便携包的运行期产物（非源码，运行时生成）
+resources/hypir-portable/**/__pycache__/
+resources/hypir-portable/logs/
+resources/hypir-portable/input/
+resources/hypir-portable/output/
+
+# 本地草稿 / 工作笔记（按需手动取消忽略再单独提交）
+playground.js
+memory/

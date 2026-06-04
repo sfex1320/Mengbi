@@ -17,6 +17,17 @@
   z-index: 5;
   position: relative;
 }
+/* 浅主题：侧栏底色翻浅（写死的深色渐变在浅主题下会是一条深色竖条） */
+[data-atmosphere='warm-jade'] .mb-sidebar {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.7) 0%,
+    rgba(248, 244, 236, 0.78) 100%
+  );
+}
+[data-atmosphere='warm-jade'] .mb-sidebar::before {
+  background: linear-gradient(90deg, transparent, rgba(74, 60, 36, 0.16), transparent);
+}
 
 /* 顶部装饰高光 */
 .mb-sidebar::before {
@@ -34,135 +45,25 @@
   );
 }
 
-.mb-sidebar-avatar {
-  position: relative;
-  width: 46px;
-  height: 46px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  padding: 0;
-  cursor: pointer;
+/* 顶部品牌 logo —— 无边框无底色，纯透明 PNG 直贴 */
+.mb-sidebar-brand {
+  width: 56px;
+  height: 56px;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
   -webkit-app-region: no-drag;
-  overflow: hidden;
-  transition:
-    transform var(--mb-duration-fast) var(--mb-ease-snap),
-    border-color var(--mb-duration-fast) var(--mb-ease);
-}
-.mb-sidebar-avatar:hover {
-  border-color: var(--mb-accent);
-  transform: scale(1.05);
+  user-select: none;
 }
 
-.mb-sidebar-avatar-img {
+.mb-sidebar-brand-img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
-  position: relative;
-  z-index: 1;
-}
-
-/* 头像选择浮窗 — portal 到 body，使用 fixed 定位避免被 stacking context 困住 */
-.mb-avatar-picker {
-  position: fixed;
-  z-index: 11000;
-  width: 260px;
-  padding: 12px;
-  background: rgba(28, 28, 36, 0.96);
-  backdrop-filter: blur(24px) saturate(160%);
-  -webkit-backdrop-filter: blur(24px) saturate(160%);
-  border: 1px solid var(--mb-border);
-  border-radius: 16px;
-  box-shadow: var(--mb-shadow-card-lg);
-}
-
-.mb-avatar-picker-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 6px;
-}
-
-.mb-avatar-cell {
-  position: relative;
-  aspect-ratio: 1 / 1;
-  border-radius: 50%;
-  overflow: hidden;
-  border: 2px solid transparent;
-  background: var(--mb-bg-hover);
-  padding: 0;
-  cursor: pointer;
-  transition: border-color var(--mb-duration-fast) var(--mb-ease);
-}
-.mb-avatar-cell img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
+  object-fit: contain;
   display: block;
-}
-.mb-avatar-cell:hover {
-  border-color: var(--mb-border-strong);
-}
-.mb-avatar-cell.is-active {
-  border-color: var(--mb-accent);
-  box-shadow: var(--mb-accent-glow);
-}
-.mb-avatar-cell-check {
-  position: absolute;
-  bottom: 2px;
-  right: 2px;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: var(--mb-accent);
-  color: var(--mb-text-on-accent);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.mb-avatar-upload-btn {
-  margin-top: 10px;
-  width: 100%;
-  padding: 7px 0;
-  border-radius: var(--mb-radius-pill);
-  background: var(--mb-accent-gradient);
-  color: var(--mb-text-on-accent);
-  font-size: 12px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  cursor: pointer;
-  border: 0;
-  font-weight: 500;
-  transition: filter var(--mb-duration-fast) var(--mb-ease);
-}
-.mb-avatar-upload-btn:hover {
-  filter: brightness(1.08);
-}
-
-.mb-sidebar-avatar-glow {
-  position: absolute;
-  inset: -6px;
-  border-radius: 50%;
-  background: var(--mb-accent-gradient);
-  filter: blur(18px);
-  opacity: 0.5;
-  z-index: -1;
-  animation: mb-sidebar-pulse 4s ease-in-out infinite;
-}
-
-@keyframes mb-sidebar-pulse {
-  0%, 100% { opacity: 0.4; }
-  50%      { opacity: 0.7; }
-}
-
-.mb-sidebar-avatar > span {
-  position: relative;
+  /* 透明 PNG 不上滤镜，避免破坏原图颜色；保留极轻的悬浮投影 */
+  filter: drop-shadow(0 2px 8px rgba(255, 180, 90, 0.18));
 }
 
 .mb-sidebar-divider {
@@ -219,6 +120,16 @@
 .mb-sidebar-item:hover .mb-sidebar-item-inner {
   background: rgba(255, 255, 255, 0.07);
   border-color: rgba(255, 255, 255, 0.12);
+}
+
+/* 浅主题：导航项底/悬停用暖墨低透明（白色叠层在浅侧栏上看不见） */
+[data-atmosphere='warm-jade'] .mb-sidebar-item-inner {
+  background: rgba(74, 60, 36, 0.05);
+  border-color: rgba(74, 60, 36, 0.1);
+}
+[data-atmosphere='warm-jade'] .mb-sidebar-item:hover .mb-sidebar-item-inner {
+  background: rgba(74, 60, 36, 0.1);
+  border-color: rgba(74, 60, 36, 0.18);
 }
 
 .mb-sidebar-item.is-active .mb-sidebar-item-inner {

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from '@/store/toastStore';
+import { useSmartInboxStore } from '@/store/smartInboxStore';
 import { openContextMenu, type ContextMenuEntry } from '@/components/ContextMenu';
 import {
   CopyIconShape,
@@ -44,7 +45,7 @@ export function ResultActions({
   const [savedPath, setSavedPath] = useState<string | null>(null);
   const navigate = useNavigate();
 
-  async function sendToOtherTool(target: 'upscale' | 'hypir' | 'supir'): Promise<void> {
+  async function sendToOtherTool(target: 'upscale' | 'hypir'): Promise<void> {
     try {
       const { useToolsStore } = await import('@/store/toolsStore');
       useToolsStore.setState({ pendingImport: dataUri, activeTab: target });
@@ -77,6 +78,15 @@ export function ResultActions({
         onClick: () => void importToGallery(dataUri, kind, sourceModel, params)
       },
       {
+        label: '发送到智能画布',
+        icon: <PlusIcon size={13} />,
+        onClick: () => {
+          useSmartInboxStore.getState().push([{ src: dataUri, name: defaultName }]);
+          navigate('/smart-canvas');
+          toast.success('已发送到智能画布');
+        }
+      },
+      {
         label: '保存到工具箱目录',
         icon: <PlusIcon size={13} />,
         onClick: () => {
@@ -97,11 +107,8 @@ export function ResultActions({
           {
             label: '送 HYPIR 做 AI 修复',
             onClick: () => void sendToOtherTool('hypir')
-          },
-          {
-            label: '送 SUPIR 做 AI 修复',
-            onClick: () => void sendToOtherTool('supir')
           }
+          // "SUPIR" 选项已于 2026-05-29 砍除(显存需求过大)
           // "矢量化"菜单项已随矢量化功能整体移除，待重做
         ]
       }

@@ -19,7 +19,6 @@ import { ImportPanel } from '@/components/ImportPanel';
 import { ResultActions, ResultActionsBar } from '@/components/ResultActions';
 import { Collapsible } from '@/components/Collapsible';
 import { CustomSelect } from '@/components/CustomSelect';
-import { ImageCompareViewer } from '@/components/ImageCompareViewer';
 import { useToolsEngineStore } from '@/store/toolsEngineStore';
 import { toast } from '@/store/toastStore';
 import { confirmDialog } from '@/components/ConfirmDialog';
@@ -38,13 +37,17 @@ import {
   getMode,
   resolveModelForMode,
   recommendModeFromImageType,
+  candidatesForMode,
   DETAIL_LEVELS,
   DENOISE_LEVELS,
   FORMATS as MODE_FORMATS,
+  COMMUNITY_REFERENCE,
   type UpscaleModeId,
   type DetailLevel,
   type DenoiseLevel,
-  type BackendCapabilities
+  type BackendCapabilities,
+  type UpscaleBackend,
+  type ModelCandidate
 } from '@/lib/upscaleModes';
 import { getUpscaleModelMeta, groupModelsByCategory } from '@/lib/upscaleModelMeta';
 import {
@@ -61,7 +64,8 @@ import type {
   UpscaleFormat,
   UpscaleProgressPayload,
   UpscaleInstallProgressPayload,
-  UpscalePytorchDownloadProgressPayload
+  OnnxModelView,
+  OnnxCustomEntry
 } from '@shared/ipc';
 
 interface UpscaleTask {
@@ -112,7 +116,13 @@ export function RealESRGANPanel(): JSX.Element {
   // ─── 任务列表 ─────────────────────────────────────
   const [tasks, setTasks] = useState<UpscaleTask[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
-  const selectedTask = tasks.find((t) => t.id === selectedTaskId) ?? null;
+  // O(1) 选中查找 + 避免每次 render 都跑 .find
+  const selectedTask = useMemo(
+    () => tasks.find((t) => t.id === selectedTaskId) ?? null,
+    [tasks, selectedTaskId]
+  );
+
+  const TASKS_CAP = 50;
 
   // ─── 设置 ─────────────────────────────────────────
   const [selectedMode, setSelectedMode] = useState<UpscaleModeId>('smart');
@@ -123,40 +133,56 @@ export function RealESRGANPanel(): JSX.Element {
   const [tile, setTile] = useState<number>(0);
   const [gpuId, setGpuId] = useState<'auto' | number>('auto');
   const [tta, setTta] = useState<boolean>(false);
-  const [faceEnhance, setFaceEnhance] = useState(false);
   const [keepAlpha, setKeepAlpha] = useState(true);
   const [keepOriginalName, setKeepOriginalName] = useState(true);
   const [customModel, setCustomModel] = useState<string | null>(null);
+  /**
+   * 各模式下用户手动选的候选模型(null = 走 resolver 默认最优)。
+   * 切换模式不丢:用户在 anime-illust 选了 4xHFA2k.onnx,
+   * 切去 general-hd 再回来仍然是 4xHFA2k.onnx。
+   */
+  const [modelOverride, setModelOverride] = useState<Partial<Record<UpscaleModeId, { key: string; backend: UpscaleBackend }>>>({});
 
   // ─── 运行态 ───────────────────────────────────────
   const [running, setRunning] = useState(false);
   const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);
   const [progress, setProgress] = useState<UpscaleProgressPayload | null>(null);
 
-  // ─── PyTorch sidecar 状态(扩展后端) ──────────────
-  const [pytorchReachable, setPytorchReachable] = useState(false);
+  // ─── ONNX 模型清单(主进程内 onnxruntime-node,无需启停) ──────────
+  // 既追"内置已装的 id 列表"供 resolveModelForMode 用,
+  // 也要拿到 custom + modeHint 供候选下拉用。
+  const [onnxModels, setOnnxModels] = useState<OnnxModelView[]>([]);
+  const [onnxCustom, setOnnxCustom] = useState<OnnxCustomEntry[]>([]);
 
-  const probePytorch = useCallback(async () => {
+  const refreshOnnxModels = useCallback(async () => {
     try {
-      const r = await window.electronAPI.upscale.pytorchProbe();
-      if (r.ok) setPytorchReachable(r.data.reachable);
+      const r = await window.electronAPI.upscale.onnxList();
+      if (r.ok) {
+        setOnnxModels(r.data.builtins);
+        setOnnxCustom(r.data.custom);
+      }
     } catch {
       /* ignore */
     }
   }, []);
   useEffect(() => {
-    void probePytorch();
-    const t = setInterval(() => void probePytorch(), 8000);
-    return () => clearInterval(t);
-  }, [probePytorch]);
+    void refreshOnnxModels();
+  }, [refreshOnnxModels]);
+
+  const installedOnnxIds = useMemo(
+    () => onnxModels.filter((m) => m.installed).map((m) => m.id),
+    [onnxModels]
+  );
 
   // ─── 计算 ─────────────────────────────────────────
   const noEngine = !status || !status.installed;
   const platformBlocked = status?.platform === 'unsupported';
 
+  // ONNX 后端默认始终可用(onnxruntime-node 是主进程内置,无需启动);
+  // ncnn 看引擎是否已装。
   const caps: BackendCapabilities = useMemo(
-    () => ({ ncnn: !!status?.installed, pytorch: pytorchReachable }),
-    [status?.installed, pytorchReachable]
+    () => ({ ncnn: !!status?.installed, onnx: true }),
+    [status?.installed]
   );
 
   const availableModelsLower = useMemo(
@@ -168,20 +194,75 @@ export function RealESRGANPanel(): JSX.Element {
     if (selectedMode === 'smart') {
       const rec = recommendModeFromImageType({});
       const cfg = getMode(rec.modeId);
-      const r = resolveModelForMode(cfg, caps, availableModelsLower, customModel);
+      const r = resolveModelForMode(cfg, caps, availableModelsLower, installedOnnxIds, customModel);
       return r ? { ...r, reason: r.reason ?? rec.reason } : null;
     }
     return resolveModelForMode(
       getMode(selectedMode),
       caps,
       availableModelsLower,
+      installedOnnxIds,
       customModel
     );
-  }, [selectedMode, caps, availableModelsLower, customModel]);
+  }, [selectedMode, caps, availableModelsLower, installedOnnxIds, customModel]);
 
-  const effectiveModelName: string | null = resolvedTarget?.model ?? null;
+  // 列出当前模式下所有可选候选模型(用户在 ModeDetailCard 里能切)
+  const currentCandidates = useMemo<ModelCandidate[]>(() => {
+    if (selectedMode === 'smart' || selectedMode === 'custom') return [];
+    return candidatesForMode(
+      selectedMode,
+      caps,
+      status?.models ?? [],
+      onnxModels,
+      onnxCustom
+    );
+  }, [selectedMode, caps, status?.models, onnxModels, onnxCustom]);
+
+  // 当前模式的手动覆盖(若有);切换模式时各自保留
+  const currentOverride = modelOverride[selectedMode];
+
+  // 最终用哪个模型 + 哪个后端:覆盖优先,否则 resolver 默认
+  const effectiveModelName: string | null = currentOverride
+    ? currentOverride.key
+    : resolvedTarget?.model ?? null;
+  const effectiveBackend: UpscaleBackend = currentOverride
+    ? currentOverride.backend
+    : resolvedTarget?.backend ?? 'ncnn';
+
+  // 设置 / 清空 模式手动覆盖
+  function setOverrideForCurrent(c: ModelCandidate | null): void {
+    setModelOverride((prev) => {
+      const next = { ...prev };
+      if (c == null) delete next[selectedMode];
+      else next[selectedMode] = { key: c.key, backend: c.backend };
+      return next;
+    });
+  }
 
   const totalInputs = pendingInputs.length + (pasteUri ? 1 : 0);
+
+  // ─── ONNX session 预热(debounced) ─────────────────────────
+  // 选定 ONNX 模型 + 有输入图时,500ms 后台预热,首张推理少等 5-15s。
+  // 模型变化即重启计时;无 ONNX 路径不触发。
+  const [prewarmingModel, setPrewarmingModel] = useState<string | null>(null);
+  useEffect(() => {
+    if (effectiveBackend !== 'onnx' || !effectiveModelName || totalInputs === 0) {
+      setPrewarmingModel(null);
+      return;
+    }
+    const modelId = effectiveModelName;
+    const t = setTimeout(async () => {
+      setPrewarmingModel(modelId);
+      try {
+        await window.electronAPI.upscale.onnxPrewarm({ modelId });
+      } catch {
+        /* ignore */
+      } finally {
+        setPrewarmingModel((prev) => (prev === modelId ? null : prev));
+      }
+    }, 500);
+    return () => clearTimeout(t);
+  }, [effectiveBackend, effectiveModelName, totalInputs]);
 
   // ─── effects ──────────────────────────────────────
   useEffect(() => {
@@ -298,7 +379,7 @@ export function RealESRGANPanel(): JSX.Element {
     if (nonNcnn.length > 0) {
       toast.error(
         '不支持的格式',
-        `${nonNcnn.length} 个文件不是 .bin/.param。.pth/.safetensors 需要 PyTorch 后端。`
+        `${nonNcnn.length} 个文件不是 .bin/.param。.onnx 模型请到 设置 → 工具箱 → ONNX 模型库 导入。`
       );
       return;
     }
@@ -387,7 +468,7 @@ export function RealESRGANPanel(): JSX.Element {
         ts: seedTime + i
       };
     });
-    setTasks((arr) => [...newTasks, ...arr]);
+    setTasks((arr) => [...newTasks, ...arr].slice(0, TASKS_CAP));
     setSelectedTaskId(submittedTaskIds[0]);
     setRunning(true);
     setProgress(null);
@@ -400,7 +481,9 @@ export function RealESRGANPanel(): JSX.Element {
       format,
       tile,
       gpuId,
-      tta
+      tta,
+      backend: effectiveBackend,
+      keepAlpha
     };
 
     try {
@@ -553,6 +636,9 @@ export function RealESRGANPanel(): JSX.Element {
               <ModeDetailCard
                 modeId={selectedMode}
                 resolved={resolvedTarget}
+                candidates={currentCandidates}
+                override={currentOverride ?? null}
+                onPickCandidate={setOverrideForCurrent}
                 customModel={customModel}
                 onPickCustom={setCustomModel}
                 availableModels={status?.models ?? []}
@@ -572,12 +658,6 @@ export function RealESRGANPanel(): JSX.Element {
                 disabled={running}
               />
 
-              {/* 3b. PyTorch 后端 — 启动/停止 + 模型清单(折叠,默认收起) */}
-              <PytorchBackendSection
-                reachable={pytorchReachable}
-                onRefresh={probePytorch}
-              />
-
               {/* 4. 高级设置(折叠) */}
               <Collapsible
                 title="高级设置"
@@ -590,13 +670,11 @@ export function RealESRGANPanel(): JSX.Element {
                   setGpuId={setGpuId}
                   tta={tta}
                   setTta={setTta}
-                  faceEnhance={faceEnhance}
-                  setFaceEnhance={setFaceEnhance}
                   keepAlpha={keepAlpha}
                   setKeepAlpha={setKeepAlpha}
                   keepOriginalName={keepOriginalName}
                   setKeepOriginalName={setKeepOriginalName}
-                  caps={caps}
+                  effectiveBackend={effectiveBackend}
                   disabled={running}
                 />
               </Collapsible>
@@ -611,9 +689,11 @@ export function RealESRGANPanel(): JSX.Element {
                 hint={
                   totalInputs === 0
                     ? '右侧添加图片后即可开始'
-                    : resolvedTarget?.usedFallback
-                      ? `⚠ 后端不支持理想模型,将用「${resolvedTarget.model}」近似`
-                      : `将用模型「${effectiveModelName ?? '?'}」处理 ${totalInputs} 张`
+                    : prewarmingModel
+                      ? `预热中: ${prewarmingModel}(首次加载需 5-15s)`
+                      : resolvedTarget?.usedFallback && !currentOverride
+                        ? `⚠ 后端不支持理想模型,将用「${resolvedTarget.model}」近似`
+                        : `将用模型「${effectiveModelName ?? '?'}」处理 ${totalInputs} 张`
                 }
               />
             </>
@@ -727,7 +807,10 @@ function ModeSelectorGrid({
       <div className="mb-tlx-mode-grid">
         {MODES.map((m) => {
           const active = m.id === selected;
-          const needsPytorch = m.requires.pytorch && !caps.pytorch;
+          const hasNcnnPath = !!m.ncnnIdealName || (m.ncnnAlternativeNames?.length ?? 0) > 0;
+          // 没 ncnn 路径 + ncnn 引擎缺失 → 提示"需 ONNX 模型"
+          const needsOnnxOnly =
+            !hasNcnnPath && !caps.ncnn && m.id !== 'custom' && m.id !== 'smart';
           return (
             <button
               key={m.id}
@@ -738,7 +821,7 @@ function ModeSelectorGrid({
             >
               <span className="mb-tlx-mode-name">{m.label}</span>
               <span className="mb-tlx-mode-tagline">{m.tagline}</span>
-              {needsPytorch && <span className="mb-tlx-mode-flag">需 PyTorch</span>}
+              {needsOnnxOnly && <span className="mb-tlx-mode-flag">需 ONNX 模型</span>}
             </button>
           );
         })}
@@ -754,13 +837,27 @@ function ModeSelectorGrid({
 function ModeDetailCard({
   modeId,
   resolved,
+  candidates,
+  override,
+  onPickCandidate,
   customModel,
   onPickCustom,
   availableModels,
   onImportCustom
 }: {
   modeId: UpscaleModeId;
-  resolved: { model: string; usedFallback: boolean; reason?: string } | null;
+  resolved: {
+    model: string;
+    backend: UpscaleBackend;
+    usedFallback: boolean;
+    reason?: string;
+  } | null;
+  /** 该模式下所有可选候选(默认置顶) */
+  candidates: ModelCandidate[];
+  /** 当前用户手动选了哪个(null = 走 resolver 默认) */
+  override: { key: string; backend: UpscaleBackend } | null;
+  /** 设置 / 清空 模式覆盖 */
+  onPickCandidate: (c: ModelCandidate | null) => void;
   customModel: string | null;
   onPickCustom: (m: string) => void;
   availableModels: Array<{ name: string; sizeBytes: number }>;
@@ -802,10 +899,42 @@ function ModeDetailCard({
               <PlusIcon size={12} /> 导入新模型
             </button>
             <span className="mb-tlx-field-hint" style={{ flex: 1 }}>
-              支持 .bin + .param 同名成对。.pth/.safetensors 暂不支持(需 PyTorch 后端)
+              支持 .bin + .param 同名成对(ncnn 引擎)。.onnx 模型请到 设置 → 工具箱 → ONNX 模型库 导入。
             </span>
           </div>
+          <CommunityReferenceSection />
         </div>
+      )}
+
+      {modeId !== 'custom' && modeId !== 'smart' && candidates.length > 0 && (
+        <Field
+          label="使用模型"
+          hint="该模式下所有可用候选;默认是最优(★),也可手动切其它"
+        >
+          <CustomSelect
+            value={
+              override
+                ? `${override.backend}:${override.key}`
+                : candidates.find((c) => c.isDefault)
+                  ? `${candidates.find((c) => c.isDefault)!.backend}:${candidates.find((c) => c.isDefault)!.key}`
+                  : ''
+            }
+            onChange={(v) => {
+              const found = candidates.find((c) => `${c.backend}:${c.key}` === v);
+              if (!found) return;
+              // 选回默认就清掉覆盖
+              if (found.isDefault) onPickCandidate(null);
+              else onPickCandidate(found);
+            }}
+            options={candidates.map((c) => ({
+              value: `${c.backend}:${c.key}`,
+              label: `${c.isDefault ? '★ ' : ''}${c.label}`,
+              meta: c.source === 'ncnn' ? 'ncnn' : c.source === 'onnx-builtin' ? 'ONNX 内置' : 'ONNX 自定义',
+              hint: c.isDefault ? '该模式的默认最优模型' : `候选 · 后端 ${c.backend}`
+            }))}
+            placeholder="(无可用候选)"
+          />
+        </Field>
       )}
 
       {modeId !== 'custom' && (
@@ -816,13 +945,21 @@ function ModeDetailCard({
             <>
               <span className="mb-tlx-key">实际使用</span>
               <code className={`mb-tlx-val ${resolved.usedFallback ? 'is-warn' : 'is-ok'}`}>
-                {resolved.model}
+                {override?.key ?? resolved.model}
+              </code>
+              <span className="mb-tlx-key">后端</span>
+              <code
+                className={`mb-tlx-val ${(override?.backend ?? resolved.backend) === 'onnx' ? 'is-ok' : ''}`}
+              >
+                {(override?.backend ?? resolved.backend) === 'onnx'
+                  ? 'ONNX · onnxruntime-node(主进程内)'
+                  : 'ncnn-vulkan'}
               </code>
             </>
           )}
           {!resolved && (
             <span className="mb-tlx-mode-detail-unavailable">
-              ⚠ 当前后端无法运行此模式
+              ⚠ 当前没有可用模型 — 到「ONNX 模型库」下载对应 .onnx,或装 ncnn 引擎,或换其他模式
             </span>
           )}
         </div>
@@ -871,7 +1008,7 @@ function PrimarySettings({
       </Field>
       <Field
         label="降噪强度"
-        hint="降噪强度需 PyTorch 后端 + general-x4v3 才生效;当前后端会忽略"
+        hint="当前 ncnn / ONNX 后端不带 dni 双权重插值,该参数仅作 UI 占位"
       >
         <Segmented value={denoiseLevel} onChange={setDenoiseLevel} options={DENOISE_LEVELS} />
       </Field>
@@ -894,13 +1031,11 @@ function AdvancedSettings({
   setGpuId,
   tta,
   setTta,
-  faceEnhance,
-  setFaceEnhance,
   keepAlpha,
   setKeepAlpha,
   keepOriginalName,
   setKeepOriginalName,
-  caps,
+  effectiveBackend,
   disabled
 }: {
   tile: number;
@@ -909,18 +1044,20 @@ function AdvancedSettings({
   setGpuId: (g: 'auto' | number) => void;
   tta: boolean;
   setTta: (b: boolean) => void;
-  faceEnhance: boolean;
-  setFaceEnhance: (b: boolean) => void;
   keepAlpha: boolean;
   setKeepAlpha: (b: boolean) => void;
   keepOriginalName: boolean;
   setKeepOriginalName: (b: boolean) => void;
-  caps: BackendCapabilities;
+  effectiveBackend: UpscaleBackend;
   disabled: boolean;
 }): JSX.Element {
+  const isOnnx = effectiveBackend === 'onnx';
   return (
     <div className="mb-tlx-advanced">
-      <Field label="Tile 分块" hint="0 = 自动。爆显存就降到 128 / 256">
+      <Field
+        label="Tile 分块"
+        hint={isOnnx ? '0 = 整图(显存够时最快);默认 256' : '0 = 自动。爆显存就降到 128 / 256'}
+      >
         <input
           type="number"
           className="mb-tlx-input"
@@ -934,7 +1071,10 @@ function AdvancedSettings({
           disabled={disabled}
         />
       </Field>
-      <Field label="GPU">
+      <Field
+        label="GPU"
+        hint={isOnnx ? 'ONNX 后端 EP 自动选(DirectML/CoreML/CUDA → CPU 回退),此选项仅 ncnn 生效' : ''}
+      >
         <CustomSelect
           value={gpuId === 'auto' ? 'auto' : String(gpuId)}
           onChange={(v) => setGpuId(v === 'auto' ? 'auto' : Number(v))}
@@ -945,22 +1085,15 @@ function AdvancedSettings({
             { value: '2', label: 'GPU #2' },
             { value: '3', label: 'GPU #3' }
           ]}
-          disabled={disabled}
+          disabled={disabled || isOnnx}
         />
       </Field>
       <CheckRow
         checked={tta}
         onChange={setTta}
-        disabled={disabled}
+        disabled={disabled || isOnnx}
         label="TTA 测试时增强"
-        hint="8 倍耗时,细节略好;默认关"
-      />
-      <CheckRow
-        checked={faceEnhance}
-        onChange={setFaceEnhance}
-        disabled={disabled || !caps.pytorch}
-        label="Face Enhance 人脸增强"
-        hint={caps.pytorch ? '走 GFPGAN 修复人脸' : '⚠ 需 PyTorch 后端;当前不可用'}
+        hint={isOnnx ? '⚠ TTA 仅 ncnn 后端支持;ONNX 后端会忽略' : '8 倍耗时,细节略好;默认关'}
       />
       <CheckRow
         checked={keepAlpha}
@@ -1233,8 +1366,7 @@ function TaskList({
 
 function PreviewArea({
   task,
-  progress,
-  running
+  progress
 }: {
   task: UpscaleTask | null;
   progress: UpscaleProgressPayload | null;
@@ -1265,9 +1397,13 @@ function PreviewArea({
         <div className="mb-tlx-progress-pct">
           {progress?.percent ?? task.progress ?? 0}%
         </div>
-        {running && progress?.phase && (
-          <div className="mb-tlx-progress-detail">{progress.phase}</div>
-        )}
+        <div className="mb-tlx-progress-detail">
+          {progress?.phase
+            ? progress.phase
+            : (progress?.percent ?? task.progress ?? 0) === 0
+              ? '模型冷加载中(首次 10-30s,后续秒级)…'
+              : '处理中…'}
+        </div>
       </div>
     );
   }
@@ -1283,9 +1419,9 @@ function PreviewArea({
     );
   }
 
-  // done
+  // done — 直接展示输出图,不再做对比 wipe。
+  // <img decoding=async loading=lazy> + max-width 100% 让浏览器异步解码大图,UI 不卡。
   if (!task.outputPath) return <></>;
-  const beforeUrl = task.inputDisplayUrl;
   const afterUrl = localPathToImageUrl(task.outputPath);
 
   return (
@@ -1297,7 +1433,16 @@ function PreviewArea({
         sourceModel={`Real-ESRGAN/${task.modelName}`}
         params={{ scale: task.scale, model: task.modelName, mode: task.modeId }}
       />
-      <ImageCompareViewer beforeUrl={beforeUrl} afterUrl={afterUrl} />
+      <div className="mb-tlx-result-image-wrap">
+        <img
+          src={afterUrl}
+          alt="result"
+          className="mb-tlx-result-image"
+          decoding="async"
+          loading="lazy"
+          draggable={false}
+        />
+      </div>
       <div className="mb-tlx-result-meta">
         <span><em>原图</em> {task.inputW || '?'}×{task.inputH || '?'}</span>
         <span><em>输出</em> {task.outputW}×{task.outputH}</span>
@@ -1338,262 +1483,6 @@ function EmptyPane({ noEngine }: { noEngine: boolean }): JSX.Element {
 }
 
 // ──────────────────────────────────────────────────────────────────
-// PyTorch 后端 sub-panel(启动 / 停止 + 模型清单 + 下载)
-// ──────────────────────────────────────────────────────────────────
-
-interface PytorchModelView {
-  id: string;
-  displayName: string;
-  licenseNote: string;
-  relPath: string;
-  absPath: string;
-  expectedBytes: number;
-  actualBytes: number;
-  installed: boolean;
-  sources: Array<{ name: string; url: string; mirror: boolean }>;
-}
-
-function PytorchBackendSection({
-  reachable,
-  onRefresh
-}: {
-  reachable: boolean;
-  onRefresh: () => void;
-}): JSX.Element {
-  const [models, setModels] = useState<PytorchModelView[]>([]);
-  const [busy, setBusy] = useState<string | null>(null); // 'start'/'stop'/modelId
-  const [downloadProgress, setDownloadProgress] = useState<
-    Record<string, { received: number; total: number }>
-  >({});
-
-  const refreshModels = useCallback(async () => {
-    const r = await window.electronAPI.upscale.pytorchModelList();
-    if (r.ok) setModels(r.data.models);
-  }, []);
-
-  useEffect(() => {
-    void refreshModels();
-  }, [refreshModels]);
-
-  useEffect(() => {
-    if (!window.electronAPI?.on) return;
-    const off = window.electronAPI.on('upscale:pytorch-download-progress', (raw) => {
-      const p = raw as UpscalePytorchDownloadProgressPayload;
-      setDownloadProgress((prev) => ({
-        ...prev,
-        [p.modelId]: { received: p.received, total: p.total }
-      }));
-    });
-    return () => off?.();
-  }, []);
-
-  async function startSidecar(): Promise<void> {
-    setBusy('start');
-    try {
-      const r = await window.electronAPI.upscale.pytorchStart();
-      if (!r.ok) {
-        toast.error('启动失败', r.error.message);
-        return;
-      }
-      toast.info('PyTorch 后端启动中', '首次加载可能 20-30s,正在轮询...');
-      // 轮询 30s 看是否真起来。spawn 立刻返回但 bat 可能下一秒就 exit(依赖缺失等)。
-      let success = false;
-      for (let i = 0; i < 30; i++) {
-        await new Promise((res) => setTimeout(res, 1000));
-        const probe = await window.electronAPI.upscale.pytorchProbe();
-        if (probe.ok && probe.data.reachable) {
-          success = true;
-          break;
-        }
-      }
-      if (success) {
-        toast.success('PyTorch 后端就绪');
-        onRefresh();
-      } else {
-        toast.error(
-          '启动超时(30s 未响应)',
-          '常见原因:① 缺 Python runtime ② 没跑 install_realesrgan_extras.bat ③ 没下 .pth 模型。点下面「打开便携包目录」自己装。'
-        );
-      }
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function openPortableDir(): Promise<void> {
-    // userData/engines/HYPIR_Portable —— PyTorch sidecar 跟 HYPIR 共用根目录
-    // 通过 hypir 探测拿到具体路径
-    const probe = await window.electronAPI.hypir.probe();
-    if (probe.ok) {
-      await window.electronAPI.storage.openPath({
-        targetPath: probe.data.portablePath,
-        ensureDir: true
-      });
-    }
-  }
-
-  async function stopSidecar(): Promise<void> {
-    setBusy('stop');
-    try {
-      const r = await window.electronAPI.upscale.pytorchStop();
-      if (!r.ok) {
-        toast.error('停止失败', r.error.message);
-        return;
-      }
-      toast.info('PyTorch 后端已停止');
-      onRefresh();
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function downloadModel(modelId: string): Promise<void> {
-    setBusy(modelId);
-    setDownloadProgress((p) => ({ ...p, [modelId]: { received: 0, total: 0 } }));
-    try {
-      const r = await window.electronAPI.upscale.pytorchDownloadModel({ modelId });
-      if (!r.ok) {
-        toast.error('下载失败', r.error.message);
-        return;
-      }
-      toast.success(`已下载 ${modelId}`, r.data.destPath);
-      await refreshModels();
-    } finally {
-      setBusy(null);
-      setDownloadProgress((p) => {
-        const next = { ...p };
-        delete next[modelId];
-        return next;
-      });
-    }
-  }
-
-  const installed = models.filter((m) => m.installed).length;
-  const total = models.length;
-  const badge = `${reachable ? '运行中' : '未启动'} · ${installed}/${total} 模型`;
-
-  return (
-    <Collapsible title="AI 后端 (PyTorch)" badge={badge}>
-      <div className="mb-tlx-pytorch-section">
-        {/* 状态栏 */}
-        <div className="mb-tlx-pytorch-status">
-          <span className={`mb-tlx-chip ${reachable ? 'is-ok' : 'is-warn'}`}>
-            {reachable ? '✓ sidecar 运行中(端口 7869)' : '○ sidecar 未启动'}
-          </span>
-          {reachable ? (
-            <button
-              type="button"
-              className="mb-btn mb-btn-ghost mb-btn-sm"
-              onClick={() => void stopSidecar()}
-              disabled={busy === 'stop'}
-            >
-              停止
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="mb-btn mb-btn-primary mb-btn-sm"
-              onClick={() => void startSidecar()}
-              disabled={busy === 'start'}
-            >
-              {busy === 'start' ? '启动中…' : '启动后端'}
-            </button>
-          )}
-          <button
-            type="button"
-            className="mb-btn mb-btn-ghost mb-btn-sm"
-            onClick={() => {
-              onRefresh();
-              void refreshModels();
-            }}
-          >
-            刷新
-          </button>
-          <button
-            type="button"
-            className="mb-btn mb-btn-ghost mb-btn-sm"
-            onClick={() => void openPortableDir()}
-            title="打开 %APPDATA%/mengbi/engines/HYPIR_Portable/,在那里跑 install_realesrgan_extras.bat / 放 Python runtime / 放 .pth 模型"
-          >
-            <FolderIcon size={11} /> 便携包目录
-          </button>
-        </div>
-
-        {!reachable && (
-          <PanelBanner tone="info">
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              <strong>首次使用需 3 步</strong>
-              <span>1. 点「启动后端」会自动把脚手架展开到 <code>%APPDATA%\mengbi\engines\HYPIR_Portable\</code></span>
-              <span>2. 装 Python runtime(若已用过 HYPIR/SUPIR 可跳过)+ 跑 <code>install_realesrgan_extras.bat</code>(~5 分钟)</span>
-              <span>3. 下载至少 1 个 .pth 模型(下面清单的「下载」按钮)</span>
-              <span>启动失败的错误信息会在 toast 里给出具体下一步</span>
-            </div>
-          </PanelBanner>
-        )}
-
-        {/* 模型清单 */}
-        <div className="mb-tlx-pytorch-models">
-          <div className="mb-tlx-section-title">模型清单({installed}/{total} 已装)</div>
-          {models.map((m) => {
-            const prog = downloadProgress[m.id];
-            const pct = prog && prog.total > 0 ? Math.round((prog.received / prog.total) * 100) : 0;
-            const downloading = busy === m.id;
-            return (
-              <div key={m.id} className="mb-tlx-pytorch-model-row">
-                <div className="mb-tlx-pytorch-model-info">
-                  <div className="mb-tlx-pytorch-model-name">
-                    {m.displayName}
-                    {m.installed && <span className="mb-tlx-pytorch-installed-tag">已装</span>}
-                  </div>
-                  <div className="mb-tlx-pytorch-model-meta">
-                    {(m.expectedBytes / 1024 / 1024).toFixed(0)} MB · {m.licenseNote}
-                  </div>
-                  <code className="mb-tlx-pytorch-model-path">{m.relPath}</code>
-                  {downloading && prog && (
-                    <div className="mb-tlx-pytorch-model-progress">
-                      <div className="mb-tlx-progress-bar">
-                        <div className="mb-tlx-progress-fill" style={{ width: `${pct}%` }} />
-                      </div>
-                      <span>
-                        {pct}% · {(prog.received / 1024 / 1024).toFixed(1)} /{' '}
-                        {(prog.total / 1024 / 1024).toFixed(0)} MB
-                      </span>
-                    </div>
-                  )}
-                </div>
-                <div className="mb-tlx-pytorch-model-actions">
-                  {m.installed ? (
-                    <button
-                      type="button"
-                      className="mb-btn mb-btn-ghost mb-btn-xs"
-                      onClick={() =>
-                        void window.electronAPI.storage.showInFolder(m.absPath)
-                      }
-                      title="在文件夹中显示"
-                    >
-                      <FolderIcon size={11} />
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      className="mb-btn mb-btn-primary mb-btn-xs"
-                      onClick={() => void downloadModel(m.id)}
-                      disabled={downloading}
-                    >
-                      {downloading ? '下载中' : '下载'}
-                    </button>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    </Collapsible>
-  );
-}
-
-// ──────────────────────────────────────────────────────────────────
 // 引擎安装引导
 // ──────────────────────────────────────────────────────────────────
 
@@ -1625,8 +1514,8 @@ function EngineInstaller({
     <div className="mb-tlx-installer">
       <div className="mb-tlx-installer-title">Real-ESRGAN ncnn Vulkan 引擎未安装</div>
       <p className="mb-tlx-installer-sub">
-        首次使用需下载 ~10 MB 二进制(含 4 个默认模型)。不依赖 Python / PyTorch / CUDA,
-        Vulkan 跨厂商 GPU 加速。安装后可离线放大。
+        首次使用需下载 ~10 MB 二进制(含 4 个默认 ncnn 模型)。Vulkan 跨厂商 GPU 加速,
+        无 Python 依赖,装好即可离线放大。.onnx 模型由「ONNX 模型库」单独管理。
       </p>
       <Field label="下载来源">
         <CustomSelect
@@ -1684,3 +1573,65 @@ function EngineInstaller({
     </div>
   );
 }
+
+// ──────────────────────────────────────────────────────────────────
+// 自定义模式下展示的「社区模型分类参考表」(折叠,默认收起)
+//   不是真的内置模型 —— 是给用户做参考:用 chaiNNer / spandrel
+//   把这些 .pth/.safetensors 转 .onnx 后,挂到哪个分类下能用得最好。
+// ──────────────────────────────────────────────────────────────────
+
+function CommunityReferenceSection(): JSX.Element {
+  // 按 category 排好序;表里 6 条,直接平铺
+  const rows = COMMUNITY_REFERENCE;
+  const categoryLabel: Record<UpscaleModeId, string> = {
+    smart: '智能推荐',
+    'general-hd': '通用高清',
+    'general-fast': '通用快速',
+    'anime-illust': '动漫插画',
+    'anime-video': '动漫视频',
+    sharpen: '清晰增强',
+    custom: '自定义'
+  };
+  return (
+    <Collapsible title="社区模型分类参考" badge={`${rows.length} 个常用社区模型`}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <span className="mb-tlx-field-hint">
+          下表给出常见社区放大模型的「主要用途」与「推荐归类」。这些模型通常只发 .pth / .safetensors,
+          需要用 <code>chaiNNer</code> / <code>spandrel</code> 自己转 .onnx 后,
+          到 设置 → 工具箱 → ONNX 模型库 选「导入 .onnx」,挂到对应分类即可在那个模式选用。
+        </span>
+        <div className="mb-mapping-list">
+          {rows.map((r) => (
+            <div
+              key={r.name}
+              className="mb-mapping-row"
+              style={{ alignItems: 'flex-start' }}
+            >
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <strong style={{ fontSize: 12 }}>{r.name}</strong>
+                  <span
+                    style={{
+                      fontSize: 10,
+                      padding: '1px 5px',
+                      borderRadius: 4,
+                      background: 'var(--mb-color-surface-3, rgba(255,255,255,0.06))',
+                      color: 'var(--mb-color-text-2, #b8b8b8)'
+                    }}
+                  >
+                    {categoryLabel[r.category]}
+                  </span>
+                </div>
+                <span style={{ fontSize: 11, opacity: 0.85 }}>{r.purpose}</span>
+                <span style={{ fontSize: 10, color: 'var(--mb-color-text-muted, #888)' }}>
+                  作者 {r.author} · {r.license}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </Collapsible>
+  );
+}
+

@@ -14,12 +14,14 @@ import { toast } from '@/store/toastStore';
 import { Modal } from '@/components/Modal';
 import { openContextMenu } from '@/components/ContextMenu';
 import { AboutSection } from './AboutSection';
+import { OnnxModelsField } from './OnnxModelsField';
 // VecModelManager 已随矢量化功能整体移除，待重做
 import {
   ProviderIcon,
   PROVIDER_PRESETS,
   guessProviderIcon
 } from '@/lib/providerIcons';
+import { detectModelCapabilities, summarizeCapabilities } from '@/lib/modelCapabilities';
 import { confirmDialog } from '@/components/ConfirmDialog';
 import {
   PlusIcon,
@@ -132,7 +134,7 @@ const IMAGE_KINDS: Array<{ value: ImageKind; label: string; hint: string }> = [
       '专门用于穿透中转站 60s 边缘代理超时（Nginx/Cloudflare 类）。' +
       '前提：中转必须实现 /v1/responses 端点（Now Coding/OneAPI 新版、官方 OpenAI 均支持）。'
   }
-  // ComfyUI（image_kind='comfyui'）从设置页移出，统一在「本地大模型」页（侧栏第 6 项）配置。
+  // ComfyUI（image_kind='comfyui'）为旧路径，已由 /comfyui 工作流编排器取代，设置页不再提供其一键预设。
 ];
 
 const PALETTE_PREVIEW: Record<Palette, string> = {
@@ -481,7 +483,7 @@ function ConfigList({
   onDeletePlan: () => void;
 }): JSX.Element {
   const textConfigs = configs.filter((c) => c.type === 'text');
-  // ComfyUI（image_kind='comfyui'）只在「本地大模型」页展示，这里过滤掉避免重复管理
+  // ComfyUI（image_kind='comfyui'）为旧配置，已由 /comfyui 工作流编排器取代，这里过滤掉不再管理
   const imageConfigs = configs.filter(
     (c) => c.type === 'image' && c.image_kind !== 'comfyui'
   );
@@ -695,7 +697,7 @@ const CONFIG_PRESETS: ConfigPreset[] = [
     supports_web_search: false
   }
   // 旧的 sd-cpp / comfyui 绘画一键预设已移除：
-  //   - ComfyUI 走「本地大模型」页（左侧栏第 6 项）
+  //   - ComfyUI 走 /comfyui 工作流编排器（侧栏「ComfyUI 工作流」）
   //   - sd-cpp 用户少且语义已被通用 OpenAI-compat 覆盖
 ];
 
@@ -910,6 +912,42 @@ function ConfigForm({
     }));
     setDetectingKind(false);
     toast.success('已识别协议', `${label}（${probeMsg}）`);
+  }
+
+  // 自动识别能力（多模态/思考/原生联网）：先按模型映射里的真实 ID 名匹配；
+  // 映射为空时，若填了 URL+Key 就探一下 /models 拿到模型 ID 再匹配（即"两者结合"）。
+  const [detectingCaps, setDetectingCaps] = useState(false);
+  async function detectCaps(): Promise<void> {
+    let ids = Object.values(draft.model_mapping).filter(Boolean);
+    let note = '按模型映射';
+    if (ids.length === 0 && draft.base_url.trim() && draft.api_key_plain.trim()) {
+      setDetectingCaps(true);
+      const r = await window.electronAPI.settings.testConnection({
+        base_url: draft.base_url,
+        api_key_plain: draft.api_key_plain,
+        type: draft.type
+      });
+      setDetectingCaps(false);
+      if (r.ok) {
+        ids = r.data.models ?? [];
+        note = '按探测到的模型';
+      }
+    }
+    if (ids.length === 0) {
+      toast.error('先在「模型映射」加实际模型 ID，或填好 Base URL/Key', '识别需要知道真实模型 ID');
+      return;
+    }
+    const caps = detectModelCapabilities(ids);
+    setDraft((d) => ({
+      ...d,
+      supports_vision: caps.vision,
+      supports_thinking: caps.thinking,
+      // 联网偏向"只开不关"——名匹配难全覆盖，避免误关用户手动开的
+      supports_web_search: caps.webSearch || d.supports_web_search,
+      thinking_effort: caps.thinking ? (d.thinking_effort ?? caps.thinkingEffort ?? 'high') : d.thinking_effort
+    }));
+    setTestResult(null);
+    toast.success('已识别能力', `${summarizeCapabilities(caps)}（${note}，可手动微调）`);
   }
 
   async function test(): Promise<void> {
@@ -1219,7 +1257,7 @@ function ConfigForm({
         </Field>
       )}
 
-      {/* ComfyUI workflow 已移到「本地大模型」页面单独管理，此处不再渲染 */}
+      {/* ComfyUI workflow 由 /comfyui 工作流编排器管理，此处不再渲染 */}
 
       {draft.type === 'image' && draft.image_kind !== 'comfyui' && (
         <Field label="请求体覆盖（高级）">
@@ -1310,6 +1348,20 @@ function ConfigForm({
           </button>
         </div>
       </Field>
+
+      {draft.type === 'text' && (
+        <div className="mb-config-capsbar">
+          <button
+            className="mb-btn mb-btn-secondary mb-btn-sm"
+            onClick={() => void detectCaps()}
+            disabled={detectingCaps}
+            title="按真实模型 ID 自动判断：多模态 / 思考 / 原生联网，并填好下面的开关"
+          >
+            {detectingCaps ? '识别中…' : '✨ 自动识别能力'}
+          </button>
+          <span className="mb-config-capsbar-hint">按模型 ID 智能判断多模态/思考/联网</span>
+        </div>
+      )}
 
       {draft.type === 'text' && (
         <div className="mb-config-toggles">
@@ -1812,7 +1864,7 @@ function Toggle({
 // ─────────────────────────────────────────────────────
 
 function AppearanceTab(): JSX.Element {
-  const { atmosphere, palette, setAtmosphere, setPalette } = useThemeStore();
+  const { atmosphere, palette, setAtmosphere, setPalette, flowColor, setFlowColor } = useThemeStore();
   const haloStyle = useCursorHaloStore((s) => s.style);
   const setHaloStyle = useCursorHaloStore((s) => s.setStyle);
 
@@ -1822,7 +1874,7 @@ function AppearanceTab(): JSX.Element {
         <div>
           <h3>外观</h3>
           <p className="mb-settings-pane-desc">
-            7 种材质氛围 × 10 种主题配色，共 70 种组合。
+            10 种材质氛围 × 10 种主题配色，共 100 种组合。
           </p>
         </div>
       </header>
@@ -1875,6 +1927,26 @@ function AppearanceTab(): JSX.Element {
         </div>
       </Field>
 
+      <Field label="智能画布连线流动色">
+        <div className="mb-appearance-flow">
+          <input
+            type="color"
+            className="mb-appearance-flow-input"
+            value={flowColor || '#7c8cff'}
+            onChange={(e) => setFlowColor(e.target.value)}
+            title="智能画布里彩色流动连线的颜色"
+          />
+          <button
+            type="button"
+            className={`mb-btn mb-btn-sm ${flowColor ? 'mb-btn-ghost' : 'is-active'}`}
+            onClick={() => setFlowColor('')}
+          >
+            跟随主题强调色
+          </button>
+          <span className="mb-appearance-flow-hint">智能画布（Ctrl+7）里连线像河流一样流动的颜色</span>
+        </div>
+      </Field>
+
       <Field label="鼠标光晕">
         <div className="mb-appearance-halos">
           {HALO_STYLES.map((s, i) => (
@@ -1898,7 +1970,7 @@ function AppearanceTab(): JSX.Element {
           ))}
         </div>
         <div className="mb-field-hint">
-          代替原来的"卡片旋转光"——整个 app 共用 1 个跟随鼠标的光晕，多模块同屏时 GPU 占用大幅下降。
+          代替原来的「卡片旋转光」——整个 app 共用 1 个跟随鼠标的光晕，多模块同屏时 GPU 占用大幅下降。
           想完全关闭选「关闭」即可。
         </div>
       </Field>
@@ -2159,7 +2231,7 @@ function ToolsTab(): JSX.Element {
             </button>
           )}
           <span className="mb-field-hint" style={{ marginLeft: 'auto', fontSize: 11 }}>
-            仅支持 ncnn 格式(.bin + .param 同名成对)。.safetensors / .pth / .onnx <strong>不能直接用</strong>。
+            ncnn 引擎仅识别 .bin + .param 同名成对。.onnx 模型在下方「ONNX 放大模型」分组管理。
           </span>
         </div>
         {(engineStatus?.models.length ?? 0) === 0 ? (
@@ -2218,6 +2290,10 @@ function ToolsTab(): JSX.Element {
         )}
       </Field>
 
+      <Field label="ONNX 放大模型(走 onnxruntime-node 主进程,无 Python 依赖)">
+        <OnnxModelsField />
+      </Field>
+
       <Field label="HYPIR（AI 高质量修复，需 Python+CUDA）">
         <div className="mb-field-hint" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           {hypirReady === null ? (
@@ -2241,7 +2317,6 @@ function StorageTab(): JSX.Element {
   const [busy, setBusy] = useState(false);
 
   const imagePath = prefs.image_storage_path ?? '(默认应用目录 / images/)';
-  const loraPath = prefs.lora_folder_path ?? '(未设置 —— LoRA 选择器禁用)';
 
   async function pickFolder(prefKey: string, label: string): Promise<void> {
     setBusy(true);
@@ -2262,20 +2337,6 @@ function StorageTab(): JSX.Element {
     if (save.ok) {
       await load();
       toast.success(`${label}已更新`, r.data.path);
-    } else {
-      toast.error('保存失败', save.error.message);
-    }
-  }
-
-  async function clearLoraPath(): Promise<void> {
-    setBusy(true);
-    const save = await window.electronAPI.settings.save({
-      prefs: { lora_folder_path: '' }
-    });
-    setBusy(false);
-    if (save.ok) {
-      await load();
-      toast.success('已清除 LoRA 目录');
     } else {
       toast.error('保存失败', save.error.message);
     }
@@ -2303,36 +2364,6 @@ function StorageTab(): JSX.Element {
           >
             选择文件夹
           </button>
-        </div>
-      </Field>
-
-      <Field label="LoRA 文件夹路径（可选）">
-        <div className="mb-storage-path-row">
-          <div className="mb-input" style={{ flex: 1, display: 'flex', alignItems: 'center' }}>
-            <FolderIcon size={16} />
-            <span style={{ marginLeft: 10, color: 'var(--mb-text-secondary)' }}>{loraPath}</span>
-          </div>
-          <button
-            className="mb-btn mb-btn-secondary"
-            onClick={() => void pickFolder('lora_folder_path', 'LoRA 目录')}
-            disabled={busy}
-          >
-            选择文件夹
-          </button>
-          {prefs.lora_folder_path && (
-            <button
-              className="mb-btn mb-btn-ghost"
-              onClick={() => void clearLoraPath()}
-              disabled={busy}
-            >
-              清除
-            </button>
-          )}
-        </div>
-        <div className="mb-field-hint">
-          指向你的 LoRA 库（递归扫描 .safetensors / .pt / .ckpt）；设了之后右侧绘图面板会出现「LoRA」选择器。
-          注入到 prompt 末尾的格式：<code>{'<lora:name:weight>'}</code>。
-          ComfyUI workflow 内可用 <code>{'{{lora}}'}</code> 占位符接收。
         </div>
       </Field>
 
@@ -2533,7 +2564,7 @@ function ConfigIOSection(): JSX.Element {
         </button>
       </div>
       <div className="mb-field-hint">
-        包含模型方案 + API Key（密码加密）、外观、系统设置、提示词管家。
+        包含模型方案 + API Key（密码加密）、外观、系统设置、图库。
         不含对话历史与图片本身。
       </div>
 
@@ -2592,7 +2623,7 @@ function ConfigIOSection(): JSX.Element {
                   setExportSections((s) => ({ ...s, prompts: e.target.checked }))
                 }
               />
-              <span>提示词管家（提示词 + 分类 + 相册元数据）</span>
+              <span>图库（提示词 + 分类 + 相册元数据）</span>
             </label>
           </div>
           <div>
@@ -2733,7 +2764,7 @@ function ConfigIOSection(): JSX.Element {
                       setImportSections((s) => ({ ...s, prompts: e.target.checked }))
                     }
                   />
-                  <span>提示词管家</span>
+                  <span>图库</span>
                 </label>
               </div>
               <div>
@@ -2774,13 +2805,29 @@ function SearchBackendField(): JSX.Element {
   const [backend, setBackend] = useState<string>(prefs.search_backend ?? 'native');
   const [tavilyKey, setTavilyKey] = useState<string>(prefs.search_tavily_key ?? '');
   const [searxngUrl, setSearxngUrl] = useState<string>(prefs.search_searxng_url ?? '');
+  const [bochaKey, setBochaKey] = useState<string>(prefs.search_bocha_key ?? '');
+  const [zhipuKey, setZhipuKey] = useState<string>(prefs.search_zhipu_key ?? '');
+  const [jinaKey, setJinaKey] = useState<string>(prefs.search_jina_key ?? '');
+  const [serperKey, setSerperKey] = useState<string>(prefs.search_serper_key ?? '');
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     setBackend(prefs.search_backend ?? 'native');
     setTavilyKey(prefs.search_tavily_key ?? '');
     setSearxngUrl(prefs.search_searxng_url ?? '');
-  }, [prefs.search_backend, prefs.search_tavily_key, prefs.search_searxng_url]);
+    setBochaKey(prefs.search_bocha_key ?? '');
+    setZhipuKey(prefs.search_zhipu_key ?? '');
+    setJinaKey(prefs.search_jina_key ?? '');
+    setSerperKey(prefs.search_serper_key ?? '');
+  }, [
+    prefs.search_backend,
+    prefs.search_tavily_key,
+    prefs.search_searxng_url,
+    prefs.search_bocha_key,
+    prefs.search_zhipu_key,
+    prefs.search_jina_key,
+    prefs.search_serper_key
+  ]);
 
   async function save(): Promise<void> {
     setBusy(true);
@@ -2788,7 +2835,11 @@ function SearchBackendField(): JSX.Element {
       prefs: {
         search_backend: backend,
         search_tavily_key: tavilyKey,
-        search_searxng_url: searxngUrl
+        search_searxng_url: searxngUrl,
+        search_bocha_key: bochaKey,
+        search_zhipu_key: zhipuKey,
+        search_jina_key: jinaKey,
+        search_serper_key: serperKey
       }
     });
     setBusy(false);
@@ -2800,6 +2851,17 @@ function SearchBackendField(): JSX.Element {
     }
   }
 
+  // 各「代搜」后端的 key 输入配置（native/ddg/off 不需要 key）
+  const keyFields: Record<string, { value: string; set: (v: string) => void; placeholder: string; type?: string }> = {
+    tavily: { value: tavilyKey, set: setTavilyKey, placeholder: 'Tavily API Key（tvly-...）', type: 'password' },
+    searxng: { value: searxngUrl, set: setSearxngUrl, placeholder: 'https://searx.example.com' },
+    bocha: { value: bochaKey, set: setBochaKey, placeholder: '博查 Bocha API Key（sk-...）', type: 'password' },
+    zhipu: { value: zhipuKey, set: setZhipuKey, placeholder: '智谱开放平台 API Key', type: 'password' },
+    jina: { value: jinaKey, set: setJinaKey, placeholder: 'Jina API Key（jina_...）', type: 'password' },
+    serper: { value: serperKey, set: setSerperKey, placeholder: 'Serper API Key', type: 'password' }
+  };
+  const activeKey = keyFields[backend];
+
   return (
     <Field label="联网搜索后端">
       <select
@@ -2809,32 +2871,31 @@ function SearchBackendField(): JSX.Element {
       >
         <option value="native">原生（用模型自带的 web_search 工具）</option>
         <option value="ddg">DuckDuckGo（无 key，推荐）</option>
+        <option value="bocha">博查 Bocha（国内 AI 搜索，单 key）</option>
+        <option value="zhipu">智谱 Zhipu（开放平台，单 key，国内直连）</option>
+        <option value="jina">Jina（s.jina.ai，单 key，有免费额度）</option>
         <option value="tavily">Tavily（需 key，质量更高）</option>
+        <option value="serper">Serper（Google 结果，需海外网络）</option>
         <option value="searxng">SearXNG（自己的实例）</option>
         <option value="off">关闭（即使方案勾了 supports_web_search 也不搜）</option>
       </select>
       <div className="mb-field-hint">
-        仅在方案配置勾选了「支持联网搜索」的对话模型生效。
-        DDG / Tavily / SearXNG 是「代搜」——梦笔先搜结果，作为系统消息注入对话。
+        <strong>两种触发方式</strong>(任一满足就走代搜):
+        <br />① 在 方案 → 对话模型 上勾选「支持联网搜索」(每条都搜)
+        <br />② 聊天框里点 <code>🌐 联网</code> 按钮(本会话临时强制搜,推荐)
+        <br />
+        DDG / 博查 / 智谱 / Jina / Tavily / Serper / SearXNG 都是「代搜」—— 梦笔先搜结果,作为系统消息注入对话。
+        额度用完时换一个后端即可。选 <code>native</code> 表示用模型自带的 web_search 工具(不走代搜)。
+        当 backend 是 <code>native</code> 或 <code>off</code> 时 🌐 按钮也不会触发代搜。
       </div>
-      {backend === 'tavily' && (
+      {activeKey && (
         <div style={{ marginTop: 6 }}>
           <input
             className="mb-input"
-            type="password"
-            placeholder="Tavily API Key（tvly-...）"
-            value={tavilyKey}
-            onChange={(e) => setTavilyKey(e.target.value)}
-          />
-        </div>
-      )}
-      {backend === 'searxng' && (
-        <div style={{ marginTop: 6 }}>
-          <input
-            className="mb-input"
-            placeholder="https://searx.example.com"
-            value={searxngUrl}
-            onChange={(e) => setSearxngUrl(e.target.value)}
+            type={activeKey.type ?? 'text'}
+            placeholder={activeKey.placeholder}
+            value={activeKey.value}
+            onChange={(e) => activeKey.set(e.target.value)}
           />
         </div>
       )}

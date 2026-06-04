@@ -63,13 +63,16 @@ function getResourcePath(...rel: string[]): string {
 
 /**
  * 加载托盘 / 窗口图标。优先级：
- *   1. userData/icon-101.png  —— 用 sharp 把 资源 101.svg 一次性栅格化的缓存
- *   2. resources/icon.png     —— builder buildResources 兜底
+ *   1. resources/icon.png    —— 当前打包资源（mengbi 标志透明）
+ *   2. userData/icon-101.png —— 旧版本 sharp 栅格化的兜底缓存
  *   3. 1×1 透明占位
+ *
+ * 注意顺序：resources/icon.png 必须排前面，旧用户 userData 里仍有上一版本的
+ * icon-101.png 缓存，不挪到后面就一直拿旧图。
  */
 function loadAppIcon(): Electron.NativeImage {
   const cached = path.join(app.getPath('userData'), 'icon-101.png');
-  for (const p of [cached, getResourcePath('icon.png')]) {
+  for (const p of [getResourcePath('icon.png'), cached]) {
     try {
       if (fs.existsSync(p)) {
         const img = nativeImage.createFromPath(p);
@@ -87,20 +90,27 @@ function loadAppIcon(): Electron.NativeImage {
   );
 }
 
-/** 启动时把 资源 101.svg 栅格化成 PNG 缓存到 userData，用于托盘 + 窗口图标 */
-async function rasterizeAppIcon(): Promise<void> {
-  const cached = path.join(app.getPath('userData'), 'icon-101.png');
-  if (fs.existsSync(cached)) return;
-  const svgPath = getResourcePath('icon-101.svg');
-  if (!fs.existsSync(svgPath)) return;
+/** 启动时清理 userData/temp-refs/ 中超过 24 小时的旧文件。
+ *  这里存的是画板"送入生图页"时为引用图写盘的临时图片——重启之后引用关系丢了，
+ *  但文件本身还在。24h 阈值兼顾"用户重启后继续编辑同一批"和"避免无限增长"。 */
+async function cleanupTempRefs(): Promise<void> {
+  const dir = path.join(app.getPath('userData'), 'temp-refs');
   try {
-    // sharp 在 electron.vite.config.ts 里 external，运行时直接 require 拿原生模块
-    const sharp = (await import('sharp')).default;
-    const buf = await sharp(svgPath).resize(256, 256).png().toBuffer();
-    fs.writeFileSync(cached, buf);
-    logger.info('app icon rasterized', cached);
-  } catch (e) {
-    logger.warn('rasterize app icon failed, falling back to icon.png', e);
+    const files = await fs.promises.readdir(dir);
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    for (const f of files) {
+      const p = path.join(dir, f);
+      try {
+        const stat = await fs.promises.stat(p);
+        if (stat.mtimeMs < cutoff) {
+          await fs.promises.unlink(p).catch(() => {});
+        }
+      } catch {
+        /* skip 单个文件失败 */
+      }
+    }
+  } catch {
+    /* dir 不存在 = 还没用过 */
   }
 }
 
@@ -111,7 +121,7 @@ function createTray(): void {
 
   try {
     tray = new Tray(icon);
-    tray.setToolTip('梦笔 mengbi');
+    tray.setToolTip('Mengbi · AI绘画智能工作站');
     tray.setContextMenu(
       Menu.buildFromTemplate([
         {
@@ -172,6 +182,9 @@ function createWindow(): void {
       contextIsolation: true,
       nodeIntegration: false,
       webSecurity: true,
+      // 启用 Chromium 实验性能力（含 WebGPU），让 onnxruntime-web 能用到 GPU 推理。
+      // 没开这个 flag，Electron 28 默认 webgpu adapter 不可用。
+      experimentalFeatures: true,
       // 窗口被遮挡 / 最小化时，让 Chromium 主动节流定时器和 rAF，
       // 配合渲染层 data-idle 把后台 CPU 压到接近 0
       backgroundThrottling: true
@@ -242,7 +255,8 @@ function applySecurityHeaders(): void {
           "default-src 'self'; " +
             "img-src 'self' data: blob: https: mengbi-image:; " +
             "style-src 'self' 'unsafe-inline'; " +
-            "script-src 'self'; " +
+            "script-src 'self' 'wasm-unsafe-eval'; " +
+            "worker-src 'self' blob:; " +
             "connect-src 'self' https:;"
         ]
       }
@@ -250,15 +264,34 @@ function applySecurityHeaders(): void {
   });
 }
 
+// 解锁 WebGPU 不安全后端 —— Electron 28 + Windows 上 onnxruntime-web 的 webgpu provider
+// 需要这个 switch 才能拿到 GPU adapter；wasm 后端不依赖此 switch。
+app.commandLine.appendSwitch('enable-unsafe-webgpu');
+app.commandLine.appendSwitch('enable-features', 'Vulkan');
+
 app.whenReady().then(async () => {
   try {
     initDb();
     registerAllIpcHandlers();
-    await rasterizeAppIcon();
+    await cleanupTempRefs();
   } catch (e) {
     logger.error('boot failed', e);
     app.exit(1);
     return;
+  }
+
+  // 启动期清扫:上一轮 mengbi 异常退出留下的孤儿 Python sidecar 此时可能仍在烧 GPU,
+  // 探测所有已注册 feature 的端口,有人占着就走 graceful HTTP + stop bat + taskkill 完整流程。
+  // 必须在 registerAllIpcHandlers() 之后（FeatureRegistry 已注册 HYPIR/SUPIR）、在用户能 spawn 新 sidecar 之前跑。
+  try {
+    const { sweepOrphanSidecars } = await import('./services/ai-platform');
+    const r = await sweepOrphanSidecars();
+    if (r.swept.length > 0) {
+      logger.info(`[main] startup sweep cleaned ${r.swept.length} orphan sidecar(s): ${r.swept.join(', ')}`);
+    }
+  } catch (e) {
+    logger.warn(`[main] startup orphan sweep failed: ${(e as Error).message}`);
+    // 不阻塞启动 —— 用户仍可用 mengbi 的其他功能
   }
 
   // 把 mengbi-image://x/<base64url-of-absolute-path> 映射到本地文件
@@ -303,6 +336,25 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   closeDb();
+  // 内嵌 llama-cpp 服务异步停（不能在这里 await，但 process exit 前 OS 会回收）
+  void import('./services/localLlmServer').then(({ localLlmServer }) =>
+    localLlmServer.stop()
+  );
+  // AI sidecar 优雅停 fire-and-forget(graceful HTTP 路径,Python 端 atexit 可以正常跑)
+  void import('./services/ai-platform').then(({ getSidecarManager }) =>
+    getSidecarManager().stopAllOnQuit()
+  );
+  // 同步兜底:before-quit 没有 await,如果 mengbi 在 graceful 完成前就退出,
+  // 上面的 async chain 会被 OS 直接砍掉,Python 孙子留下当孤儿。
+  // 这里同步 spawn taskkill /F /T /PID,1.5s 内完成,确保 GPU 被释放。
+  try {
+    // require() 在 before-quit 里是同步的;import() 才是 async
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const aiPlatform = require('./services/ai-platform') as typeof import('./services/ai-platform');
+    aiPlatform.getSidecarManager().killAllSidecarsSync();
+  } catch {
+    /* 即便 require 失败也别拖垮退出 */
+  }
 });
 
 app.on('second-instance', () => {

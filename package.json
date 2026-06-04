@@ -1,6 +1,6 @@
 {
   "name": "mengbi",
-  "version": "0.1.0",
+  "version": "0.0.2",
   "description": "梦笔（mengbi）绘画工具箱 — 梦中之笔，绘未来之画",
   "main": "out/main/main.js",
   "author": "mengbi contributors",
@@ -25,15 +25,27 @@
     "package:linux": "electron-vite build && electron-builder --linux"
   },
   "dependencies": {
+    "@imgly/background-removal": "^1.7.0",
+    "@neplex/vectorizer": "^0.0.5",
+    "@xyflow/react": "^12.10.2",
     "better-sqlite3": "11.3.0",
+    "duck-duck-scrape": "^2.2.7",
     "electron-log": "^5.2.0",
     "electron-updater": "^6.3.9",
+    "expr-eval": "^2.0.2",
     "framer-motion": "^11.11.17",
     "gpt-tokenizer": "^2.5.0",
+    "konva": "^9.3.22",
+    "node-llama-cpp": "^3.18.1",
+    "onnxruntime-node": "^1.26.0",
+    "onnxruntime-web": "^1.21.0",
+    "potrace": "^2.1.8",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-konva": "^18.2.14",
     "react-router-dom": "^6.28.0",
     "sharp": "^0.33.5",
+    "ws": "^8.21.0",
     "zod": "^3.23.8",
     "zustand": "^4.5.5"
   },
@@ -43,6 +55,7 @@
     "@types/node": "^20.16.10",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
+    "@types/ws": "^8.18.1",
     "@typescript-eslint/eslint-plugin": "^7.18.0",
     "@typescript-eslint/parser": "^7.18.0",
     "@vitejs/plugin-react": "^4.3.3",
@@ -54,6 +67,7 @@
     "eslint-plugin-react-hooks": "^4.6.2",
     "prettier": "^3.3.3",
     "typescript": "^5.6.3",
-    "vite": "^5.4.10"
+    "vite": "^5.4.10",
+    "vite-plugin-static-copy": "^2.3.2"
   }
 }

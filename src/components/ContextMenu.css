@@ -75,3 +75,57 @@
   justify-content: center;
   flex-shrink: 0;
 }
+
+.mb-ctxmenu-sep {
+  height: 1px;
+  margin: 4px 8px;
+  background: var(--mb-border-soft, rgba(255, 255, 255, 0.08));
+  pointer-events: none;
+}
+
+/* 二级菜单 + 父级"›"指示 */
+.mb-ctxmenu-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mb-ctxmenu-caret {
+  flex-shrink: 0;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--mb-text-muted);
+  opacity: 0.75;
+  padding-left: 6px;
+}
+
+.mb-ctxmenu-item.has-sub.is-sub-open,
+.mb-ctxmenu-item.has-sub.is-sub-open:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.10);
+}
+
+.mb-ctxmenu.mb-ctxmenu-sub {
+  z-index: 11001;
+}
+
+/* 浅色主题：菜单背景翻浅（item 文字走 --mb-text-primary，浅底才不会深字叠深底看不见），
+   悬停 / 危险项颜色同步翻成深底可读版本。 */
+[data-atmosphere='warm-jade'] .mb-ctxmenu {
+  background: rgba(251, 249, 243, 0.97);
+}
+[data-atmosphere='warm-jade'] .mb-ctxmenu-item:hover:not(:disabled) {
+  background: rgba(74, 60, 36, 0.08);
+}
+[data-atmosphere='warm-jade'] .mb-ctxmenu-item.has-sub.is-sub-open,
+[data-atmosphere='warm-jade'] .mb-ctxmenu-item.has-sub.is-sub-open:hover:not(:disabled) {
+  background: rgba(74, 60, 36, 0.1);
+}
+[data-atmosphere='warm-jade'] .mb-ctxmenu-item.is-danger {
+  color: #dc2626;
+}
+/* 玻璃主题：菜单更通透（深基底 + 自带 blur）*/
+[data-atmosphere='glass'] .mb-ctxmenu {
+  background: rgba(26, 28, 44, 0.72);
+}
