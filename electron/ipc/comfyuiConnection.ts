@@ -8,7 +8,13 @@ import { getDb } from '../services/db';
 import { encryptString, decryptString } from '../services/safeStorage';
 import { getComfyLauncher } from '../services/comfyui/launcher';
 import { getSystemStats, freeMemory } from '../services/comfyui/client';
-import { ComfyuiSetConfigSchema, ComfyuiDetectSchema, ComfyuiFreeMemorySchema } from './schemas';
+import { scanComfyLaunch } from '../services/comfyui/launchScanner';
+import {
+  ComfyuiSetConfigSchema,
+  ComfyuiDetectSchema,
+  ComfyuiScanLaunchSchema,
+  ComfyuiFreeMemorySchema
+} from './schemas';
 import type { ConnectionStatus, ComfyConnectionConfig, DetectResult } from '@shared/comfyui';
 
 const K_HOST = 'comfyui_host';
@@ -104,6 +110,11 @@ export function registerComfyuiConnectionHandlers(): void {
         })
       );
     }
+  });
+
+  // 选一个 ComfyUI 文件夹 → 自动识别启动方式（纯读目录，不执行任何东西）
+  register('api:comfyui:scan-launch', ComfyuiScanLaunchSchema, async (input) => {
+    return ok({ candidates: scanComfyLaunch(input.dir) });
   });
 
   register('api:comfyui:status', null, async () => {

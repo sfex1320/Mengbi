@@ -3,7 +3,7 @@ import { toast } from '@/store/toastStore';
 import { useComfyuiStore } from '@/store/comfyuiStore';
 import { useComfyuiRunStore } from '@/store/comfyuiRunStore';
 import { RunControl } from './RunControl';
-import type { ConnectionPhase } from '@shared/comfyui';
+import type { ConnectionPhase, ComfyLaunchCandidate } from '@shared/comfyui';
 
 const PHASE_LABEL: Record<ConnectionPhase, string> = {
   disconnected: '未连接',
@@ -20,6 +20,8 @@ export function ConnectionBar(): JSX.Element {
   const [advanced, setAdvanced] = useState(false);
   const [token, setToken] = useState('');
   const [freeing, setFreeing] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const [scanList, setScanList] = useState<ComfyLaunchCandidate[]>([]);
 
   const phase: ConnectionPhase = running
     ? 'executing'
@@ -34,6 +36,38 @@ export function ConnectionBar(): JSX.Element {
       launchCwd,
       ...(token ? { authToken: token } : {})
     });
+  }
+
+  /** 选 ComfyUI 文件夹 → 自动识别启动方式，回填启动命令 / 目录 / 地址 */
+  async function pickAndScan(): Promise<void> {
+    const r = await window.electronAPI.storage.selectFolder();
+    if (!r.ok || !r.data) return; // 用户取消
+    const dir = r.data.path;
+    setScanning(true);
+    const sr = await window.electronAPI.comfyui.scanLaunch({ dir });
+    setScanning(false);
+    if (!sr.ok) {
+      toast.error(sr.error.message, sr.error.hint);
+      return;
+    }
+    const cands = sr.data.candidates;
+    if (cands.length === 0) {
+      setConn({ launchCwd: dir });
+      setScanList([]);
+      toast.info('没识别到启动脚本', '已填入目录，请手动填写启动命令（如 python main.py --port 8188）');
+      return;
+    }
+    if (cands.length === 1) {
+      applyCandidate(cands[0]);
+      return;
+    }
+    setScanList(cands); // 多个 → 让用户选一个
+  }
+
+  function applyCandidate(c: ComfyLaunchCandidate): void {
+    setConn({ launchCommand: c.command, launchCwd: c.cwd, host: c.host });
+    setScanList([]);
+    toast.success('已识别启动方式', c.label);
   }
 
   async function detect(): Promise<void> {
@@ -142,6 +176,39 @@ export function ConnectionBar(): JSX.Element {
 
       {advanced && (
         <div className="mb-cfy-conn-adv">
+          <div
+            style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}
+          >
+            <button
+              className="mb-btn mb-btn-sm mb-btn-primary"
+              onClick={() => void pickAndScan()}
+              disabled={scanning}
+            >
+              {scanning ? '识别中…' : '📁 选择 ComfyUI 文件夹（自动识别）'}
+            </button>
+            <span className="mb-cfy-conn-msg">
+              选根目录即可——自动找 run_*.bat / python_embeded / venv，回填下方命令与目录
+            </span>
+          </div>
+          {scanList.length > 0 && (
+            <div
+              style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 10 }}
+            >
+              {scanList.map((c, i) => (
+                <button
+                  key={`${c.command}-${i}`}
+                  type="button"
+                  className="mb-btn mb-btn-ghost"
+                  style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2, textAlign: 'left' }}
+                  onClick={() => applyCandidate(c)}
+                  title={`${c.command}  （目录：${c.cwd}）`}
+                >
+                  <span style={{ fontWeight: 600 }}>{c.label}</span>
+                  <span style={{ fontSize: 12, opacity: 0.7, fontFamily: 'monospace' }}>{c.command}</span>
+                </button>
+              ))}
+            </div>
+          )}
           <label className="mb-label">启动命令</label>
           <input
             className="mb-input"

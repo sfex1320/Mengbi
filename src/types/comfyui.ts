@@ -83,6 +83,16 @@ export interface ComfyConnectionConfig {
   hasAuthToken: boolean; // token 是否已设置（明文永不回传渲染进程）
 }
 
+/** 选 ComfyUI 文件夹后自动识别出的一种启动方式（见 services/comfyui/launchScanner.ts）。 */
+export type ComfyLaunchKind = 'portable-bat' | 'portable-python' | 'venv' | 'bare-main';
+export interface ComfyLaunchCandidate {
+  label: string; // 人类可读标签（列表展示）
+  kind: ComfyLaunchKind;
+  command: string; // cmd.exe /c 要跑的命令（相对 cwd）
+  cwd: string; // 工作目录（= ComfyUI 根 / main.py 所在目录）
+  host: string; // 从 .bat 读出或默认的连接地址
+}
+
 // ───────────────────────── 输入/输出控件 + 绑定（后续阶段用） ─────────────────────────
 
 export type InputControlKind =

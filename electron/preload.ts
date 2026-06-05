@@ -201,6 +201,7 @@ const api: ElectronAPI = {
     getConfig: () => invoke('api:comfyui:get-config'),
     setConfig: (input) => invoke('api:comfyui:set-config', input),
     detect: (input) => invoke('api:comfyui:detect', input ?? null),
+    scanLaunch: (input) => invoke('api:comfyui:scan-launch', input),
     status: () => invoke('api:comfyui:status'),
     start: () => invoke('api:comfyui:start'),
     stop: () => invoke('api:comfyui:stop'),

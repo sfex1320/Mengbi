@@ -266,6 +266,10 @@ export const ComfyuiDetectSchema = z
   .nullable()
   .optional();
 
+export const ComfyuiScanLaunchSchema = z.object({
+  dir: z.string().min(1).max(4000)
+});
+
 export const ComfyuiImportSchema = z.object({
   json: z.string().min(1).max(20_000_000)
 });

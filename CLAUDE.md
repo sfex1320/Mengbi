@@ -352,6 +352,7 @@ mengbi/
 | 通道 | 区 | 功能 |
 |------|----|------|
 | `api:comfyui:get-config` / `set-config` | 连接 | 读写 host / 启动命令 / 目录 / token（token 经 safeStorage 加密，存 settings k/v） |
+| `api:comfyui:scan-launch` | 连接 | **选 ComfyUI 文件夹自动识别启动方式**（纯读目录 + .bat 文本，不执行）：识别便携包 `run_*.bat` / `python_embeded`+`ComfyUI\main.py` / `venv`+`main.py` / 裸 `main.py`，返回候选 `{label,kind,command,cwd,host}[]`，前端 ConnectionBar 一键回填命令/目录/地址。实现见 `services/comfyui/launchScanner.ts` |
 | `api:comfyui:detect` / `status` / `start` / `stop` | 连接 | 探活（GET /system_stats，以可达为准，非进程名）/ 状态 / 按用户命令在用户目录 spawn 启动并轮询就绪 / 停止 |
 | `api:comfyui:import` | 工作流 | 校验并解析 API 格式 workflow（UI 格式 → 固定文案提示导出 API Format） |
 | `api:comfyui:template:list` / `get` / `upsert` / `delete` | 模板 | 工作流模板 CRUD（`comfyui_workflow_templates` 表，保留原始 JSON + 控件 + 绑定 + loop + ui_layout） |

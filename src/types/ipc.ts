@@ -7,6 +7,7 @@ import type { Result, AppErrorCode, ErrorSeverity } from './error';
 import type { ApiPlan, ApiConfig, ApiConfigInput, SettingsBundle, Album, AlbumInput } from './domain';
 import type {
   ComfyConnectionConfig,
+  ComfyLaunchCandidate,
   ConnectionStatus,
   DetectResult,
   ImportResult,
@@ -65,6 +66,7 @@ export interface ComfyuiAPI {
     authToken?: string | null;
   }): Promise<Result<{ saved: boolean }>>;
   detect(input?: { host?: string } | null): Promise<Result<DetectResult>>;
+  scanLaunch(input: { dir: string }): Promise<Result<{ candidates: ComfyLaunchCandidate[] }>>;
   status(): Promise<Result<ConnectionStatus>>;
   start(): Promise<Result<{ pid: number | null }>>;
   stop(): Promise<Result<{ stopped: boolean }>>;
