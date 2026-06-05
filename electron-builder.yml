@@ -8,9 +8,14 @@ files:
   - package.json
   - "!**/{.eslintrc.cjs,.prettierrc,tsconfig*.json,electron.vite.config.ts}"
   - "!**/{*.map,*.tsbuildinfo}"
+# 运行时窗口 / 托盘图标：主进程 loadAppIcon() 从 process.resourcesPath/resources/icon.png 读。
+# 必须显式随包发 —— files 白名单只含 out/**+package.json，resources/ 不在 asar 里，
+# 不发的话运行时找不到 icon.png，会回退到旧缓存图标（任务栏+托盘都显示老 logo）。
 # HYPIR 便携脚手架（bat + Python 服务源码 + 配置）随安装包发；
 # 用户点"在默认位置展开脚手架"时由主进程从 process.resourcesPath/hypir-portable/ 拷过去
 extraResources:
+  - from: resources/icon.png
+    to: resources/icon.png
   - from: resources/hypir-portable
     to: hypir-portable
     filter:
@@ -25,6 +30,8 @@ asarUnpack:
   # native .node 加载时需要侧载 DLL,asar 里 dlopen 会失败
   - "node_modules/onnxruntime-node/**"
 win:
+  # 显式指定图标源（1024² 方形 PNG）；electron-builder 据此生成多尺寸 .ico 嵌进 exe / 安装器。
+  icon: resources/icon.png
   target:
     - target: nsis
       arch:

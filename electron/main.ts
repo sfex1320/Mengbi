@@ -62,25 +62,24 @@ function getResourcePath(...rel: string[]): string {
 }
 
 /**
- * 加载托盘 / 窗口图标。优先级：
- *   1. resources/icon.png    —— 当前打包资源（mengbi 标志透明）
- *   2. userData/icon-101.png —— 旧版本 sharp 栅格化的兜底缓存
- *   3. 1×1 透明占位
+ * 加载托盘 / 窗口图标。
+ *   1. resources/icon.png —— 随包发的应用图标（1024² 方形，electron-builder.yml extraResources 落到
+ *      process.resourcesPath/resources/icon.png；dev 时在项目根 resources/icon.png）
+ *   2. 1×1 透明占位（仅当 icon.png 缺失时兜底）
  *
- * 注意顺序：resources/icon.png 必须排前面，旧用户 userData 里仍有上一版本的
- * icon-101.png 缓存，不挪到后面就一直拿旧图。
+ * 注意：**不再**回退到 userData/icon-101.png。那是旧版本 sharp 栅格化的缓存，
+ * 一旦 resources/icon.png 没随包发（历史 bug），就会一直拿那张旧 logo —— 任务栏 + 托盘双双显示老图。
+ * 现在 icon.png 已显式随包发，缓存兜底纯属footgun，移除。
  */
 function loadAppIcon(): Electron.NativeImage {
-  const cached = path.join(app.getPath('userData'), 'icon-101.png');
-  for (const p of [getResourcePath('icon.png'), cached]) {
-    try {
-      if (fs.existsSync(p)) {
-        const img = nativeImage.createFromPath(p);
-        if (!img.isEmpty()) return img;
-      }
-    } catch {
-      /* try next */
+  const p = getResourcePath('icon.png');
+  try {
+    if (fs.existsSync(p)) {
+      const img = nativeImage.createFromPath(p);
+      if (!img.isEmpty()) return img;
     }
+  } catch {
+    /* 落到占位 */
   }
   return nativeImage.createFromBuffer(
     Buffer.from(
