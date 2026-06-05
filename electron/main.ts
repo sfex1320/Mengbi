@@ -97,8 +97,8 @@ function loadAppIcon(): Electron.NativeImage {
 function createSplash(): void {
   try {
     splash = new BrowserWindow({
-      width: 360,
-      height: 440,
+      width: 460,
+      height: 460,
       frame: false,
       transparent: true,
       resizable: false,
@@ -107,31 +107,29 @@ function createSplash(): void {
       show: false,
       alwaysOnTop: true,
       skipTaskbar: false,
+      hasShadow: false,
       backgroundColor: '#00000000',
       title: '梦笔',
       icon: loadAppIcon(),
       webPreferences: { contextIsolation: true, nodeIntegration: false }
     });
-    const html =
-      '<!doctype html><meta charset="utf-8"/><style>' +
-      'html,body{margin:0;height:100%;overflow:hidden;-webkit-user-select:none;user-select:none;' +
-      "font-family:Inter,'SF Pro Display',system-ui,-apple-system,sans-serif}" +
-      'body{display:flex;flex-direction:column;align-items:center;justify-content:center;' +
-      'background:radial-gradient(120% 120% at 50% 0%,#1b1d27 0%,#0a0b10 72%);' +
-      'border:1px solid rgba(255,255,255,.06);border-radius:18px;color:#f5f5f7}' +
-      '.logo{font-size:46px;font-weight:800;letter-spacing:10px;padding-left:10px;' +
-      'background:linear-gradient(135deg,#fbbf24,#fb923c);-webkit-background-clip:text;background-clip:text;color:transparent}' +
-      '.slogan{margin-top:14px;font-size:12px;letter-spacing:1px;color:rgba(245,245,247,.55)}' +
-      '.bar{margin-top:36px;width:188px;height:4px;border-radius:99px;background:rgba(255,255,255,.08);overflow:hidden;position:relative}' +
-      '.bar::before{content:"";position:absolute;top:0;height:100%;width:42%;border-radius:99px;' +
-      'background:linear-gradient(90deg,#fbbf24,#fb923c);animation:run 1.15s cubic-bezier(.4,0,.2,1) infinite}' +
-      '@keyframes run{0%{left:-45%}100%{left:100%}}' +
-      '.status{margin-top:16px;font-size:11px;letter-spacing:.5px;color:rgba(245,245,247,.4)}' +
-      '</style>' +
-      '<div class="logo">梦笔</div>' +
-      '<div class="slogan">梦中之笔，绘未来之画</div>' +
-      '<div class="bar"></div>' +
-      '<div class="status" id="s">正在启动…</div>';
+    // 迅雷风：透明窗口，中间 logo + 往外延展的光晕（双层呼吸）+ 下方流动进度条，无边框无卡片
+    const logo = loadAppIcon().toDataURL();
+    const html = `<!doctype html><meta charset="utf-8"/><style>
+html,body{margin:0;height:100%;overflow:hidden;background:transparent;-webkit-user-select:none;user-select:none;font-family:Inter,'SF Pro Display',system-ui,-apple-system,sans-serif}
+.wrap{position:relative;width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.logobox{position:relative;display:flex;align-items:center;justify-content:center;width:160px;height:160px}
+.halo{position:absolute;left:50%;top:50%;width:380px;height:380px;transform:translate(-50%,-50%);pointer-events:none;background:radial-gradient(circle,rgba(96,165,255,.55) 0%,rgba(74,134,242,.30) 26%,rgba(56,104,214,.13) 46%,rgba(20,40,90,0) 68%);animation:breathe 2.6s ease-in-out infinite}
+.halo2{position:absolute;left:50%;top:50%;width:230px;height:230px;transform:translate(-50%,-50%);pointer-events:none;background:radial-gradient(circle,rgba(150,200,255,.5) 0%,rgba(120,180,255,0) 70%);animation:breathe 2.6s ease-in-out infinite reverse}
+@keyframes breathe{0%,100%{opacity:.7;transform:translate(-50%,-50%) scale(.96)}50%{opacity:1;transform:translate(-50%,-50%) scale(1.12)}}
+.logo{position:relative;width:132px;height:132px;object-fit:contain;filter:drop-shadow(0 4px 22px rgba(80,150,255,.55));animation:float 3s ease-in-out infinite}
+@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-5px)}}
+.bar{position:relative;margin-top:30px;width:188px;height:4px;border-radius:99px;background:rgba(180,205,255,.16);overflow:hidden;box-shadow:0 0 10px rgba(80,150,255,.22)}
+.bar::before{content:"";position:absolute;top:0;height:100%;width:40%;border-radius:99px;background:linear-gradient(90deg,#5b9cff,#9ecbff);box-shadow:0 0 8px rgba(120,180,255,.8);animation:run 1.15s cubic-bezier(.4,0,.2,1) infinite}
+@keyframes run{0%{left:-42%}100%{left:100%}}
+.status{position:relative;margin-top:15px;font-size:12.5px;letter-spacing:2px;color:rgba(225,235,255,.78);text-shadow:0 1px 6px rgba(0,0,0,.55)}
+</style>
+<div class="wrap"><div class="logobox"><div class="halo"></div><div class="halo2"></div><img class="logo" src="${logo}"/></div><div class="bar"></div><div class="status" id="s">正在启动…</div></div>`;
     void splash.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
     splash.once('ready-to-show', () => splash?.show());
     // 兜底：12s 后无条件关掉 splash，防主窗口万一没触发 ready-to-show 时一直挂着
