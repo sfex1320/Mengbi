@@ -68,23 +68,54 @@ function Shell(): JSX.Element {
   // 鼠标点回软件 → focus 事件 → 自动恢复。
   useEffect(() => {
     const html = document.documentElement;
+    // 失焦/隐藏 → 立即 idle；聚焦可见但「无输入超过 IDLE_AFTER_MS」也进入 idle，
+    // 让装饰动画在用户停手发呆时也暂停（原来只在失焦时停，聚焦发呆仍满载烧 GPU）。
+    const IDLE_AFTER_MS = 8000;
+    let timer: number | undefined;
     function setIdle(v: boolean): void {
       if (v) html.dataset.idle = 'true';
       else delete html.dataset.idle;
     }
+    function clearTimer(): void {
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+        timer = undefined;
+      }
+    }
     function recompute(): void {
-      const blurred = !document.hasFocus();
-      const hidden = document.hidden;
-      setIdle(blurred || hidden);
+      const active = document.hasFocus() && !document.hidden;
+      if (!active) {
+        clearTimer();
+        setIdle(true);
+        return;
+      }
+      setIdle(false);
+      clearTimer();
+      timer = window.setTimeout(() => setIdle(true), IDLE_AFTER_MS);
+    }
+    function onActivity(): void {
+      if (!document.hasFocus() || document.hidden) return;
+      if (html.dataset.idle === 'true') setIdle(false);
+      clearTimer();
+      timer = window.setTimeout(() => setIdle(true), IDLE_AFTER_MS);
     }
     window.addEventListener('blur', recompute);
     window.addEventListener('focus', recompute);
     document.addEventListener('visibilitychange', recompute);
+    window.addEventListener('mousemove', onActivity, { passive: true });
+    window.addEventListener('keydown', onActivity);
+    window.addEventListener('wheel', onActivity, { passive: true });
+    window.addEventListener('pointerdown', onActivity, { passive: true });
     recompute();
     return () => {
+      clearTimer();
       window.removeEventListener('blur', recompute);
       window.removeEventListener('focus', recompute);
       document.removeEventListener('visibilitychange', recompute);
+      window.removeEventListener('mousemove', onActivity);
+      window.removeEventListener('keydown', onActivity);
+      window.removeEventListener('wheel', onActivity);
+      window.removeEventListener('pointerdown', onActivity);
       delete html.dataset.idle;
     };
   }, []);

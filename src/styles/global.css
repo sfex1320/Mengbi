@@ -77,6 +77,26 @@ html[data-idle='true'] .mb-ls-blob {
   visibility: hidden;
 }
 
+/* 无障碍 / 省电：系统开了「减少动态效果」就停掉所有装饰动画（保留进度条/spinner）。
+   纯静态背景，零持续 GPU 合成成本。 */
+@media (prefers-reduced-motion: reduce) {
+  .mb-stars *,
+  .mb-orb,
+  .mb-galaxy-band,
+  .mb-meteor,
+  .mb-ls-blob,
+  .mb-microstar,
+  .mb-header-brand-name,
+  body {
+    animation: none !important;
+  }
+  .mb-orb,
+  .mb-galaxy-band,
+  .mb-meteor {
+    visibility: hidden;
+  }
+}
+
 body {
   background: var(--mb-bg-base-aurora);
   background-attachment: fixed;

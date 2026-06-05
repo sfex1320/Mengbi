@@ -138,9 +138,10 @@
 .mb-orb {
   position: absolute;
   border-radius: 50%;
-  filter: blur(72px);
-  opacity: 0.55;
-  mix-blend-mode: screen;
+  /* 性能：blur 72→48（大模糊层每帧重合成很贵）；去掉 mix-blend-mode:screen——
+     screen 混合强制每帧额外一遍合成 pass，去掉后靠 opacity 仍是柔和氛围光。 */
+  filter: blur(48px);
+  opacity: 0.5;
   will-change: transform;
 }
 

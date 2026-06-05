@@ -275,8 +275,10 @@ function createWindow(): void {
   mainWindow.on('ready-to-show', () => {
     closeSplash();
     mainWindow?.show();
-    const isDev = !!process.env.ELECTRON_RENDERER_URL;
-    if (isDev || process.env.MENGBI_OPEN_DEVTOOLS === '1') {
+    // 不再在 dev 自动弹 DevTools —— 分离的 DevTools 会持续给渲染端打点（Elements/Paint/DOM 变更序列化），
+    // 帧率大幅下降，是「从终端跑 npm run dev 测试时巨卡」的头号原因。需要时按 F12 / Ctrl+Shift+I，
+    // 或设 MENGBI_OPEN_DEVTOOLS=1 启动。打包版本来就不会开（不设 ELECTRON_RENDERER_URL）。
+    if (process.env.MENGBI_OPEN_DEVTOOLS === '1') {
       mainWindow?.webContents.openDevTools({ mode: 'detach' });
     }
   });
@@ -338,10 +340,15 @@ function applySecurityHeaders(): void {
   });
 }
 
-// 解锁 WebGPU 不安全后端 —— Electron 28 + Windows 上 onnxruntime-web 的 webgpu provider
-// 需要这个 switch 才能拿到 GPU adapter；wasm 后端不依赖此 switch。
+// 解锁 WebGPU 不安全后端 —— 仅放开 WebGPU API 表面，不改合成后端。保留它，供将来渲染端
+// onnxruntime-web 真用上 device:'webgpu' 时取 GPU adapter（当前抠图走 wasm、放大走
+// onnxruntime-node/DirectML，都不依赖它）。
 app.commandLine.appendSwitch('enable-unsafe-webgpu');
-app.commandLine.appendSwitch('enable-features', 'Vulkan');
+// ⚠️ 性能修复：**不再强制 Vulkan 合成后端**。Electron 28(Chromium 120) 上 Vulkan 是实验路径，
+// 不少 Win11 GPU/驱动会被 blocklist 或静默退化到 SwiftShader 软件渲染 → 全程界面卡顿（即便不碰 AI 功能）。
+// 改用 Chrome 在 Windows 上的稳定默认 ANGLE/D3D11，恢复硬件合成。
+// （将来若渲染端真要 WebGPU 且某 GPU 必须 Vulkan，请按机器实测后再 gated 加回 enable-features=Vulkan，别全局强开。）
+app.commandLine.appendSwitch('use-angle', 'd3d11');
 
 app.whenReady().then(async () => {
   // 立刻弹启动画面：DB 初始化 / 渲染端解析期间不再黑屏，用户一眼能看到「已经在启动」

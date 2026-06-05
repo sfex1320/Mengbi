@@ -103,12 +103,13 @@ function LightShadowField(): JSX.Element {
 
 export function Stars(): JSX.Element {
   const atmosphere = useThemeStore((s) => s.atmosphere);
-  const microStars = useMemo(() => makeMicroStars(260), []);
+  // 性能：星点/流星数量砍掉一大半（260→110、72→30）。这些都是 infinite 循环的独立动画层，
+  // 数量直接决定持续 GPU 合成成本；密度肉眼几乎无差，卡顿明显缓解。
+  const microStars = useMemo(() => makeMicroStars(110), []);
   // 三波流星雨——错开周期 + 错开延迟基线，让屏幕几乎一直能看到流星
-  // 周期短 = 来得勤；count 大 = 单波更密集
-  const showerA = useMemo(() => makeMeteorShower(28, 32, 0), []);
-  const showerB = useMemo(() => makeMeteorShower(24, 44, 12), []);
-  const showerC = useMemo(() => makeMeteorShower(20, 56, 24), []);
+  const showerA = useMemo(() => makeMeteorShower(12, 32, 0), []);
+  const showerB = useMemo(() => makeMeteorShower(10, 44, 12), []);
+  const showerC = useMemo(() => makeMeteorShower(8, 56, 24), []);
 
   // 浅色主题不用星空/流星（白点在浅底不可见），改走"光影变换"软光晕场
   if (atmosphere === 'warm-jade') return <LightShadowField />;
