@@ -310,6 +310,137 @@ export function renderSearchContext(query: string, hits: SearchHit[]): string {
   ].join('\n');
 }
 
+// ──────────────────────────────────────────────
+// 后端注册表 + 统一调度（strategy）
+//
+// 把 7 个后端的「人类可读名 / 需要的凭据 / 检索函数」收敛到一张表，
+// 调度（planSearch）与执行（runSearch）从 chat.ts 抽到这里：
+//   - planSearch 是纯函数（不发网络）→ 可单测，锁住"缺凭据"判定
+//   - runSearch 返回 discriminated SearchOutcome（区分 空/缺凭据/出错/禁用）
+//     → 调用方能报**准确**原因，不再把三种情况一律收敛成 null 误显示"缺少凭据"
+// ──────────────────────────────────────────────
+
+/** chat.ts 从 settings 读出的搜索偏好（凭据随后端不同而不同） */
+export interface SearchPrefs {
+  backend: SearchBackend;
+  tavilyKey: string;
+  searxngUrl: string;
+  bochaKey: string;
+  zhipuKey: string;
+  jinaKey: string;
+  serperKey: string;
+}
+
+/** 单个后端的策略声明：人类可读名 + 需要的凭据字段 + 真正的检索函数 */
+interface SearchBackendSpec {
+  label: string;
+  /** 需要的凭据在 SearchPrefs 上的字段名；无凭据后端（ddg）留空 */
+  credentialKey?: Exclude<keyof SearchPrefs, 'backend'>;
+  /** 缺凭据时提示语里"缺少 XX"的 XX */
+  credentialKind?: string;
+  run(query: string, prefs: SearchPrefs): Promise<SearchHit[]>;
+}
+
+const BACKENDS: Partial<Record<SearchBackend, SearchBackendSpec>> = {
+  ddg: { label: 'DuckDuckGo', run: (q) => searchDdg(q) },
+  tavily: {
+    label: 'Tavily',
+    credentialKey: 'tavilyKey',
+    credentialKind: 'API Key',
+    run: (q, p) => searchTavily(q, p.tavilyKey)
+  },
+  searxng: {
+    label: 'SearXNG',
+    credentialKey: 'searxngUrl',
+    credentialKind: '实例 URL',
+    run: (q, p) => searchSearxng(q, p.searxngUrl)
+  },
+  bocha: {
+    label: '博查 Bocha',
+    credentialKey: 'bochaKey',
+    credentialKind: 'API Key',
+    run: (q, p) => searchBocha(q, p.bochaKey)
+  },
+  zhipu: {
+    label: '智谱 Zhipu',
+    credentialKey: 'zhipuKey',
+    credentialKind: 'API Key',
+    run: (q, p) => searchZhipu(q, p.zhipuKey)
+  },
+  jina: {
+    label: 'Jina',
+    credentialKey: 'jinaKey',
+    credentialKind: 'API Key',
+    run: (q, p) => searchJina(q, p.jinaKey)
+  },
+  serper: {
+    label: 'Serper',
+    credentialKey: 'serperKey',
+    credentialKind: 'API Key',
+    run: (q, p) => searchSerper(q, p.serperKey)
+  }
+};
+
+/** 后端人类可读名 —— 给 UI / 提示语用；未知/native/off 原样返回 id */
+export function getSearchBackendLabel(backend: SearchBackend): string {
+  return BACKENDS[backend]?.label ?? backend;
+}
+
+/**
+ * 调度计划（纯函数，**不发网络**）：决定这次代搜该不该跑、缺不缺凭据。
+ * 把"凭据校验"从执行里拆出来——单测可覆盖、调用方能拿到准确原因。
+ */
+export type SearchPlan =
+  | { kind: 'disabled' } // native / off / 未知后端：本就不代搜
+  | { kind: 'no-credential'; backend: SearchBackend; message: string }
+  | { kind: 'run'; backend: SearchBackend };
+
+export function planSearch(prefs: SearchPrefs): SearchPlan {
+  const spec = BACKENDS[prefs.backend];
+  if (!spec) return { kind: 'disabled' }; // native / off / 兜底
+  if (spec.credentialKey) {
+    const cred = String(prefs[spec.credentialKey] ?? '').trim();
+    if (!cred) {
+      return {
+        kind: 'no-credential',
+        backend: prefs.backend,
+        message: `搜索后端「${spec.label}」缺少${
+          spec.credentialKind ?? '凭据'
+        }，请到 设置 → 存储与系统 → 联网搜索 配置`
+      };
+    }
+  }
+  return { kind: 'run', backend: prefs.backend };
+}
+
+/** 一次代搜的结果（区分 空/缺凭据/出错/禁用，让 UI 报准确原因，不再一律 null） */
+export type SearchOutcome =
+  | { kind: 'ok'; hits: SearchHit[]; injected: string }
+  | { kind: 'empty' }
+  | { kind: 'disabled' }
+  | { kind: 'no-credential'; message: string }
+  | { kind: 'error'; message: string };
+
+/**
+ * 执行一次代搜：planSearch 决策 → 跑对应后端 → 统一成 SearchOutcome。
+ * **不抛错**（网络/解析异常收敛成 {kind:'error'}），让对话永远能照常发出。
+ */
+export async function runSearch(query: string, prefs: SearchPrefs): Promise<SearchOutcome> {
+  if (!query.trim()) return { kind: 'empty' };
+  const plan = planSearch(prefs);
+  if (plan.kind === 'disabled') return { kind: 'disabled' };
+  if (plan.kind === 'no-credential') return { kind: 'no-credential', message: plan.message };
+  const spec = BACKENDS[plan.backend];
+  if (!spec) return { kind: 'disabled' };
+  try {
+    const hits = await spec.run(query, prefs);
+    if (!hits.length) return { kind: 'empty' };
+    return { kind: 'ok', hits, injected: renderSearchContext(query, hits) };
+  } catch (e) {
+    return { kind: 'error', message: (e as Error).message };
+  }
+}
+
 function stripBoldTags(s: string | undefined): string {
   if (!s) return '';
   return s.replace(/<\/?b>/gi, '');

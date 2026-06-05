@@ -10,16 +10,9 @@ import { logger } from '../services/logger';
 import { isMockMode } from './mocks/runtime';
 import { runMockChatStream } from './mocks/chat';
 import {
-  searchDdg,
-  searchTavily,
-  searchSearxng,
-  searchBocha,
-  searchZhipu,
-  searchJina,
-  searchSerper,
-  renderSearchContext,
+  runSearch,
   type SearchBackend,
-  type SearchHit
+  type SearchPrefs
 } from '../services/searchBackends';
 
 interface ConvRow {
@@ -463,68 +456,42 @@ async function handleSend(
 
   // 代搜触发条件:
   //   (cfg.supports_web_search === true) || (forceWebSearch === true)
-  //   且 全局 search_backend ∈ {ddg, tavily, searxng}
+  //   且 全局 search_backend ∈ {ddg, tavily, searxng, bocha, zhipu, jina, serper}
   // forceWebSearch 是聊天框 🌐 toggle 勾上时由前端传入 —— 让用户能"本轮强制搜",
   // 不需要去方案配置里找隐藏的 supports_web_search 开关。
-  // 失败 → 通过 chat:sources 推一条 error,让前端 toast 提示用户"代搜失败"。
+  // 调度/执行收敛到 searchBackends.runSearch（registry + 准确 outcome）；
+  // 失败仅在 forceWebSearch 时经 chat:sources 反馈准确原因（自动模式静默，避免频繁打扰）。
   let injectedSystem: string | null = null;
   const wantWebSearch = !!(cfg && cfg.supports_web_search) || forceWebSearch;
   if (wantWebSearch) {
     const prefs = loadSearchPrefs();
-    if (prefs.backend === 'native') {
-      if (forceWebSearch) {
-        // 用户强制要联网但 backend 是 'native' —— 让 UI 知道为啥没搜
-        send('chat:sources', {
-          id: messageId,
-          backend: 'native',
-          hits: [],
-          error: '搜索后端为「native」,请到 设置 → 存储与系统 → 联网搜索 改成 ddg / tavily / searxng'
-        });
-      }
-    } else if (prefs.backend !== 'off') {
-      try {
-        const r = await runPreSearch(content, prefs);
-        if (r) {
-          injectedSystem = r.injected;
-          // 把检索来源推给前端,UI 上挂"📎 参考来源"卡片
-          send('chat:sources', {
-            id: messageId,
-            backend: prefs.backend,
-            hits: r.hits.map((h) => ({
-              title: h.title,
-              url: h.url,
-              snippet: h.snippet,
-              hostname: h.hostname
-            }))
-          });
-        } else if (forceWebSearch) {
-          // 用户强制要联网但 prefs 缺凭据(tavily 无 key / searxng 无 url)
-          send('chat:sources', {
-            id: messageId,
-            backend: prefs.backend,
-            hits: [],
-            error: `搜索后端「${prefs.backend}」缺少凭据,请到 设置 → 存储与系统 → 联网搜索 填 key / url`
-          });
-        }
-      } catch (e) {
-        logger.warn('pre-search failed (non-fatal)', e);
-        // 强制模式下让前端 toast 知道
-        if (forceWebSearch) {
-          send('chat:sources', {
-            id: messageId,
-            backend: prefs.backend,
-            hits: [],
-            error: `代搜出错: ${(e as Error).message}`
-          });
-        }
-      }
-    } else if (forceWebSearch) {
+    const outcome = await runSearch(content, prefs);
+    if (outcome.kind === 'ok') {
+      injectedSystem = outcome.injected;
+      // 把检索来源推给前端,UI 上挂"📎 参考来源"卡片
       send('chat:sources', {
         id: messageId,
-        backend: 'off',
-        hits: [],
-        error: '搜索后端为「off」,请到 设置 → 存储与系统 → 联网搜索 改成 ddg / tavily / searxng'
+        backend: prefs.backend,
+        hits: outcome.hits.map((h) => ({
+          title: h.title,
+          url: h.url,
+          snippet: h.snippet,
+          hostname: h.hostname
+        }))
       });
+    } else if (forceWebSearch) {
+      // 用户本轮强制联网（🌐）却没搜到 —— 反馈**准确**原因（区分 禁用/缺凭据/出错/空）
+      let error: string;
+      if (outcome.kind === 'disabled') {
+        error = `搜索后端为「${prefs.backend}」,请到 设置 → 存储与系统 → 联网搜索 改成 ddg / tavily / searxng 等`;
+      } else if (outcome.kind === 'no-credential') {
+        error = outcome.message;
+      } else if (outcome.kind === 'error') {
+        error = `代搜出错: ${outcome.message}`;
+      } else {
+        error = '本次未检索到相关结果';
+      }
+      send('chat:sources', { id: messageId, backend: prefs.backend, hits: [], error });
     }
   }
 
@@ -667,16 +634,6 @@ interface StreamCtx {
   reasoningOut?: string | null;
 }
 
-interface SearchPrefs {
-  backend: SearchBackend;
-  tavilyKey: string;
-  searxngUrl: string;
-  bochaKey: string;
-  zhipuKey: string;
-  jinaKey: string;
-  serperKey: string;
-}
-
 function loadSearchPrefs(): SearchPrefs {
   const db = getDb();
   const rows = db
@@ -709,65 +666,6 @@ function loadSearchPrefs(): SearchPrefs {
     jinaKey: map.get('search_jina_key') ?? '',
     serperKey: map.get('search_serper_key') ?? ''
   };
-}
-
-/**
- * 跑一次代搜并返回 hits + 注入文本。失败 → 返回 null（让对话照常发出，不阻塞）。
- */
-async function runPreSearch(
-  query: string,
-  prefs: SearchPrefs
-): Promise<{ hits: SearchHit[]; injected: string } | null> {
-  if (!query.trim()) return null;
-  try {
-    let hits: SearchHit[] = [];
-    if (prefs.backend === 'ddg') {
-      hits = await searchDdg(query);
-    } else if (prefs.backend === 'tavily') {
-      if (!prefs.tavilyKey) {
-        logger.warn('search backend=tavily but no key set, skipping');
-        return null;
-      }
-      hits = await searchTavily(query, prefs.tavilyKey);
-    } else if (prefs.backend === 'searxng') {
-      if (!prefs.searxngUrl) {
-        logger.warn('search backend=searxng but no url set, skipping');
-        return null;
-      }
-      hits = await searchSearxng(query, prefs.searxngUrl);
-    } else if (prefs.backend === 'bocha') {
-      if (!prefs.bochaKey) {
-        logger.warn('search backend=bocha but no key set, skipping');
-        return null;
-      }
-      hits = await searchBocha(query, prefs.bochaKey);
-    } else if (prefs.backend === 'zhipu') {
-      if (!prefs.zhipuKey) {
-        logger.warn('search backend=zhipu but no key set, skipping');
-        return null;
-      }
-      hits = await searchZhipu(query, prefs.zhipuKey);
-    } else if (prefs.backend === 'jina') {
-      if (!prefs.jinaKey) {
-        logger.warn('search backend=jina but no key set, skipping');
-        return null;
-      }
-      hits = await searchJina(query, prefs.jinaKey);
-    } else if (prefs.backend === 'serper') {
-      if (!prefs.serperKey) {
-        logger.warn('search backend=serper but no key set, skipping');
-        return null;
-      }
-      hits = await searchSerper(query, prefs.serperKey);
-    } else {
-      return null;
-    }
-    if (hits.length === 0) return null;
-    return { hits, injected: renderSearchContext(query, hits) };
-  } catch (e) {
-    logger.error('pre-search failed', e);
-    return null;
-  }
 }
 
 async function streamOpenAICompat(ctx: StreamCtx): Promise<string> {
