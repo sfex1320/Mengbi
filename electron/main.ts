@@ -44,6 +44,7 @@ if (!app.requestSingleInstanceLock()) {
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
+let splash: BrowserWindow | null = null;
 
 /** 在 dev 和 packaged 两种情形下找 resources/ */
 function getResourcePath(...rel: string[]): string {
@@ -87,6 +88,79 @@ function loadAppIcon(): Electron.NativeImage {
       'base64'
     )
   );
+}
+
+/**
+ * 启动画面（splash）。app.whenReady 一进来就弹，避免「点了图标但黑屏几秒、不知道有没有启动」。
+ * 主窗口 ready-to-show 时关闭。frameless + 透明圆角卡片 + 不确定进度条（动画）。
+ */
+function createSplash(): void {
+  try {
+    splash = new BrowserWindow({
+      width: 360,
+      height: 440,
+      frame: false,
+      transparent: true,
+      resizable: false,
+      movable: false,
+      center: true,
+      show: false,
+      alwaysOnTop: true,
+      skipTaskbar: false,
+      backgroundColor: '#00000000',
+      title: '梦笔',
+      icon: loadAppIcon(),
+      webPreferences: { contextIsolation: true, nodeIntegration: false }
+    });
+    const html =
+      '<!doctype html><meta charset="utf-8"/><style>' +
+      'html,body{margin:0;height:100%;overflow:hidden;-webkit-user-select:none;user-select:none;' +
+      "font-family:Inter,'SF Pro Display',system-ui,-apple-system,sans-serif}" +
+      'body{display:flex;flex-direction:column;align-items:center;justify-content:center;' +
+      'background:radial-gradient(120% 120% at 50% 0%,#1b1d27 0%,#0a0b10 72%);' +
+      'border:1px solid rgba(255,255,255,.06);border-radius:18px;color:#f5f5f7}' +
+      '.logo{font-size:46px;font-weight:800;letter-spacing:10px;padding-left:10px;' +
+      'background:linear-gradient(135deg,#fbbf24,#fb923c);-webkit-background-clip:text;background-clip:text;color:transparent}' +
+      '.slogan{margin-top:14px;font-size:12px;letter-spacing:1px;color:rgba(245,245,247,.55)}' +
+      '.bar{margin-top:36px;width:188px;height:4px;border-radius:99px;background:rgba(255,255,255,.08);overflow:hidden;position:relative}' +
+      '.bar::before{content:"";position:absolute;top:0;height:100%;width:42%;border-radius:99px;' +
+      'background:linear-gradient(90deg,#fbbf24,#fb923c);animation:run 1.15s cubic-bezier(.4,0,.2,1) infinite}' +
+      '@keyframes run{0%{left:-45%}100%{left:100%}}' +
+      '.status{margin-top:16px;font-size:11px;letter-spacing:.5px;color:rgba(245,245,247,.4)}' +
+      '</style>' +
+      '<div class="logo">梦笔</div>' +
+      '<div class="slogan">梦中之笔，绘未来之画</div>' +
+      '<div class="bar"></div>' +
+      '<div class="status" id="s">正在启动…</div>';
+    void splash.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+    splash.once('ready-to-show', () => splash?.show());
+    // 兜底：12s 后无条件关掉 splash，防主窗口万一没触发 ready-to-show 时一直挂着
+    setTimeout(() => closeSplash(), 12_000);
+  } catch (e) {
+    logger.warn('splash init failed', e);
+  }
+}
+
+/** 更新 splash 上的状态文字（启动阶段提示）。splash 已关闭则静默忽略。 */
+function splashStatus(text: string): void {
+  if (splash && !splash.isDestroyed()) {
+    splash.webContents
+      .executeJavaScript(
+        `(()=>{const e=document.getElementById('s');if(e)e.textContent=${JSON.stringify(text)}})()`
+      )
+      .catch(() => undefined);
+  }
+}
+
+function closeSplash(): void {
+  if (splash && !splash.isDestroyed()) {
+    try {
+      splash.close();
+    } catch {
+      /* ignore */
+    }
+  }
+  splash = null;
 }
 
 /** 启动时清理 userData/temp-refs/ 中超过 24 小时的旧文件。
@@ -201,6 +275,7 @@ function createWindow(): void {
   });
 
   mainWindow.on('ready-to-show', () => {
+    closeSplash();
     mainWindow?.show();
     const isDev = !!process.env.ELECTRON_RENDERER_URL;
     if (isDev || process.env.MENGBI_OPEN_DEVTOOLS === '1') {
@@ -216,6 +291,7 @@ function createWindow(): void {
   // 加载失败时打日志，并告诉用户具体原因，避免一片漆黑
   mainWindow.webContents.on('did-fail-load', (_e, code, desc, url) => {
     logger.error('renderer did-fail-load', { code, desc, url });
+    closeSplash();
     const html = `
 <!doctype html><meta charset="utf-8"/>
 <style>
@@ -229,6 +305,7 @@ p{color:rgba(245,245,247,.7);max-width:560px;line-height:1.6;font-size:13px}
 <p>无法加载 <code>${url}</code><br/>错误：<code>${desc}</code> (${code})</p>
 <p class="hint">如果是 dev 模式，请确认 vite dev server 已启动并未被 Ctrl+C 中断。<br/>修好后重启应用即可。</p>`;
     mainWindow?.webContents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+    mainWindow?.show(); // 加载失败时 ready-to-show 不会触发，手动显示让用户看到错误页
   });
 
   const devUrl = process.env.ELECTRON_RENDERER_URL;
@@ -269,28 +346,19 @@ app.commandLine.appendSwitch('enable-unsafe-webgpu');
 app.commandLine.appendSwitch('enable-features', 'Vulkan');
 
 app.whenReady().then(async () => {
+  // 立刻弹启动画面：DB 初始化 / 渲染端解析期间不再黑屏，用户一眼能看到「已经在启动」
+  createSplash();
+
   try {
+    splashStatus('初始化数据库…');
     initDb();
+    splashStatus('注册服务…');
     registerAllIpcHandlers();
-    await cleanupTempRefs();
   } catch (e) {
     logger.error('boot failed', e);
+    closeSplash();
     app.exit(1);
     return;
-  }
-
-  // 启动期清扫:上一轮 mengbi 异常退出留下的孤儿 Python sidecar 此时可能仍在烧 GPU,
-  // 探测所有已注册 feature 的端口,有人占着就走 graceful HTTP + stop bat + taskkill 完整流程。
-  // 必须在 registerAllIpcHandlers() 之后（FeatureRegistry 已注册 HYPIR/SUPIR）、在用户能 spawn 新 sidecar 之前跑。
-  try {
-    const { sweepOrphanSidecars } = await import('./services/ai-platform');
-    const r = await sweepOrphanSidecars();
-    if (r.swept.length > 0) {
-      logger.info(`[main] startup sweep cleaned ${r.swept.length} orphan sidecar(s): ${r.swept.join(', ')}`);
-    }
-  } catch (e) {
-    logger.warn(`[main] startup orphan sweep failed: ${(e as Error).message}`);
-    // 不阻塞启动 —— 用户仍可用 mengbi 的其他功能
   }
 
   // 把 mengbi-image://x/<base64url-of-absolute-path> 映射到本地文件
@@ -319,8 +387,30 @@ app.whenReady().then(async () => {
   });
 
   applySecurityHeaders();
+
+  // 关键提速：窗口尽早创建，渲染端立刻开始加载；耗时清理/孤儿清扫挪到窗口之后后台跑，不阻塞首屏
+  splashStatus('加载界面…');
   createWindow();
   createTray();
+
+  // —— 非阻塞后台任务（不挡窗口显示）——
+  // 上一轮异常退出留下的临时引用图：超过 24h 的清掉
+  cleanupTempRefs().catch((e) => logger.warn('cleanupTempRefs failed', e));
+  // 孤儿 Python sidecar 清扫（探测端口可能慢）：后台跑；必须在 registerAllIpcHandlers() 之后
+  // （FeatureRegistry 已注册）、在用户能 spawn 新 sidecar 之前完成。
+  void (async () => {
+    try {
+      const { sweepOrphanSidecars } = await import('./services/ai-platform');
+      const r = await sweepOrphanSidecars();
+      if (r.swept.length > 0) {
+        logger.info(
+          `[main] startup sweep cleaned ${r.swept.length} orphan sidecar(s): ${r.swept.join(', ')}`
+        );
+      }
+    } catch (e) {
+      logger.warn(`[main] startup orphan sweep failed: ${(e as Error).message}`);
+    }
+  })();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

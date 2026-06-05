@@ -1015,11 +1015,6 @@ export default function ManagerPage(): JSX.Element {
 
         {mode === 'gallery' && (
           <>
-            <div className="mb-manager-gallery-tip">
-              <SparkleIcon size={14} />
-              <span>每次成功生图都会自动归入这里</span>
-            </div>
-
             <div className="mb-manager-side-filters">
               <div className="mb-manager-side-filter">
                 <label>日期</label>

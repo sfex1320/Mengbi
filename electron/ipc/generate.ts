@@ -1354,7 +1354,6 @@ async function pollGrsaiOnce(
 }
 
 async function runGrsaiImage(opts: GrsaiImageOpts): Promise<string[]> {
-  const submitUrl = joinApiUrl(opts.cfg.base_url, 'api/generate');
   const apiKey = decryptString(opts.cfg.api_key_encrypted);
 
   // family 判定（与 runOpenAIImage 同套规则）：用户在 params.family_override 下拉
@@ -1370,6 +1369,17 @@ async function runGrsaiImage(opts: GrsaiImageOpts): Promise<string[]> {
     family.id === 'nano-banana-pro' ||
     family.id === 'nano-banana-2' ||
     family.id === 'nano-banana-flash';
+
+  // 端点决策（修「nano-banana 选 4K 却只出 1K」）：
+  // grsai 旧的通用端点 `api/generate` 不认 imageSize → 4K 静默退化成 1K。
+  // 官方文档与 ComfyUI-GrsAI 参考实现都用 `/v1/draw/nano-banana`，且明确支持
+  // imageSize="1K"/"2K"/"4K"。故 nano-banana 改走官方端点；gpt-image-2-vip 等其它模型
+  // 保持旧端点不动（隔离，不影响它们）。官方端点若在该中转站不存在（404/405）则自动回退
+  // 旧端点，避免硬退化（回退后 imageSize 可能被忽略，但至少能出图）。
+  const legacyUrl = joinApiUrl(opts.cfg.base_url, 'api/generate');
+  let submitUrl = isNanoBanana
+    ? joinApiUrl(opts.cfg.base_url, 'v1/draw/nano-banana')
+    : legacyUrl;
 
   // aspectRatio 字段决策（新版统一支持 "16:9" / "1024x1024" / "4K" 三种）：
   //   1. 显式 width/height 双字段 → "WxH"（gpt-image-2 这类按像素出图）
@@ -1439,7 +1449,7 @@ async function runGrsaiImage(opts: GrsaiImageOpts): Promise<string[]> {
   });
 
   // ── 第一步：提交任务 ─────────────
-  const submitRes = await chromiumFetch(submitUrl, {
+  const submitInit = {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -1447,7 +1457,22 @@ async function runGrsaiImage(opts: GrsaiImageOpts): Promise<string[]> {
     },
     body: JSON.stringify(submitBody),
     signal: opts.signal
-  });
+  } as const;
+  let submitRes = await chromiumFetch(submitUrl, submitInit);
+  // 官方 /v1/draw/nano-banana 在该中转站不存在 → 回退旧端点 api/generate（不硬退化）
+  if (
+    isNanoBanana &&
+    submitUrl !== legacyUrl &&
+    (submitRes.status === 404 || submitRes.status === 405)
+  ) {
+    logger.warn('grsai.draw.official-endpoint-missing', {
+      status: submitRes.status,
+      from: submitUrl,
+      fallback: legacyUrl
+    });
+    submitUrl = legacyUrl;
+    submitRes = await chromiumFetch(submitUrl, submitInit);
+  }
 
   if (!submitRes.ok) {
     const text = await submitRes.text().catch(() => '');
