@@ -19,7 +19,8 @@ import {
   snapToGrid,
   pixelsByAspectAndBudget,
   resolveSize,
-  applyBodyOverrides
+  applyBodyOverrides,
+  substituteWorkflowPlaceholders
 } from './imageBody';
 
 // ─────────────────────────────────────────────────────
@@ -2188,24 +2189,3 @@ async function runComfyUIImage(opts: ComfyUIOpts): Promise<string[]> {
  * 递归遍历 workflow 对象，把所有值为完整 `{{var}}` 字符串的字段替换为 variables[var]。
  * 子串拼接形式（如 `"prefix-{{var}}"`) 不替换 —— 显式要求"完整等于占位符"，避免误伤。
  */
-function substituteWorkflowPlaceholders(
-  obj: unknown,
-  variables: Record<string, string | number>
-): unknown {
-  if (typeof obj === 'string') {
-    const m = /^\{\{(\w+)\}\}$/.exec(obj.trim());
-    if (m && m[1] in variables) return variables[m[1]];
-    return obj;
-  }
-  if (Array.isArray(obj)) {
-    return obj.map((x) => substituteWorkflowPlaceholders(x, variables));
-  }
-  if (obj && typeof obj === 'object') {
-    const next: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
-      next[k] = substituteWorkflowPlaceholders(v, variables);
-    }
-    return next;
-  }
-  return obj;
-}

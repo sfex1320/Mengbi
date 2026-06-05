@@ -4,7 +4,8 @@ import {
   applyBodyOverrides,
   pixelsByAspectAndBudget,
   snapToGrid,
-  TIER_PIXEL_BUDGET
+  TIER_PIXEL_BUDGET,
+  substituteWorkflowPlaceholders
 } from './imageBody';
 
 describe('snapToGrid', () => {
@@ -103,5 +104,45 @@ describe('applyBodyOverrides —— 顶层合并 + ${var} 替换 + null 删字�
     applyBodyOverrides(body, '', {});
     applyBodyOverrides(body, null, {});
     expect(body).toEqual({ size: '1024x1024' });
+  });
+});
+
+describe('substituteWorkflowPlaceholders —— ComfyUI 一键直跑占位符（仅整串完整匹配）', () => {
+  const vars = { prompt: '一只猫', seed: 42, width: 1024 };
+
+  it('整串 {{var}} 才替换（字符串/数字都行）', () => {
+    expect(substituteWorkflowPlaceholders('{{prompt}}', vars)).toBe('一只猫');
+    expect(substituteWorkflowPlaceholders('{{seed}}', vars)).toBe(42);
+    expect(substituteWorkflowPlaceholders('  {{width}}  ', vars)).toBe(1024); // trim 后整串匹配
+  });
+
+  it('子串拼接不替换（保持原样）', () => {
+    expect(substituteWorkflowPlaceholders('prefix-{{prompt}}', vars)).toBe('prefix-{{prompt}}');
+    expect(substituteWorkflowPlaceholders('{{prompt}} 的尾巴', vars)).toBe('{{prompt}} 的尾巴');
+  });
+
+  it('未知变量名保持原样（不替换）', () => {
+    expect(substituteWorkflowPlaceholders('{{unknown}}', vars)).toBe('{{unknown}}');
+  });
+
+  it('递归进对象/数组；非字符串叶子原样返回', () => {
+    const wf = {
+      '3': { inputs: { text: '{{prompt}}', seed: '{{seed}}', cfg: 7, flag: true, none: null } },
+      list: ['{{prompt}}', 'literal']
+    };
+    const out = substituteWorkflowPlaceholders(wf, vars) as typeof wf;
+    expect(out['3'].inputs.text).toBe('一只猫');
+    expect(out['3'].inputs.seed).toBe(42);
+    expect(out['3'].inputs.cfg).toBe(7);
+    expect(out['3'].inputs.flag).toBe(true);
+    expect(out['3'].inputs.none).toBeNull();
+    expect(out.list).toEqual(['一只猫', 'literal']);
+  });
+
+  it('非破坏性：不改入参对象', () => {
+    const wf = { inputs: { text: '{{prompt}}' } };
+    const snapshot = JSON.stringify(wf);
+    substituteWorkflowPlaceholders(wf, vars);
+    expect(JSON.stringify(wf)).toBe(snapshot);
   });
 });

@@ -140,3 +140,31 @@ export function applyBodyOverrides(
     if (body[k] === null || body[k] === undefined) delete body[k];
   }
 }
+
+/**
+ * ComfyUI「一键直跑」（image_kind='comfyui'）的占位符替换。
+ * 递归遍历 workflow，**仅当某字符串值完整等于 `{{var}}`** 且变量存在时才替换为变量真实值
+ * （子串拼接如 `prefix-{{x}}` 不替换——见 CLAUDE.md §6.1）。
+ * 纯函数、非破坏性：返回新对象，不改入参（调用方仍应先 structuredClone 原始 workflow）。
+ */
+export function substituteWorkflowPlaceholders(
+  obj: unknown,
+  variables: Record<string, string | number>
+): unknown {
+  if (typeof obj === 'string') {
+    const m = /^\{\{(\w+)\}\}$/.exec(obj.trim());
+    if (m && m[1] in variables) return variables[m[1]];
+    return obj;
+  }
+  if (Array.isArray(obj)) {
+    return obj.map((x) => substituteWorkflowPlaceholders(x, variables));
+  }
+  if (obj && typeof obj === 'object') {
+    const next: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+      next[k] = substituteWorkflowPlaceholders(v, variables);
+    }
+    return next;
+  }
+  return obj;
+}
