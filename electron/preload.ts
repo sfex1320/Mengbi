@@ -77,6 +77,7 @@ const api: ElectronAPI = {
     probeMissingFiles: (input) => invoke('api:gallery:probe-missing-files', input),
     batchDeleteWithFiles: (input) => invoke('api:gallery:batch-delete-with-files', input)
   },
+  // 提示词卡片：UI 已下线（提示词管家移除），后端通道保留为休眠态（同保留 DB 表）
   prompt: {
     list: (input) => invoke('api:prompt:list', input),
     upsert: (input) => invoke('api:prompt:upsert', input),
@@ -88,6 +89,7 @@ const api: ElectronAPI = {
     upsert: (input) => invoke('api:album:upsert', input),
     delete: (id) => invoke('api:album:delete', id)
   },
+  // 实验室页面已下线；reverse/translate 后端保留（智能画布 LLM 节点「图片反推」复用 reverse）
   lab: {
     reverse: (input) => invoke('api:lab:reverse', input),
     translate: (input) => invoke('api:lab:translate', input),

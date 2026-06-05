@@ -18,10 +18,8 @@ const LABELS: Record<string, string> = {
   // image
   'api:image:generate': '提交绘图任务',
   'api:image:cancel': '取消绘图任务',
-  // gallery / prompt / album
+  // gallery / album
   'api:gallery:update': '更新图片元数据',
-  'api:prompt:upsert': '保存提示词卡片',
-  'api:prompt:delete': '删除提示词卡片',
   'api:album:upsert': '保存相册',
   'api:album:delete': '删除相册',
   // settings / plan
@@ -30,7 +28,7 @@ const LABELS: Record<string, string> = {
   'api:plan:upsert': '保存方案',
   'api:plan:delete': '删除方案',
   'api:plan:config:delete': '删除模型配置',
-  // lab
+  // lab（页面已下线，reverse 仍被智能画布复用）
   'api:lab:reverse': '反推图像',
   'api:lab:translate': '翻译文本',
   // storage / theme / export

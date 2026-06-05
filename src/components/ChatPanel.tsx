@@ -13,7 +13,6 @@ import { openContextMenu } from './ContextMenu';
 import { Lightbox } from './Lightbox';
 import { confirmDialog } from './ConfirmDialog';
 import { CustomSelect, type SelectOption } from './CustomSelect';
-import { autoTag } from '@/lib/autoTag';
 import { listMappedModels } from '@/lib/modelMapping';
 import './ChatPanel.css';
 
@@ -809,12 +808,6 @@ export function ChatPanel(): JSX.Element {
           onClick: () => applyAsPrompt(targetForPrompt)
         },
         {
-          label: sel ? '加入图库（选中）' : '加入图库（整段）',
-          icon: <PlusIcon size={12} />,
-          disabled: targetForPrompt.trim().length === 0,
-          onClick: () => saveToPromptLibrary(targetForPrompt)
-        },
-        {
           label: sel ? '发送选中到智能画布（提示词）' : '发送到智能画布（提示词）',
           icon: <PlusIcon size={12} />,
           disabled: targetForPrompt.trim().length === 0,
@@ -826,22 +819,6 @@ export function ChatPanel(): JSX.Element {
         }
       ]
     });
-  }
-
-  /** 把一段文字直接归档到图库（图片类，自动打标签） */
-  async function saveToPromptLibrary(text: string): Promise<void> {
-    const t = text.trim();
-    if (!t) return;
-    const auto = autoTag(t, modelId || null, [], 10);
-    const r = await window.electronAPI.prompt.upsert({
-      title: t.slice(0, 40),
-      text: t,
-      kind: 'image',
-      tags: auto.merged,
-      notes: '从对话中归档'
-    });
-    if (r.ok) toast.success('已加入图库');
-    else toast.error('归档失败', r.error.message);
   }
 
   async function cancel(): Promise<void> {
@@ -1079,27 +1056,6 @@ export function ChatPanel(): JSX.Element {
             })
           }
         />
-        {/* 提示词快捷按钮：在管家里勾"加快捷"的 prompt 出现在这里 */}
-        {ui.shortcutPromptIds.length > 0 && (
-          <div className="mb-chat-shortcuts">
-            {ui.shortcutPromptIds.map((id) => {
-              const cached = ui.shortcutPromptCache[id];
-              if (!cached) return null;
-              return (
-                <button
-                  key={id}
-                  type="button"
-                  className="mb-chat-shortcut"
-                  onClick={() => setDraft(cached.text)}
-                  title={cached.text}
-                >
-                  <span className="mb-chat-shortcut-icon">⚡</span>
-                  <span className="mb-chat-shortcut-label">{cached.title}</span>
-                </button>
-              );
-            })}
-          </div>
-        )}
         <div className="mb-chat-composer-row">
           {pendingMessageId ? (
             <button className="mb-btn mb-btn-danger mb-btn-sm" onClick={cancel}>

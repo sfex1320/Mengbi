@@ -96,13 +96,13 @@ mengbi/
 |------|--------|------|---------|
 | `/` | Ctrl+1 | 生图（对话 + 绘图） | `src/pages/Create/index.tsx` |
 | `/canvas` | Ctrl+2 | 画板（有界，多图层 + 笔刷 + 蒙版） | `src/pages/Canvas/index.tsx` |
-| `/manager` | Ctrl+3 | 提示词管家（含图库） | `src/pages/Manager/index.tsx` |
+| `/manager` | Ctrl+3 | 图库（提示词管家 UI 已于 2026-06-05 下线，固定图库视图） | `src/pages/Manager/index.tsx` |
 | `/comfyui` | Ctrl+4 | ComfyUI 工作流编排器 | `src/pages/ComfyUI/index.tsx` |
 | `/tools` | Ctrl+5 | 工具箱（保真放大 + AI 修复 + 图像转矢量,本地处理） | `src/pages/Tools/index.tsx` |
-| `/lab` | Ctrl+6 | 提示词实验室 | `src/pages/Laboratory/index.tsx` |
-| `/smart-canvas` | Ctrl+7 | 智能画布（AI 工作流 / 节点图，React Flow） | `src/pages/SmartCanvas/index.tsx` |
+| `/smart-canvas` | Ctrl+6 | 智能画布（AI 工作流 / 节点图，React Flow） | `src/pages/SmartCanvas/index.tsx` |
 
-> **当前 7 个顶级入口**（外加设置 `/settings`），与左侧侧栏自上而下一一对应。
+> **当前 6 个顶级入口**（外加设置 `/settings`），与左侧侧栏自上而下一一对应。
+> **2026-06-05 模块精简**：① **实验室（`/lab`）页面整体下线**——删除 `Laboratory/` 页 + labStore + 侧栏入口 + 路由；但 `lab.ts` 的 `reverse/translate` **IPC 后端保留**（智能画布 LLM 节点「图片反推」复用 `api:lab:reverse`）。② **提示词管家 UI 下线**——`/manager` 固定为「图库」视图（移除模式切换 + 提示词卡片/分类/编辑入口 + 各处「归档到提示词」），`prompts`/`prompt_categories` 表与 `api:prompt:*` 通道保留为休眠态（同软删除哲学，未来可复活或彻底清理）。智能画布 Ctrl+7→**Ctrl+6**。
 > 「智能画布」`/smart-canvas`（React Flow 节点图：图片/提示词/LLM/工作/ComfyUI/结果/分组节点 + 连线 + 运行）是独立节点编排模块。智能画布**不含任何 Claude Code/命令执行**；工作节点 provider 两档：`mengbi`（图片生成/编辑/风格/扩图复用 `api:image:generate`，含 family 自适应 比例/分辨率/质量 + 真实 batch/loop 多轮；放大复用 `api:upscale:run-single`）/ `mock`（Local Mock；视频生成 v1.0 不接入，走模拟）。结果图可一键入图库（`api:gallery:import-from-buffer`）/ 另存（`api:storage:save-as`）。连线类型校验：结果节点只接 工作/ComfyUI 输出。**LLM 节点**=文本模型（优化提示词/翻译/扩写/细节分解/对话完善/图片反推），复用 `api:chat:optimize-prompt` + `api:lab:reverse`，输出文本喂下游。**ComfyUI 节点**=整个工作流当黑盒（参数全在「工作流」页调好），复用 `api:comfyui:run-single` + `template:get`；画布里**只做输入/输出拆分**——上游提示词→第一个文本控件、上游图片→图片控件（file_upload 绑定由运行引擎自动上传），其余控件用工作流默认值（applyBindings 留空不覆盖），结果经 `comfyui:run-done` 取回。**分组**=容器化（拖节点进框自动归入 React Flow parentId，整组作下游输入）。**创建**：工具栏点选类型→点画布落位（武装态）；从节点拖出连线落空白 / 双击画布→快捷创建菜单（拖出可建下游节点并自动连线）。**连线**有中点 × 圆钮可删（DeletableEdge）。**排布**：网格(列数+间距)/按类型分组/对齐选中(左中右上中下)/横纵均分（只动顶层非分组节点）。**多文档**：进入 `/smart-canvas` 先到「选择画布」启动页（`CanvasLauncher`，launcher-first）—— 新建/打开/重命名/删除多张智能画布，最近修改在前；打开后进工作区，工具栏左侧「画布菜单」按钮可随时切回启动页 + 内联改名。文档元数据存 localStorage `mengbi.smartCanvas.docs.v1`（`useSmartDocsStore`），每张画布内容单独存 `mengbi.smartCanvas.doc.<id>`（`lib/smartDocStorage.ts`，`CanvasWorkspace` 挂载时 load、改动 500ms 去抖写回；旧单文档 `mengbi.smartCanvas.v1` 首次进入自动迁移成「我的画布」卡片）。`useSmartCanvasStore` 本身不再持久化，只作当前文档的工作缓冲区。右下角小地图（MiniMap）按节点类型上色实时呈现全画布。**撤销/重做**（Ctrl+Z/Ctrl+Shift+Z，结构改动+拖动手势进栈、上限 50；文本编辑走输入框原生撤销不进栈）、**复制/粘贴/再制节点**（Ctrl+C/V/D，模块级剪贴板跨文档有效、重映射内部连线）。**工作节点**支持负向提示词 + seed（空=随机/loop 按轮 +1；文生图经 generate.ts 在 buildBody 后透传 seed，图生图走 FormData seed）。**在途任务跨文档不丢**：work/comfy 提交时记 docId，结果回来若已切走画布则回灌该文档存储（`patchDocNodes`），不污染当前文档。localStorage 写入配额超限有 toast 预警。**跨模块打通**：图库/生图结果/工具箱结果/ComfyUI 输出的右键菜单都有「发送到智能画布」→ 推入 `useSmartInboxStore` + 跳 `/smart-canvas`，进入后加成图片节点（无打开画布则新建「导入素材」）；图片节点支持「从图库选图」（`GalleryPickerDialog` 复用 `api:gallery:list`）；结果块/结果节点可「作参考图」发回生图页（`imageParamsStore.addRefs`）+「入图库/另存」（`nodeArea` 共享 `imageToGallery`/`imageSaveAs`）。**运行全部**（工具栏「运行全部」按拓扑顺序串行跑全图 work/comfy/llm 节点，进度 `useSmartRunStore` 显示 N/total + 停止=软停只断后续）。**分组可折叠**（`toggleGroupCollapse` 隐藏子节点+相关连线、收起组高度）。**复制画布**（启动页卡片悬浮「复制」→ `duplicateDoc` 克隆元数据+内容）。**节点搜索**（Ctrl+F `NodeSearch` 按类型/文字命中 → setCenter 居中并 `selectOnly` 高亮）。**非法连线提示**（落在节点上但被拒 → toast 具体原因）。**生成超时兜底**（`generateOnce` 180s 未返回则置错+清 pending，不卡 running）。画板图层右键也有「发送到智能画布」（5 个图片来源全部打通）。
 > **2026-06-03 体验大改**：① 工作节点 UI 改名「**生成**」（type 仍 'work'）。② **进入不再回启动页**——`activeDocId` 改 session 态（不持久化、不再 mount setActive(null)）：切功能再回来停在当前画布，重启才回启动页。③ **拖入**：多图拖到画布 → 自动建分组容器网格铺入（`dropImages`）；文字拖入 → 自动建提示词节点。④ **排布按拓扑序**（`topoSorted`，生成在前结果在后，不打乱流向）。⑤ **结果节点=累积集合**：每次结果累加，`useSmartResultStore`（内存态、不进文档、重启清空；`sanitize` 剥离 result 持久化；**每节点上限 `MAX_RESULTS_PER_NODE=100`，超出 FIFO 淘汰最旧的，挡长会话 base64 爆内存**）。⑥ **ComfyUI 节点改回可调**：选模板后检查器渲染暴露控件可编辑（`renderComfyControl`），`controlValues` 随运行发出（上游仍覆盖输入槽）。⑦ **右侧检查器可收起**（`inspectorCollapsed`）。⑧ **底部备注两段**：左=选中节点能做什么（随类型变）、右=快捷键。⑨ **分组**改实线卡片+「N 项」徽章+拖入自动扩容（`setNodeParent` grow）。⑩ **连接口**=纵贯节点高度的箭头轨（`.mb-sc-handle` ::before 轨 + ::after ❯）。⑪ **连线彩色流动**（`@keyframes mb-sc-flow-move` dash 动画，色 `var(--mb-sc-flow)`，外观设置可调，默认跟随 accent；themeStore.flowColor）。⑫ 排布弹窗加图标加宽；快捷键弹窗 portal 到 body 居中（避 transform 错位）。css 前缀 `mb-sc-*`。所有节点零新 IPC（复用现有通道）。
 > **2026-06-03 续**：① **多选群组**——选 ≥2 个顶层非分组节点，右键「群组所选」或 Ctrl+G（`groupSelection`）→ 建分组容器并把子节点网格自动排布进框（`onSelectionContextMenu`/`onNodeContextMenu`，单节点右键给删除/解散分组）。② **视角上下拖修正**——预览拖动垂直方向取负（上拖→俯视、下拖→仰视），左右不变。③ **生成失败可重试**——生成节点新增「取消」按钮（运行中显示，`cancelWork`：abort 上游任务释放并发槽 + 重置 idle，解决拥挤模型挂住槽位后第二三次点运行无反应）+ 节点上内联显示错误文案（原先只有「失败」徽章看不到原因）；`generateOnce` 新增 `onTask` 回调把 taskId 记到节点供取消。④ **结果节点扩容**——`WorkResult` 加 `texts?`/`videos?`；结果节点支持 图/文本/视频 三类展示，每项可**拖出成节点**（图→图片节点 / 文本→提示词节点，走 `application/mengbi-sc-node` 拖拽载荷 + 画布 `onDrop` 落位），并新增**输出口**可继续连下游（result 进 `PRODUCERS`/`IMAGE_SOURCES`；LLM 文本经 `pushTextDownstream` 汇入结果节点）；清空累积同时清 `data.result` 避免下游读旧值。零新 IPC（取消复用 `api:image:cancel`）。
@@ -160,15 +160,15 @@ mengbi/
 
 > **相册（2026-06-05 落地 UI）**：手动相册靠 `images.album_ids` 成员（图库右键「加入相册」逐张归入，json_each 精确匹配避免 "1" 误配 "10"）；智能相册存 `smart_rules`（`minRating` / `tags` 全含 / `models` 任一 / `dateFrom`~`dateTo`），`api:gallery:list?album_id=` 时按规则**实时匹配**、不存固定成员。前端在 Manager 图库视图侧栏（`AlbumEditModal` + 侧栏相册导航）。
 
-### 4.4 实验室（lab.ts）
+### 4.4 实验室后端（lab.ts）——页面已下线，后端保留为共享服务
 
 | 通道 | 方向 | 功能 |
 |------|------|------|
-| `api:lab:reverse` | renderer→main | 单图 / 多图反推 |
-| `api:lab:translate` | renderer→main | 中英互译 |
-| `api:lab:history` | renderer→main | 实验室历史记录查询 |
+| `api:lab:reverse` | renderer→main | 单图 / 多图反推（**智能画布 LLM 节点复用**） |
+| `api:lab:translate` | renderer→main | 中英互译（休眠，暂无 UI 入口） |
+| `api:lab:history` | renderer→main | 历史记录查询（休眠） |
 
-> 实验室 v1.0 只做 **反推 / 中英互译**（+ history）。原计划的 拆解 / 多模型对比 / 融合 已于 2026-06-05 移除（曾是 `NOT_IMPLEMENTED` 桩），如未来重做按新方案设计，不要复活旧桩。
+> **2026-06-05：实验室作为独立页面已整体下线**（删 `Laboratory/` 页 + labStore + 侧栏 + 路由）。`lab.ts` 的 handler **保留**，因为智能画布 LLM 节点的「图片反推」复用 `api:lab:reverse`——这是有意保留的共享后端，不是死代码。translate/history 暂无 UI 入口（休眠）。原计划的 拆解 / 多模型对比 / 融合 早于 2026-06-05 移除，不要复活旧桩。
 
 ### 4.5 设置与系统（settings.ts + main.ts）
 

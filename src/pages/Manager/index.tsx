@@ -75,8 +75,9 @@ type SortMode = 'newest' | 'oldest';
 
 export default function ManagerPage(): JSX.Element {
   const ui = useUIStore();
-  const mode = ui.managerMode as Mode;
-  const setMode = (m: Mode): void => ui.setManagerMode(m);
+  // 提示词管家已下线：Manager 固定为「图库」视图。用 `as Mode` 保留联合类型（而非收窄成字面量），
+  // 让下方休眠的提示词分支保持类型有效（运行时 mode 恒为 'gallery'，那些分支永不渲染）。
+  const mode = 'gallery' as Mode;
   const activeSlug = ui.managerSlug;
   const setActiveSlug = (s: string): void => ui.setManagerSlug(s);
   const search = ui.managerSearch;
@@ -129,7 +130,6 @@ export default function ManagerPage(): JSX.Element {
 
   // 打开管家页面时，默认进入图库视图（每次进入都重置一次——用户更习惯先看图）
   useEffect(() => {
-    if (mode !== 'gallery') setMode('gallery');
     refreshCategories();
     refreshAlbums();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -754,12 +754,6 @@ export default function ManagerPage(): JSX.Element {
           onClick: () => void sendAsReferenceToCreate(im)
         },
         {
-          label: '归档到提示词',
-          icon: <PlusIcon size={12} />,
-          disabled: !im.prompt_positive,
-          onClick: () => archiveAsPrompt(im)
-        },
-        {
           label: '加入相册…',
           icon: <FolderIcon size={12} />,
           children: albumSubmenuItems(im)
@@ -929,26 +923,6 @@ export default function ManagerPage(): JSX.Element {
     }
   }
 
-  /** 把一张已生成的图归档为提示词卡片 */
-  async function archiveAsPrompt(im: ImageRow): Promise<void> {
-    if (!im.prompt_positive) {
-      toast.error('该图无可归档的提示词');
-      return;
-    }
-    const auto = autoTag(im.prompt_positive, im.model_used ?? null, [], 10);
-    const r = await window.electronAPI.prompt.upsert({
-      title: im.prompt_positive.slice(0, 40),
-      text: im.prompt_positive,
-      negative_text: im.prompt_negative ?? null,
-      kind: 'image',
-      tags: auto.merged,
-      notes: `来自图库 #${im.id}`,
-      related_image_ids: [im.id]
-    });
-    if (r.ok) toast.success('已归档到提示词管理');
-    else toast.error('归档失败', r.error.message);
-  }
-
   const allCategories = [VIRTUAL_ALL, ...categories];
 
   return (
@@ -959,23 +933,6 @@ export default function ManagerPage(): JSX.Element {
             <GalleryIcon size={18} /> 图库
           </h2>
           <p>收藏 / 整理 / 复用</p>
-        </div>
-
-        <div className="mb-manager-mode-row">
-          <button
-            type="button"
-            className={`mb-manager-mode ${mode === 'gallery' ? 'is-active' : ''}`}
-            onClick={() => setMode('gallery')}
-          >
-            图库
-          </button>
-          <button
-            type="button"
-            className={`mb-manager-mode ${mode === 'prompt' ? 'is-active' : ''}`}
-            onClick={() => setMode('prompt')}
-          >
-            提示词
-          </button>
         </div>
 
         {mode === 'prompt' && (
@@ -1427,7 +1384,6 @@ export default function ManagerPage(): JSX.Element {
                       onToggleSelect={() => toggleSelect(im.id)}
                       onPreview={() => setPreviewSrc(localPathToImageUrl(im.file_path))}
                       onShowFolder={() => showInFolder(im.file_path)}
-                      onArchive={() => archiveAsPrompt(im)}
                       onDelete={() => softDeleteImage(im.id)}
                       onContextMenu={(e) => showImageMenu(e, im)}
                     />
@@ -1445,7 +1401,6 @@ export default function ManagerPage(): JSX.Element {
                         onToggleSelect={() => toggleSelect(im.id)}
                         onPreview={() => setPreviewSrc(localPathToImageUrl(im.file_path))}
                         onShowFolder={() => showInFolder(im.file_path)}
-                        onArchive={() => archiveAsPrompt(im)}
                         onDelete={() => softDeleteImage(im.id)}
                         onContextMenu={(e) => showImageMenu(e, im)}
                       />
@@ -1597,7 +1552,6 @@ function ImageCard({
   onToggleSelect,
   onPreview,
   onShowFolder,
-  onArchive,
   onDelete,
   onContextMenu
 }: {
@@ -1609,7 +1563,6 @@ function ImageCard({
   onToggleSelect: () => void;
   onPreview: () => void;
   onShowFolder: () => void;
-  onArchive: () => void;
   onDelete: () => void;
   onContextMenu: (e: React.MouseEvent) => void;
 }): JSX.Element {
@@ -1697,13 +1650,6 @@ function ImageCard({
           </button>
           <button className="mb-config-row-btn" onClick={onPreview} title="放大预览">
             <SparkleIcon size={12} /> 预览
-          </button>
-          <button
-            className="mb-config-row-btn"
-            onClick={onArchive}
-            title="把这张图的提示词归档到提示词管理"
-          >
-            <PlusIcon size={12} /> 归档
           </button>
           <button
             className="mb-config-row-btn mb-config-row-btn-danger"

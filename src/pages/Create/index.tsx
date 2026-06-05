@@ -619,36 +619,9 @@ function GeneratorForm(): JSX.Element {
             });
             toast.info('已填入对话框');
           }
-        },
-        { separator: true },
-        {
-          label: '加到图库（图片类）',
-          onClick: () => void saveTaskPromptToLibrary(prompt)
-        },
-        {
-          label: '到实验室翻译 / 拆解',
-          onClick: () => {
-            params.setChatDraft(prompt);
-            navigate('/lab');
-          }
         }
       ]
     });
-  }
-
-  /** 把任务的提示词归档到图库（kind=image，自动打标签） */
-  async function saveTaskPromptToLibrary(prompt: string): Promise<void> {
-    const t = prompt.trim();
-    if (!t) return;
-    const r = await window.electronAPI.prompt.upsert({
-      title: t.slice(0, 40),
-      text: t,
-      kind: 'image',
-      tags: [],
-      notes: '从生图任务卡片归档'
-    });
-    if (r.ok) toast.success('已加入图库');
-    else toast.error('归档失败', r.error.message);
   }
 
   async function openTaskFolder(task: QueueItem): Promise<void> {

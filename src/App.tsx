@@ -12,7 +12,6 @@ import { ConfirmDialogRoot } from '@/components/ConfirmDialog';
 import { CursorHalo } from '@/components/CursorHalo';
 import CreatePage from '@/pages/Create';
 import ManagerPage from '@/pages/Manager';
-import LaboratoryPage from '@/pages/Laboratory';
 import CanvasPage from '@/pages/Canvas';
 import SettingsPage from '@/pages/Settings';
 import ToolsPage from '@/pages/Tools';
@@ -26,7 +25,6 @@ import type { NotificationAppendPayload } from '@shared/ipc';
 const ROUTE_LABEL: Record<string, string> = {
   '/': '生图',
   '/manager': '图库',
-  '/lab': '实验室',
   '/canvas': '画板',
   '/tools': '工具箱',
   '/comfyui': '工作流',
@@ -101,8 +99,7 @@ function Shell(): JSX.Element {
       '3': '/manager',
       '4': '/comfyui',
       '5': '/tools',
-      '6': '/lab',
-      '7': '/smart-canvas',
+      '6': '/smart-canvas',
       ',': '/settings'
     };
     function onKey(e: KeyboardEvent): void {
@@ -162,7 +159,6 @@ function Shell(): JSX.Element {
               <Routes location={location}>
                 <Route path="/" element={<CreatePage />} />
                 <Route path="/manager" element={<ManagerPage />} />
-                <Route path="/lab" element={<LaboratoryPage />} />
                 <Route path="/canvas" element={<CanvasPage />} />
                 <Route path="/tools" element={<ToolsPage />} />
                 <Route path="/comfyui" element={<ComfyUIPage />} />

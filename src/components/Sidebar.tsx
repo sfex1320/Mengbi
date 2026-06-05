@@ -3,7 +3,6 @@ import { motion } from 'framer-motion';
 import {
   AiBrushIcon,
   GalleryIcon,
-  FlaskIcon,
   CanvasIcon,
   SettingsIcon,
   ToolboxIcon,
@@ -26,8 +25,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/manager', label: '图库', icon: GalleryIcon, shortcut: 'Ctrl+3' },
   { to: '/comfyui', label: 'ComfyUI 工作流', icon: WorkflowIcon, shortcut: 'Ctrl+4' },
   { to: '/tools', label: '工具箱', icon: ToolboxIcon, shortcut: 'Ctrl+5' },
-  { to: '/lab', label: '提示词实验室', icon: FlaskIcon, shortcut: 'Ctrl+6' },
-  { to: '/smart-canvas', label: '智能画布', icon: SmartCanvasIcon, shortcut: 'Ctrl+7' }
+  { to: '/smart-canvas', label: '智能画布', icon: SmartCanvasIcon, shortcut: 'Ctrl+6' }
 ];
 
 /**

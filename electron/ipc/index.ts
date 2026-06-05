@@ -2,6 +2,7 @@ import { registerSettingsHandlers } from './settings';
 import { registerChatHandlers } from './chat';
 import { registerGenerateHandlers } from './generate';
 import { registerGalleryHandlers } from './gallery';
+// 实验室「页面」已下线，但 reverse/translate 后端保留：智能画布 LLM 节点的「图片反推」复用 api:lab:reverse
 import { registerLabHandlers } from './lab';
 import { registerMiscHandlers } from './misc';
 import { registerDragHandlers } from './drag';
