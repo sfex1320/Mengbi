@@ -845,8 +845,12 @@ export function ChatPanel(): JSX.Element {
   }
 
   async function cancel(): Promise<void> {
-    if (!pendingMessageId) return;
-    await window.electronAPI.chat.cancel(pendingMessageId);
+    // 用 ref 而非 state：IPC 返回后 pendingMidRef 立即就位，而 setPendingMessageId 是异步 state。
+    // 否则「IPC 已返回但首个 chunk 未到」那段窗口里按 Esc，会因 state 仍是 null 而取消失败，
+    // 流不中断、pendingAidRef 一直占着 → 被并发守卫锁住。
+    const id = pendingMidRef.current ?? pendingMessageId;
+    if (!id) return;
+    await window.electronAPI.chat.cancel(id);
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>): void {
@@ -855,7 +859,7 @@ export function ChatPanel(): JSX.Element {
       if (mode === 'image') generateImage();
       else sendChat();
     }
-    if (e.key === 'Escape' && pendingMessageId) {
+    if (e.key === 'Escape' && (pendingMidRef.current || pendingMessageId)) {
       e.preventDefault();
       cancel();
     }

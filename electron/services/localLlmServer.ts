@@ -54,6 +54,8 @@ class LocalLlmServer {
   private currentModelPath: string | null = null;
   private info: LocalLlmInfo | null = null;
   private loadingPromise: Promise<LocalLlmInfo> | null = null;
+  /** 加载令牌：每次 start() 自增；超时/被取代时作废，迟到的加载结果据此丢弃并释放，防 stale 赋值泄漏 */
+  private loadToken = 0;
   /** node-llama-cpp 模块缓存 */
   private moduleCache: typeof import('node-llama-cpp') | null = null;
 
@@ -91,6 +93,16 @@ class LocalLlmServer {
     const mod = await this.getModule();
     // 加载模型 + 建上下文整体套超时：坏 gguf / 超大模型会让 loadModel /
     // createContext 永久挂起，主进程被 await 卡死、用户无法取消。超时即放弃 + 清理。
+    // 关键：用 loadToken 守住「超时后迟到的加载」——它完成时若 token 已变，丢弃并释放，
+    // 绝不把 stale 的 model/context 赋回 this.*（否则泄漏 + 状态不一致）。
+    const token = ++this.loadToken;
+    const disposeQuietly = async (x: unknown): Promise<void> => {
+      try {
+        await (x as { dispose?: () => Promise<void> })?.dispose?.();
+      } catch {
+        /* ignore */
+      }
+    };
     let timer: NodeJS.Timeout | undefined;
     try {
       await Promise.race([
@@ -99,9 +111,19 @@ class LocalLlmServer {
             this.llama = await mod.getLlama();
           }
           const llama = this.llama as Awaited<ReturnType<typeof mod.getLlama>>;
-          this.model = await llama.loadModel({ modelPath });
-          const model = this.model as Awaited<ReturnType<typeof llama.loadModel>>;
-          this.context = await model.createContext();
+          const model = await llama.loadModel({ modelPath });
+          if (this.loadToken !== token) {
+            await disposeQuietly(model); // 已超时/被取代：释放，不赋值
+            return;
+          }
+          const context = await model.createContext();
+          if (this.loadToken !== token) {
+            await disposeQuietly(context);
+            await disposeQuietly(model);
+            return;
+          }
+          this.model = model;
+          this.context = context;
         })(),
         new Promise<never>((_, reject) => {
           timer = setTimeout(
@@ -118,6 +140,7 @@ class LocalLlmServer {
         })
       ]);
     } catch (e) {
+      this.loadToken++; // 作废本次加载：迟到完成的 loadModel 会走 dispose 分支，不再 stale 赋值
       if (timer) clearTimeout(timer);
       await this.stop().catch(() => undefined); // 清理可能半加载的资源
       throw e;

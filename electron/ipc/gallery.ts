@@ -442,19 +442,24 @@ export function registerGalleryHandlers(): void {
   register('api:album:upsert', AlbumUpsertSchema, async (input) => {
     const now = new Date().toISOString();
     const rules = input.smart_rules ? JSON.stringify(input.smart_rules) : null;
+    // 出口与 album:list 保持一致：smart_rules 解析成对象再返回（契约是 SmartAlbumRules，不是 JSON 串）
+    const fetchParsed = (id: number | bigint): unknown => {
+      const a = getDb().prepare(`SELECT * FROM albums WHERE id=?`).get(id) as AlbumRow | undefined;
+      return a ? { ...a, smart_rules: a.smart_rules ? safeParseRules(a.smart_rules) : null } : a;
+    };
     if (input.id !== undefined) {
       getDb()
         .prepare(
           `UPDATE albums SET name=?, type=?, smart_rules=?, cover_image_id=? WHERE id=?`
         )
         .run(input.name, input.type, rules, input.cover_image_id ?? null, input.id);
-      return ok(getDb().prepare(`SELECT * FROM albums WHERE id=?`).get(input.id));
+      return ok(fetchParsed(input.id));
     }
     const r = getDb()
       .prepare(
         `INSERT INTO albums(name, type, smart_rules, cover_image_id, created_at) VALUES(?, ?, ?, ?, ?)`
       )
       .run(input.name, input.type, rules, input.cover_image_id ?? null, now);
-    return ok(getDb().prepare(`SELECT * FROM albums WHERE id=?`).get(r.lastInsertRowid));
+    return ok(fetchParsed(r.lastInsertRowid));
   });
 }

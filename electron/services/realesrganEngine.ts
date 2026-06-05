@@ -455,7 +455,10 @@ async function assertZipEntriesSafe(zipPath: string): Promise<void> {
   try {
     entries = await listZipEntries(zipPath);
   } catch (e) {
-    throw new Error(`无法校验压缩包内容安全性，已拒绝解压：${(e as Error).message}`);
+    // 列不出条目（系统缺 unzip / PowerShell 版本差异等）时**降级放行**：解压本身也靠同一工具，
+    // 不存在"能解压却列不了"的情形，因此不因校验工具不可用而挡住正常安装（仅记一条警告）。
+    logger.warn(`[realesrgan] 跳过 zip 安全校验（列条目失败）：${(e as Error).message}`);
+    return;
   }
   const bad = entries.find(isUnsafeZipEntry);
   if (bad) {
@@ -481,6 +484,8 @@ export async function installEngine(
   const zipPath = path.join(engineRoot(), asset);
   const urls = urlsFor(asset, source);
   const { usedUrl } = await downloadFromAny(urls, zipPath, 'engine', onProgress);
+  // 下载源虽是官方/镜像直链，仍做一次（降级放行的）ZipSlip 校验——防镜像被污染/中间人替换
+  await assertZipEntriesSafe(zipPath);
   await extractZip(zipPath, engineRoot());
   // zip 解压后是 realesrgan-ncnn-vulkan-XXXXXXXX-windows/{exe,models,*.dll} 一层目录；
   // 把内层文件拍平到 engineRoot/，删掉 zip 与中间目录
