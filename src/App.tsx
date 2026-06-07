@@ -17,7 +17,7 @@ import SettingsPage from '@/pages/Settings';
 import ToolsPage from '@/pages/Tools';
 import ComfyUIPage from '@/pages/ComfyUI';
 import SmartCanvasPage from '@/pages/SmartCanvas';
-import { applyThemeToDocument } from '@/store/themeStore';
+import { applyThemeToDocument, useThemeStore } from '@/store/themeStore';
 import { useSettingsStore } from '@/store/settingsStore';
 import { useNotificationStore } from '@/store/notificationStore';
 import type { NotificationAppendPayload } from '@shared/ipc';
@@ -145,6 +145,28 @@ function Shell(): JSX.Element {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [navigate]);
+
+  // 整窗界面缩放：Ctrl/⌘ + =/+ 放大、Ctrl + - 缩小、Ctrl + 0 复位（webFrame 整窗缩放，对称可预期）。
+  // Chromium 原生「Ctrl++」在无菜单无边框窗口里不可靠（"+" 实为 Shift+"="，未绑定放大加速器），这里统一接管。
+  // 画板(/canvas)自身用 Ctrl+± / Ctrl+0 缩放画布 —— 在该页放行不接管（由画板自己 preventDefault + 缩放画布）。
+  useEffect(() => {
+    function onZoomKey(e: KeyboardEvent): void {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      let dir: 'in' | 'out' | 'reset' | null = null;
+      if (e.key === '=' || e.key === '+' || e.code === 'Equal' || e.code === 'NumpadAdd') dir = 'in';
+      else if (e.key === '-' || e.key === '_' || e.code === 'Minus' || e.code === 'NumpadSubtract') dir = 'out';
+      else if (e.key === '0' || e.code === 'Digit0' || e.code === 'Numpad0') dir = 'reset';
+      if (!dir) return;
+      if (pathRef.current === '/canvas') return; // 画板自己缩放画布，不接管
+      e.preventDefault(); // 接管：压掉 Chromium 原生缩放，改用 webFrame 对称缩放（themeStore 持久化）
+      const STEP = 0.1;
+      const cur = useThemeStore.getState().appZoom;
+      const next = dir === 'reset' ? 1 : dir === 'in' ? cur + STEP : cur - STEP;
+      useThemeStore.getState().setAppZoom(next);
+    }
+    window.addEventListener('keydown', onZoomKey);
+    return () => window.removeEventListener('keydown', onZoomKey);
+  }, []);
 
   const label = ROUTE_LABEL[location.pathname] ?? 'Mengbi';
 

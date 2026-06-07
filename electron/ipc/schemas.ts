@@ -22,10 +22,12 @@ const imageKindSchema = z
   .enum(['openai', 'grsai', 'apimart', 'gemini', 'openai-compat', 'openai-responses', 'comfyui'])
   .nullable();
 
+const videoKindSchema = z.enum(['kling', 'sora', 'unified']).nullable();
+
 const apiConfigInputSchema = z.object({
   id: z.number().int().optional(),
   plan_id: z.number().int().nonnegative(),
-  type: z.enum(['image', 'text']),
+  type: z.enum(['image', 'text', 'video']),
   provider_name: z.string().min(1).max(100),
   // base_url 通常是 URL；'local' 类型允许空字符串（用内嵌服务时不需要外部地址）
   base_url: z
@@ -43,6 +45,8 @@ const apiConfigInputSchema = z.object({
   supports_vision: z.boolean(),
   official_kind: officialKindSchema,
   image_kind: imageKindSchema,
+  // 视频协议变种（仅 type='video' 用）；其它类型传 null / 省略
+  video_kind: videoKindSchema.optional(),
   // 高级请求体覆盖：null / 空字符串 = 不覆盖；否则必须是合法 JSON 对象顶层（不能是数组或基本值）。
   body_overrides_json: z
     .string()
@@ -96,7 +100,7 @@ export const SaveSettingsSchema = z.object({
 export const TestConnectionSchema = z.object({
   base_url: z.string().url(),
   api_key_plain: z.string().min(1),
-  type: z.enum(['image', 'text']),
+  type: z.enum(['image', 'text', 'video']),
   model_id: z.string().optional()
 });
 
@@ -125,6 +129,21 @@ export const ImageGenerateSchema = z.object({
   negativePrompt: z.string().max(20_000).optional(),
   params: z.record(z.string(), z.unknown()),
   referenceImages: z.array(z.string()).max(16).optional()
+});
+
+// AI 视频生成（异步任务）。params 自由透传：mode/duration/resolution/aspect/seed/image/imageTail/size 等
+export const VideoGenerateSchema = z.object({
+  modelId: z.string().min(1),
+  prompt: z.string().max(20_000),
+  negativePrompt: z.string().max(20_000).optional(),
+  params: z.record(z.string(), z.unknown())
+});
+
+export const VideoCancelSchema = z.string().min(1);
+
+export const VideoSaveThumbSchema = z.object({
+  imageId: z.number().int(),
+  dataUri: z.string().min(10)
 });
 
 export const ThemeSaveSchema = z.object({

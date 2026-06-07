@@ -19,6 +19,10 @@ html {
   font-size: var(--mb-text-body);
   color: var(--mb-text-primary);
   background: var(--mb-bg-base);
+  /* 全局加粗：基础字重 Medium + 描边假性加粗（中文字体只有 400/700，靠描边补一刀同样变粗）。
+     描边色默认 currentColor，逐元素用自身文字色加粗、不会串色。两值都在 theme.css 调。 */
+  font-weight: var(--mb-font-weight-base);
+  -webkit-text-stroke-width: var(--mb-faux-bold-width);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
@@ -115,6 +119,15 @@ input,
 textarea,
 [contenteditable] {
   user-select: text;
+}
+
+/* 表单控件在 Chromium 会用 UA 字体（normal 字重）重置，打断继承 → 显式继承字体与字重，
+   让输入框 / 下拉里的文字也跟随全局加粗。描边假性加粗本身可继承，无需在此重复。 */
+input,
+textarea,
+select {
+  font-family: inherit;
+  font-weight: inherit;
 }
 
 button {

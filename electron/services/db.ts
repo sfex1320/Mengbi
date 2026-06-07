@@ -11,7 +11,7 @@ import { logger } from './logger';
  * - schema_version 在 settings 表里追踪
  */
 
-const CURRENT_SCHEMA_VERSION = 14;
+const CURRENT_SCHEMA_VERSION = 15;
 
 let _db: Database.Database | null = null;
 
@@ -312,6 +312,19 @@ function applySchema(db: Database.Database): void {
       writeSchemaVersion(db, 14);
     })();
     logger.info('db migrated to v14 (comfyui orchestrator: templates + runs)');
+  }
+
+  if (ver < 15) {
+    db.transaction(() => {
+      // api_configs 加 video_kind：type='video' 的配置记其调用协议（kling / sora / unified）。
+      // NULL = 未配 → 运行时按默认 'kling' 处理。其它 type 的行该列恒为 NULL。
+      const cols = db.prepare(`PRAGMA table_info(api_configs)`).all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === 'video_kind')) {
+        db.exec(`ALTER TABLE api_configs ADD COLUMN video_kind TEXT`);
+      }
+      writeSchemaVersion(db, 15);
+    })();
+    logger.info('db migrated to v15 (video_kind on api_configs)');
   }
 
   if (ver > CURRENT_SCHEMA_VERSION) {

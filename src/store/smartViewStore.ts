@@ -21,12 +21,15 @@ interface SmartViewState {
   snapSize: number;
   /** 拖动时显示对齐参考线（与其它节点边/中心对齐） */
   alignGuides: boolean;
+  /** 节点属性面板：true=浮动跟随选中节点（默认）/ false=固定右侧抽屉 */
+  inspectorFloat: boolean;
   setEdgeStyle: (s: EdgeStyle) => void;
   toggleArrows: () => void;
   toggleStatusColor: () => void;
   toggleSnap: () => void;
   setSnapSize: (n: number) => void;
   toggleGuides: () => void;
+  toggleInspectorFloat: () => void;
 }
 
 export const useSmartViewStore = create<SmartViewState>()(
@@ -38,13 +41,26 @@ export const useSmartViewStore = create<SmartViewState>()(
       snapToGrid: false,
       snapSize: 16,
       alignGuides: true,
+      inspectorFloat: true,
       setEdgeStyle: (edgeStyle) => set({ edgeStyle }),
       toggleArrows: () => set((s) => ({ showArrows: !s.showArrows })),
       toggleStatusColor: () => set((s) => ({ statusColorEdges: !s.statusColorEdges })),
       toggleSnap: () => set((s) => ({ snapToGrid: !s.snapToGrid })),
       setSnapSize: (snapSize) => set({ snapSize: Math.max(4, Math.min(64, Math.round(snapSize))) }),
-      toggleGuides: () => set((s) => ({ alignGuides: !s.alignGuides }))
+      toggleGuides: () => set((s) => ({ alignGuides: !s.alignGuides })),
+      toggleInspectorFloat: () => set((s) => ({ inspectorFloat: !s.inspectorFloat }))
     }),
-    { name: 'mengbi.smartCanvas.view.v1' }
+    {
+      name: 'mengbi.smartCanvas.view.v1',
+      version: 1,
+      // 一次性修复：把节点属性面板恢复成「浮动」。此前若误点过「📌 固定面板」会把
+      // inspectorFloat 持久化成 false，导致生成节点的悬浮控制台不再出现（改走右侧抽屉）。
+      // 只在旧版本（无 version / version 0）数据上跑一次，跑完用户仍可自由再钉。
+      migrate: (persisted, version) => {
+        const s = (persisted ?? {}) as Partial<SmartViewState>;
+        if (version < 1) return { ...s, inspectorFloat: true };
+        return s as SmartViewState;
+      }
+    }
   )
 );

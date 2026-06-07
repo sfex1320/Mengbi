@@ -30,7 +30,7 @@ function summary(d: ScaleNodeData): string {
 }
 
 /**
- * 缩放/预处理节点：对上游图片做几何缩小/放大（非高清化），输出新图喂下游。
+ * 缩放/预处理节点：对上游图片做几何缩小/放大（非高清化），输出新图喂下游。参数在弹出检查器里调。
  * 实时计算（canvas）：解决「输入图过大模型不收」与「图太小达不到效果」。
  */
 export function ScaleNode({ id, data }: NodeProps): JSX.Element {
@@ -44,11 +44,8 @@ export function ScaleNode({ id, data }: NodeProps): JSX.Element {
   const up = useMemo(() => computeUpstream(nodes, edges, id), [nodes, edges, id]);
   const src = up.images[0];
 
-  // 缓存已加载的源图，避免每次参数变化都重新 decode（同一 src 复用）
   const imgRef = useRef<{ src: string; img: HTMLImageElement } | null>(null);
 
-  // 实时缩放：尺寸标注「立即」跟手（纯算术，便宜）；canvas 编码（贵）去抖 220ms。
-  // outputImage/outW/outH/inW/inH 不入依赖，避免回环。
   useEffect(() => {
     if (!src) {
       imgRef.current = null;
@@ -75,11 +72,9 @@ export function ScaleNode({ id, data }: NodeProps): JSX.Element {
         w0,
         h0
       );
-      // 立即写尺寸（节点上「输入→输出」标注实时跟手，不等编码）
       if (t.w !== d.outW || t.h !== d.outH || w0 !== d.inW || h0 !== d.inH) {
         update(id, { outW: t.w, outH: t.h, inW: w0, inH: h0 } as Partial<SmartNodeData>);
       }
-      // 去抖编码：连续拖滑块/快速改参数时只在停顿后编码一次大图
       const img = entry.img;
       timer = setTimeout(() => {
         if (!alive) return;
@@ -98,7 +93,7 @@ export function ScaleNode({ id, data }: NodeProps): JSX.Element {
   return (
     <>
       <NodeResizer isVisible minWidth={200} minHeight={170} />
-      <NodeShell title="缩放" accent="is-scale" inputs outputs fill onDelete={() => remove(id)} label={d.label} labelColor={d.labelColor}>
+      <NodeShell title="缩放" accent="is-scale" inputs outputs fill onDelete={() => remove(id)}>
         <div className="mb-sc-work-line">
           {SCALE_MODE_LABELS[d.mode]} · {summary(d)}
         </div>
@@ -114,9 +109,8 @@ export function ScaleNode({ id, data }: NodeProps): JSX.Element {
             )}
           </>
         ) : (
-          <div className="mb-sc-empty">连一个图片来源进来 → 自动按设定缩放输出（右侧选模式/尺寸）。</div>
+          <div className="mb-sc-empty">连一个图片来源进来 → 自动按设定缩放输出（选中后在检查器选模式/尺寸）。</div>
         )}
-        <div className="mb-sc-note">预处理（非高清化）：解决「输入图过大模型不收」「图太小没效果」。</div>
       </NodeShell>
     </>
   );

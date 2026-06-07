@@ -23,6 +23,9 @@ const WRITE_CHANNELS: ReadonlySet<string> = new Set<string>([
   // image
   'api:image:generate',
   'api:image:cancel',
+  // video
+  'api:video:generate',
+  'api:video:cancel',
   // gallery / prompt / album
   'api:gallery:update',
   'api:prompt:upsert',

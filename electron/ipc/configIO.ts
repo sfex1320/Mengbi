@@ -81,7 +81,7 @@ function buildExportBundle(sections: SectionsFlag): InnerBundle {
         `SELECT id, plan_id, type, provider_name, base_url,
                 api_key_encrypted, model_mapping, is_official,
                 supports_web_search, supports_vision,
-                official_kind, image_kind, body_overrides_json,
+                official_kind, image_kind, video_kind, body_overrides_json,
                 comfyui_workflow_json, local_model_path,
                 supports_thinking, thinking_effort,
                 icon, proxy_timeout_seconds, created_at
@@ -218,10 +218,10 @@ function applyImport(
           `INSERT INTO api_configs(
              plan_id, type, provider_name, base_url, api_key_encrypted,
              model_mapping, is_official, supports_web_search, supports_vision,
-             official_kind, image_kind, body_overrides_json, comfyui_workflow_json,
+             official_kind, image_kind, video_kind, body_overrides_json, comfyui_workflow_json,
              local_model_path, supports_thinking, thinking_effort,
              icon, proxy_timeout_seconds, created_at
-           ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         );
         const findConfig = db.prepare(
           `SELECT id FROM api_configs
@@ -252,6 +252,9 @@ function applyImport(
             Number(c.supports_vision ?? 0),
             (c.official_kind as string) ?? null,
             (c.image_kind as string) ?? null,
+            c.video_kind === 'kling' || c.video_kind === 'sora' || c.video_kind === 'unified'
+              ? c.video_kind
+              : null,
             (c.body_overrides_json as string) ?? null,
             (c.comfyui_workflow_json as string) ?? null,
             (c.local_model_path as string) ?? null,

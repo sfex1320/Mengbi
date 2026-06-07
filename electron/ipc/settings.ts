@@ -89,6 +89,7 @@ function loadBundle(): SettingsBundle {
         | 'thinking_effort'
         | 'icon'
         | 'proxy_timeout_seconds'
+        | 'video_kind'
       > & {
         model_mapping: string;
         is_official: number;
@@ -101,6 +102,7 @@ function loadBundle(): SettingsBundle {
         thinking_effort: string | null;
         icon: string | null;
         proxy_timeout_seconds: number | null;
+        video_kind: string | null;
       }
     >;
 
@@ -124,6 +126,10 @@ function loadBundle(): SettingsBundle {
         : null,
     icon: row.icon ?? null,
     proxy_timeout_seconds: row.proxy_timeout_seconds ?? null,
+    video_kind:
+      row.video_kind === 'kling' || row.video_kind === 'sora' || row.video_kind === 'unified'
+        ? row.video_kind
+        : null,
     api_key_plain: decryptString(row.api_key_encrypted)
   }));
 
@@ -184,6 +190,9 @@ function upsertConfig(cfg: ApiConfigInput): void {
   const iconCell: string | null =
     typeof cfg.icon === 'string' && cfg.icon.trim() !== '' ? cfg.icon : null;
 
+  // 视频协议变种（仅 type='video' 用）；其它类型恒为 NULL
+  const videoKind: string | null = cfg.type === 'video' ? (cfg.video_kind ?? null) : null;
+
   if (cfg.id !== undefined) {
     // 编辑：若 api_key_plain 为空，保留原 api_key_encrypted 不动
     if (hasNewKey) {
@@ -191,7 +200,7 @@ function upsertConfig(cfg: ApiConfigInput): void {
         `UPDATE api_configs
             SET plan_id=?, type=?, provider_name=?, base_url=?, api_key_encrypted=?,
                 model_mapping=?, is_official=?, supports_web_search=?, supports_vision=?,
-                official_kind=?, image_kind=?, body_overrides_json=?, comfyui_workflow_json=?,
+                official_kind=?, image_kind=?, video_kind=?, body_overrides_json=?, comfyui_workflow_json=?,
                 local_model_path=?, supports_thinking=?, thinking_effort=?, icon=?
           WHERE id = ?`
       ).run(
@@ -206,6 +215,7 @@ function upsertConfig(cfg: ApiConfigInput): void {
         cfg.supports_vision ? 1 : 0,
         cfg.official_kind,
         cfg.image_kind ?? null,
+        videoKind,
         normalizeOverrides(cfg.body_overrides_json),
         normalizeOverrides(cfg.comfyui_workflow_json ?? null),
         cfg.local_model_path?.trim() ? cfg.local_model_path : null,
@@ -219,7 +229,7 @@ function upsertConfig(cfg: ApiConfigInput): void {
         `UPDATE api_configs
             SET plan_id=?, type=?, provider_name=?, base_url=?,
                 model_mapping=?, is_official=?, supports_web_search=?, supports_vision=?,
-                official_kind=?, image_kind=?, body_overrides_json=?, comfyui_workflow_json=?,
+                official_kind=?, image_kind=?, video_kind=?, body_overrides_json=?, comfyui_workflow_json=?,
                 local_model_path=?, supports_thinking=?, thinking_effort=?, icon=?
           WHERE id = ?`
       ).run(
@@ -233,6 +243,7 @@ function upsertConfig(cfg: ApiConfigInput): void {
         cfg.supports_vision ? 1 : 0,
         cfg.official_kind,
         cfg.image_kind ?? null,
+        videoKind,
         normalizeOverrides(cfg.body_overrides_json),
         normalizeOverrides(cfg.comfyui_workflow_json ?? null),
         cfg.local_model_path?.trim() ? cfg.local_model_path : null,
@@ -250,9 +261,9 @@ function upsertConfig(cfg: ApiConfigInput): void {
       `INSERT INTO api_configs(
         plan_id, type, provider_name, base_url, api_key_encrypted, model_mapping,
         is_official, supports_web_search, supports_vision, official_kind, image_kind,
-        body_overrides_json, comfyui_workflow_json, local_model_path,
+        video_kind, body_overrides_json, comfyui_workflow_json, local_model_path,
         supports_thinking, thinking_effort, icon, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       cfg.plan_id,
       cfg.type,
@@ -265,6 +276,7 @@ function upsertConfig(cfg: ApiConfigInput): void {
       cfg.supports_vision ? 1 : 0,
       cfg.official_kind,
       cfg.image_kind ?? null,
+      videoKind,
       normalizeOverrides(cfg.body_overrides_json),
       normalizeOverrides(cfg.comfyui_workflow_json ?? null),
       cfg.local_model_path?.trim() ? cfg.local_model_path : null,
@@ -304,6 +316,10 @@ function listConfigs(planId: number): ApiConfig[] {
     local_model_path: (r.local_model_path as string | null) ?? null,
     icon: (r.icon as string | null) ?? null,
     proxy_timeout_seconds: (r.proxy_timeout_seconds as number | null) ?? null,
+    video_kind:
+      r.video_kind === 'kling' || r.video_kind === 'sora' || r.video_kind === 'unified'
+        ? r.video_kind
+        : null,
     api_key_plain: decryptString(r.api_key_encrypted as string)
   }));
 }
@@ -334,7 +350,7 @@ function upsertPlan(input: { id?: number; name: string }): ApiPlan {
 async function testConnection(input: {
   base_url: string;
   api_key_plain: string;
-  type: 'image' | 'text';
+  type: 'image' | 'text' | 'video';
   model_id?: string;
 }): Promise<{ ok: true; data: TestConnectionResult } | { ok: false; error: ReturnType<typeof makeError> }> {
   const candidates = buildModelsEndpointCandidates(input.base_url);

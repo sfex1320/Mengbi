@@ -41,5 +41,11 @@ export const useSettingsStore = create<SettingsState>((set) => ({
     }
   },
 
-  setActivePlanId: (id) => set({ activePlanId: id })
+  setActivePlanId: (id) => {
+    set({ activePlanId: id });
+    // 持久化激活方案，重启后恢复（fire-and-forget，失败不打扰主流程）
+    void window.electronAPI.settings
+      .save({ prefs: { active_plan_id: id == null ? '' : String(id) } })
+      .catch(() => {});
+  }
 }));

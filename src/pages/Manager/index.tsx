@@ -142,13 +142,15 @@ export default function ManagerPage(): JSX.Element {
   }, [mode, activeSlug, activeAlbumId]);
 
   // 监听生图完成事件，自动刷新图库
+  // 依赖 activeAlbumId：切相册（不切 mode）后 refreshImages 闭包会读到旧相册，必须重订阅
   useEffect(() => {
     if (!window.electronAPI?.on) return;
     const off = window.electronAPI.on('image:done', () => {
       if (mode === 'gallery') refreshImages();
     });
     return off;
-  }, [mode]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, activeAlbumId]);
 
   async function refreshCategories(): Promise<void> {
     const r = await window.electronAPI.prompt.categoryList();

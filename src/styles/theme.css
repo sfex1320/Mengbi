@@ -22,6 +22,10 @@
   --mb-font-display: 'Inter', 'PingFang SC', 'SF Pro Display', system-ui, -apple-system,
     BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif;
   --mb-font-mono: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+  /* 字重：UI 默认中粗（Segoe UI 等会真切变 Medium）。中文常用字体（微软雅黑）只有 400/700，
+     靠 --mb-faux-bold-width 的描边「假性加粗」补一刀，让中文也明显变粗。两者都可在此微调。 */
+  --mb-font-weight-base: 500;
+  --mb-faux-bold-width: 0.014em;
   --mb-text-h1: 26px;
   --mb-text-h2: 18px;
   --mb-text-body: 15px;
@@ -54,8 +58,8 @@
   --mb-bg-hover: rgba(255, 255, 255, 0.05);
   --mb-bg-active: rgba(255, 255, 255, 0.08);
   --mb-text-primary: #f5f5f7;
-  --mb-text-secondary: rgba(245, 245, 247, 0.72);
-  --mb-text-muted: rgba(245, 245, 247, 0.48);
+  --mb-text-secondary: rgba(245, 245, 247, 0.9);
+  --mb-text-muted: rgba(245, 245, 247, 0.7);
   --mb-text-on-accent: #ffffff;
   --mb-border: rgba(255, 255, 255, 0.08);
   --mb-border-soft: rgba(255, 255, 255, 0.04);
@@ -539,4 +543,14 @@
     0 1px 0 0 rgba(255, 255, 255, 0.16) inset;
   --mb-shadow-glow: 0 0 0 1px rgba(255, 255, 255, 0.1),
     0 8px 28px rgba(0, 0, 12, 0.42);
+}
+
+/* ─────────────────────── 全局对比增强（次级/弱化文字更清晰） ───────────────────────
+   次级 / 弱化文字原本是各主题 primary 的低透明度版（看着「灰、淡、细」）。这里统一从每个
+   主题自己的 primary 推算更高对比的版本：深色主题 primary 偏白 → 次级文字更白；浅色主题
+   （暖白玉）primary 接近纯黑 → 次级文字更深。一条规则随主题自适应，满足「黑底更白、白底更深」。
+   选择器用 html[data-atmosphere]（特异性 0,1,1）压过各 [data-atmosphere='x']（0,1,0）。 */
+html[data-atmosphere] {
+  --mb-text-secondary: color-mix(in srgb, var(--mb-text-primary) 90%, transparent);
+  --mb-text-muted: color-mix(in srgb, var(--mb-text-primary) 70%, transparent);
 }

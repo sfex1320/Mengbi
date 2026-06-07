@@ -16,7 +16,7 @@ function I({ size = 16, children, ...rest }: P & { children: React.ReactNode }):
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth={1.6}
+      strokeWidth={1.85}
       strokeLinecap="round"
       strokeLinejoin="round"
       {...rest}
@@ -95,6 +95,37 @@ export const RatioNodeIcon = (p: P): JSX.Element => (
   </I>
 );
 
+export const TextNodeIcon = (p: P): JSX.Element => (
+  <I {...p}>
+    <path d="M5 5h14" />
+    <path d="M12 5v14" />
+    <path d="M9 19h6" />
+  </I>
+);
+
+export const LightNodeIcon = (p: P): JSX.Element => (
+  <I {...p}>
+    <circle cx="12" cy="12" r="4" />
+    <path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M18.4 5.6L17 7M7 17l-1.4 1.4" />
+  </I>
+);
+
+export const CompareNodeIcon = (p: P): JSX.Element => (
+  <I {...p}>
+    <rect x="3" y="5" width="18" height="14" rx="2" />
+    <path d="M12 5v14" />
+    <path d="M7 10l-2 2 2 2M17 10l2 2-2 2" />
+  </I>
+);
+
+export const VideoNodeIcon = (p: P): JSX.Element => (
+  <I {...p}>
+    <rect x="2" y="5" width="14" height="14" rx="2" />
+    <path d="M16 9l6-3v12l-6-3" />
+    <path d="M7 9.5l3 2.5-3 2.5z" fill="currentColor" stroke="none" />
+  </I>
+);
+
 export const NODE_ICONS: Record<SmartNodeKind, (p: P) => JSX.Element> = {
   image: ImageNodeIcon,
   prompt: PromptNodeIcon,
@@ -105,7 +136,11 @@ export const NODE_ICONS: Record<SmartNodeKind, (p: P) => JSX.Element> = {
   group: GroupNodeIcon,
   'angle-prompt': AngleNodeIcon,
   scale: ScaleNodeIcon,
-  ratio: RatioNodeIcon
+  ratio: RatioNodeIcon,
+  text: TextNodeIcon,
+  light: LightNodeIcon,
+  compare: CompareNodeIcon,
+  video: VideoNodeIcon
 };
 
 // ── 动作图标 ──
@@ -227,5 +262,38 @@ export const LogIcon = (p: P): JSX.Element => (
   <I {...p}>
     <rect x="4" y="3" width="16" height="18" rx="2" />
     <path d="M8 8h8M8 12h8M8 16h5" />
+  </I>
+);
+/** 选择 / 移动（工具坞默认态）。 */
+export const CursorIcon = (p: P): JSX.Element => (
+  <I {...p}>
+    <path d="M5 4l6.5 15 2-6 6-2z" />
+  </I>
+);
+export const ZoomInIcon = (p: P): JSX.Element => (
+  <I {...p}>
+    <circle cx="11" cy="11" r="7" />
+    <path d="M21 21l-4-4M11 8v6M8 11h6" />
+  </I>
+);
+export const ZoomOutIcon = (p: P): JSX.Element => (
+  <I {...p}>
+    <circle cx="11" cy="11" r="7" />
+    <path d="M21 21l-4-4M8 11h6" />
+  </I>
+);
+export const SearchIcon = (p: P): JSX.Element => (
+  <I {...p}>
+    <circle cx="11" cy="11" r="7" />
+    <path d="M21 21l-4-4" />
+  </I>
+);
+/** 空图片节点的「添加图片」大图标（图框 + 加号）。 */
+export const ImagePlusIcon = (p: P): JSX.Element => (
+  <I {...p}>
+    <rect x="3" y="4" width="14" height="14" rx="2" />
+    <circle cx="8" cy="9" r="1.4" />
+    <path d="M3 15l4-4 4 3.5" />
+    <path d="M19 5v6M16 8h6" />
   </I>
 );

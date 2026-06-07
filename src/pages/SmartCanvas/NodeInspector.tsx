@@ -1,22 +1,27 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useSmartCanvasStore, useSmartResultStore, useSmartCanvasUiStore } from '@/store/smartCanvasStore';
+import { useStoreApi } from '@xyflow/react';
+import { useSmartCanvasStore, useSmartResultStore, useSmartCanvasUiStore, useSmartPreviewStore, absPosition } from '@/store/smartCanvasStore';
 import { useImageParamsStore } from '@/store/imageParamsStore';
 import { useSettingsStore } from '@/store/settingsStore';
-import { runWithUpstream, cancelWork } from '@/lib/smartCanvasRunner';
+import { runWithUpstream, cancelWork, computeUpstream, comfyInputSlots } from '@/lib/smartCanvasRunner';
 import { toast } from '@/store/toastStore';
 import { localPathToImageUrl } from '@/lib/imageUrl';
 import { listMappedModels, diagnoseChatModel, type MappedModel } from '@/lib/modelMapping';
 import { detectFamily } from '@shared/imageModelFamilies';
 import type { WorkflowTemplateSummary, InputControl } from '@shared/comfyui';
+import { renderComfyControl, COMFY_IMAGE_KINDS } from './comfyControl';
+import { SegmentedControl } from './nodePanel/consoleControls';
 import {
   WORK_TYPE_LABELS,
   RUN_MODE_LABELS,
   PROVIDER_LABELS,
   providerLabel,
   REAL_WORK_TYPES,
+  RUN_STATUS_LABELS,
   LLM_OP_LABELS,
   LLM_IMAGE_OPS,
+  type RunStatus,
   type WorkType,
   type RunMode,
   type WorkProvider,
@@ -31,21 +36,79 @@ import {
   type ScaleNodeData,
   type ScaleMode,
   SCALE_MODE_LABELS,
-  type NodeMeta,
-  type SmartNodeData
+  type SmartNodeData,
+  type SmartNodeKind,
+  type TextNodeData,
+  type TextAlign,
+  TEXT_FONTS,
+  type LightNodeData,
+  type LightOcclusion,
+  type LightEffect,
+  LIGHT_OCCLUSION_LABELS,
+  LIGHT_EFFECT_LABELS
 } from '@shared/smartCanvas';
+import { buildLightPrompt } from '@/lib/lightPrompt';
 import { buildAnglePrompt } from '@/lib/anglePrompt';
 import { exportTextFile, fmtDur } from './nodeArea';
+import { NODE_ICONS } from './icons';
+import './nodePanel/nodePanel.css';
 
-/** 标签颜色候选（取主题 token；带字面量回退，沿用项目既有 var(--mb-x, #..) 写法）。 */
-const LABEL_COLORS = [
-  'var(--mb-accent)',
-  'var(--mb-success, #3fb950)',
-  'var(--mb-danger, #f85149)',
-  'var(--mb-warning, #d29922)',
-  'var(--mb-info, #58a6ff)',
-  'var(--mb-text-muted)'
-];
+/** 节点类型 → 中文名（面板标题用，与工具坞一致）。 */
+const NODE_TYPE_LABELS: Record<SmartNodeKind, string> = {
+  image: '图片',
+  prompt: '提示词',
+  llm: 'LLM',
+  'angle-prompt': '视角',
+  scale: '缩放',
+  ratio: '尺寸',
+  work: '生成',
+  comfy: 'ComfyUI',
+  result: '结果',
+  group: '分组',
+  text: '文字',
+  light: '光源',
+  compare: '对比',
+  video: '视频'
+};
+
+/** 运行状态胶囊（与生成控制台同款 mb-np-status，work/comfy/llm 共用）。 */
+function StatusPill({ status }: { status: RunStatus }): JSX.Element {
+  return (
+    <span className={`mb-np-status is-${status}`}>
+      <i className="mb-np-status-dot" />
+      {RUN_STATUS_LABELS[status]}
+    </span>
+  );
+}
+
+/** 横向布局的「标签 + 控件」字段块（网格单元）。wide=占满整行（textarea / 滑块等放松内容）。
+ *  只给 label 不给 children 时＝整行小标题。 */
+function Field({
+  label,
+  wide,
+  className,
+  children
+}: {
+  label?: string;
+  wide?: boolean;
+  className?: string;
+  children?: React.ReactNode;
+}): JSX.Element {
+  return (
+    <div className={`mb-sc-fb${wide ? ' is-wide' : ''}${className ? ` ${className}` : ''}`}>
+      {label != null ? <label className="mb-sc-flabel">{label}</label> : null}
+      {children}
+    </div>
+  );
+}
+
+/** 拆 ComfyUI 控件标签「{字段} · {节点标题}」→ { field, group }。无分隔符时归到「常用」。
+ *  用于把工作流参数按所属节点分类成一个个「模块」横向排布。 */
+function comfyGroupOf(label: string): { field: string; group: string } {
+  const idx = label.lastIndexOf(' · ');
+  if (idx >= 0) return { field: label.slice(0, idx), group: label.slice(idx + 3) };
+  return { field: label, group: '常用' };
+}
 
 /** 运行日志导出按钮（work/comfy/llm 共用）。 */
 function ExportLogBtn({ title, logs, error }: { title: string; logs?: string[]; error?: string | null }): JSX.Element | null {
@@ -126,6 +189,7 @@ async function imageToDataUri(src: string): Promise<string | null> {
 function ResultActionsBlock({ images, durationMs }: { images: string[]; durationMs?: number }): JSX.Element | null {
   const navigate = useNavigate();
   const addRefs = useImageParamsStore((s) => s.addRefs);
+  const openPreview = useSmartPreviewStore((s) => s.open);
   if (!images.length) return null;
   async function saveAs(src: string, i: number): Promise<void> {
     const du = await imageToDataUri(src);
@@ -154,96 +218,26 @@ function ResultActionsBlock({ images, durationMs }: { images: string[]; duration
       <label className="mb-sc-flabel">
         结果（{images.length}）{durationMs != null ? ` · ${fmtDur(durationMs)}` : ''}
       </label>
-      <div className="mb-sc-rlist">
-        {images.map((p, i) => (
-          <div key={i} className="mb-sc-rrow">
-            <img src={p.startsWith('data:') ? p : localPathToImageUrl(p)} alt={`结果 ${i + 1}`} draggable={false} />
-            <button className="mb-btn mb-btn-sm mb-btn-ghost nodrag" onClick={() => void saveAs(p, i)}>
-              另存
-            </button>
-            <button className="mb-btn mb-btn-sm mb-btn-ghost nodrag" onClick={() => void toCreateRef(p)}>
-              作参考图
-            </button>
-          </div>
-        ))}
+      {/* 网格：按悬浮窗宽度一行排多个缩略图卡片（缩略图 + 另存 / 作参考图） */}
+      <div className="mb-sc-rgrid">
+        {images.map((p, i) => {
+          const u = p.startsWith('data:') ? p : localPathToImageUrl(p);
+          return (
+            <div key={i} className="mb-sc-rcard">
+              <img src={u} alt={`结果 ${i + 1}`} draggable={false} title="点击放大" onClick={() => openPreview(u)} />
+              <div className="mb-sc-rcard-btns">
+                <button className="mb-btn mb-btn-sm mb-btn-ghost nodrag" onClick={() => void saveAs(p, i)}>
+                  另存
+                </button>
+                <button className="mb-btn mb-btn-sm mb-btn-ghost nodrag" onClick={() => void toCreateRef(p)}>
+                  作参考图
+                </button>
+              </div>
+            </div>
+          );
+        })}
       </div>
     </>
-  );
-}
-
-const COMFY_IMAGE_KINDS = new Set(['image', 'multi_image', 'mask', 'video', 'audio', 'file']);
-
-/** 渲染一个 ComfyUI 工作流控件为可编辑表单项（图片类只读提示，由上游喂入）。 */
-function renderComfyControl(c: InputControl, value: unknown, setCv: (id: string, v: unknown) => void): JSX.Element {
-  const cid = c.id;
-  const label = c.label || cid;
-  if (COMFY_IMAGE_KINDS.has(c.type)) {
-    return (
-      <div key={cid} className="mb-sc-note">
-        {label}：由画布上游喂入
-      </div>
-    );
-  }
-  const val = value ?? c.default ?? '';
-  const num = typeof val === 'number' ? val : Number(val) || 0;
-  let field: JSX.Element;
-  switch (c.type) {
-    case 'textarea':
-    case 'json':
-    case 'prompt':
-      field = (
-        <textarea className="mb-textarea mb-sc-itext" value={String(val)} onChange={(e) => setCv(cid, e.target.value)} />
-      );
-      break;
-    case 'number':
-    case 'seed':
-      field = <input className="mb-input" type="number" value={num} onChange={(e) => setCv(cid, Number(e.target.value))} />;
-      break;
-    case 'slider':
-      field = (
-        <input
-          className="mb-sc-range"
-          type="range"
-          min={c.min ?? 0}
-          max={c.max ?? 1}
-          step={c.step ?? 0.01}
-          value={num}
-          onChange={(e) => setCv(cid, Number(e.target.value))}
-        />
-      );
-      break;
-    case 'select':
-      field = (
-        <select className="mb-select" value={String(val)} onChange={(e) => setCv(cid, e.target.value)}>
-          {(c.options ?? []).map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-        </select>
-      );
-      break;
-    case 'switch':
-      field = (
-        <label className="mb-sc-switch-row">
-          <input type="checkbox" checked={!!val} onChange={(e) => setCv(cid, e.target.checked)} /> 开启
-        </label>
-      );
-      break;
-    case 'color':
-      field = <input type="color" value={String(val) || '#000000'} onChange={(e) => setCv(cid, e.target.value)} />;
-      break;
-    default:
-      field = <input className="mb-input" value={String(val)} onChange={(e) => setCv(cid, e.target.value)} />;
-  }
-  return (
-    <div key={cid} className="mb-sc-cfield">
-      <label className="mb-sc-flabel">
-        {label}
-        {c.type === 'slider' ? ` · ${num}` : ''}
-      </label>
-      {field}
-    </div>
   );
 }
 
@@ -256,8 +250,9 @@ const LLM_OPS = Object.keys(LLM_OP_LABELS) as LlmOp[];
 const IMG2IMG = new Set<WorkType>(['image-edit', 'style-transfer', 'outpainting']);
 
 /** 右侧检查器：编辑选中节点属性。生成节点在这里配类型/运行方式/后端/模型/提示词/张数并运行。 */
-export function NodeInspector(): JSX.Element {
+export function NodeInspector({ float = false }: { float?: boolean } = {}): JSX.Element {
   const nodes = useSmartCanvasStore((s) => s.nodes);
+  const edges = useSmartCanvasStore((s) => s.edges);
   const update = useSmartCanvasStore((s) => s.updateNodeData);
   const beginEdit = useSmartCanvasStore((s) => s.beginEdit);
   const commitEdit = useSmartCanvasStore((s) => s.commitEdit);
@@ -335,10 +330,85 @@ export function NodeInspector(): JSX.Element {
   }
 
   const sel = nodes.find((n) => n.selected);
+  // 选中节点的真实上游（文本 / 图片）——用于把「被上游喂入」的输入框替换成黄色「由上游输入」提示。
+  const up = useMemo(
+    () => (sel ? computeUpstream(nodes, edges, sel.id) : { images: [], prompts: [], refs: [] }),
+    [nodes, edges, sel?.id]
+  );
   const collapsed = useSmartCanvasUiStore((s) => s.inspectorCollapsed);
   const toggleInspector = useSmartCanvasUiStore((s) => s.toggleInspector);
+  const selKind = sel?.type as SmartNodeKind | undefined;
+  const TypeIcon = selKind ? NODE_ICONS[selKind] : null;
+  const typeLabel = selKind ? NODE_TYPE_LABELS[selKind] : '';
 
-  if (collapsed) {
+  // 浮动模式：把面板贴到选中节点旁（imperative：直接改 DOM 样式，不因平移/缩放触发整面板 re-render）。
+  const storeApi = useStoreApi();
+  const floatRef = useRef<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    if (!float) return;
+    let raf = 0;
+    const reposition = (): void => {
+      const el = floatRef.current;
+      if (!el) return;
+      const st = storeApi.getState();
+      const tr = st.transform;
+      const w = st.width;
+      const h = st.height;
+      const cnodes = useSmartCanvasStore.getState().nodes;
+      const node = cnodes.find((n) => n.selected);
+      if (!node) return;
+      const abs = absPosition(node, cnodes);
+      const nh = node.measured?.height ?? (typeof node.height === 'number' ? node.height : 120);
+      const nw = node.measured?.width ?? (typeof node.width === 'number' ? node.width : 220);
+      const zoom = tr[2];
+      const PANEL_W = el.offsetWidth || 376;
+      const GAP = 10;
+      // 水平以节点中心对齐（悬浮窗在节点正下方居中），夹在画布内
+      const nodeCx = (abs.x + nw / 2) * zoom + tr[0];
+      let left = nodeCx - PANEL_W / 2;
+      left = Math.max(8, Math.min(left, Math.max(8, w - PANEL_W - 8)));
+      const nodeTop = abs.y * zoom + tr[1];
+      const nodeBottom = (abs.y + nh) * zoom + tr[1];
+      // 先放开高度量真实高度，再按上下可用空间决定方向并夹住（默认放节点下方）
+      el.style.maxHeight = `${Math.max(140, h - 16)}px`;
+      let ph = el.offsetHeight;
+      const roomBelow = h - 8 - (nodeBottom + GAP);
+      const roomAbove = nodeTop - GAP - 8;
+      let top: number;
+      if (roomBelow >= ph || roomBelow >= roomAbove) {
+        top = nodeBottom + GAP; // 放下方
+        const avail = h - 8 - top;
+        if (ph > avail) el.style.maxHeight = `${Math.max(120, avail)}px`;
+      } else {
+        const avail = roomAbove; // 下方放不下且上方更宽 → 放上方
+        if (ph > avail) {
+          el.style.maxHeight = `${Math.max(120, avail)}px`;
+          ph = avail;
+        }
+        top = nodeTop - GAP - ph;
+      }
+      el.style.left = `${left}px`;
+      el.style.top = `${Math.max(8, top)}px`;
+    };
+    const onChange = (): void => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        reposition();
+      });
+    };
+    reposition();
+    const unsub = storeApi.subscribe(onChange);
+    return () => {
+      unsub();
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [float, storeApi, sel?.id]);
+
+  // 浮动模式下没有选中节点 → 不渲染（画布回到无边框无限感）
+  if (float && !sel) return <></>;
+
+  if (collapsed && !float) {
     return (
       <aside className="mb-sc-inspector is-collapsed mb-card">
         <button className="mb-sc-inspector-toggle" title="展开节点属性" onClick={toggleInspector}>
@@ -349,46 +419,25 @@ export function NodeInspector(): JSX.Element {
   }
 
   return (
-    <aside className="mb-sc-inspector mb-card">
-      <div className="mb-sc-inspector-title">
-        节点属性
-        <button className="mb-sc-inspector-toggle" title="收起" onClick={toggleInspector}>
-          ›
-        </button>
-      </div>
-      {sel && (
-        <div className="mb-sc-labeledit">
-          <label className="mb-sc-flabel">标签 / 注释（颜色分类）</label>
-          <input
-            className="mb-input"
-            placeholder="给节点加个标签…"
-            value={(sel.data as NodeMeta).label ?? ''}
-            {...editProps}
-            onChange={(e) => update(sel.id, { label: e.target.value } as Partial<SmartNodeData>)}
-          />
-          <div className="mb-sc-swatches">
-            {LABEL_COLORS.map((c) => (
-              <button
-                key={c}
-                className={`mb-sc-swatch ${(sel.data as NodeMeta).labelColor === c ? 'is-on' : ''}`}
-                style={{ background: c }}
-                title="标签颜色"
-                onClick={() => update(sel.id, { labelColor: c } as Partial<SmartNodeData>)}
-              />
-            ))}
-            <button
-              className="mb-sc-swatch is-clear"
-              title="清除标签"
-              onClick={() => update(sel.id, { label: '', labelColor: '' } as Partial<SmartNodeData>)}
-            >
-              ✕
-            </button>
-          </div>
+    <aside ref={floatRef} className={`mb-sc-inspector mb-card ${float ? 'is-float' : ''} ${selKind === 'comfy' ? 'is-comfy' : ''}`}>
+      <div className="mb-np-header mb-sc-ins-head">
+        <div className="mb-np-header-left">
+          {TypeIcon ? (
+            <span className="mb-np-header-ico">
+              <TypeIcon size={15} />
+            </span>
+          ) : null}
+          <span className="mb-np-header-title">{sel ? `${typeLabel}节点` : '节点属性'}</span>
         </div>
-      )}
+        <div className="mb-np-header-right">
+          <button className="mb-np-hbtn mb-np-hbtn-ico" title="关闭（取消选中）" onClick={() => useSmartCanvasStore.getState().deselectAll()}>
+            ✕
+          </button>
+        </div>
+      </div>
       {!sel ? (
         <div className="mb-sc-empty">
-          在画布上选中一个节点，这里编辑它的属性。生成节点的类型 / 运行方式 / 后端 / 模型 / 提示词都在这里配。
+          在画布上选中一个节点，这里编辑它的属性。生成节点的类型 / 运行方式 / 后端 / 模型都在这里配。
         </div>
       ) : sel.type === 'work' ? (
         (() => {
@@ -448,12 +497,12 @@ export function NodeInspector(): JSX.Element {
                       </option>
                     ))}
                   </select>
-                  {!real && <div className="mb-sc-note">该生成类型暂无真实接口，运行将走模拟（后续接 api:upscale / 视频后端）。</div>}
+                  {!real && <div className="mb-sc-note">该类型暂无真实接口，运行走模拟。</div>}
                 </>
               )}
               {d.provider === 'mock' && (
                 <>
-                  <div className="mb-sc-note">Local Mock：不调用真实模型，产出占位结果用于联调连线/流程。可设随机延迟与错误率模拟真实运行。</div>
+                  <div className="mb-sc-note">Local Mock：产出占位结果（可设延迟 / 错误率）。</div>
                   <label className="mb-sc-flabel">
                     随机延迟 {d.mockDelayMin ?? 200}–{d.mockDelayMax ?? 800} ms
                   </label>
@@ -554,32 +603,16 @@ export function NodeInspector(): JSX.Element {
                             value={d.strength ?? 0.6}
                             onChange={(e) => setF({ strength: Number(e.target.value) })}
                           />
-                          <div className="mb-sc-note">强度对 OpenAI 协议无效；ComfyUI 等支持 denoise 的后端接入后生效。</div>
                         </>
                       )}
                     </>
                   );
                 })()}
 
-              <label className="mb-sc-flabel">提示词（与上游提示词节点合并）</label>
-              <textarea
-                className="mb-textarea mb-sc-itext"
-                value={d.prompt}
-                {...editProps}
-                onChange={(e) => setF({ prompt: e.target.value })}
-                placeholder="本节点的提示词…"
-              />
+              <div className="mb-sc-note">提示词从上游「提示词 / LLM」节点连入；此处只调 模型 · 比例 · 质量 · 张数。</div>
 
               {d.provider === 'mengbi' && REAL_WORK_TYPES.has(d.workType) && (
                 <>
-                  <label className="mb-sc-flabel">负向提示词（不想要的内容，可空）</label>
-                  <textarea
-                    className="mb-textarea mb-sc-itext"
-                    value={d.negativePrompt ?? ''}
-                    onChange={(e) => setF({ negativePrompt: e.target.value })}
-                    placeholder="如：低分辨率、多余手指、水印…"
-                  />
-
                   <label className="mb-sc-flabel">种子 seed（空 = 随机；loop 模式按轮 +1）</label>
                   <div className="mb-sc-seedrow">
                     <input
@@ -631,7 +664,7 @@ export function NodeInspector(): JSX.Element {
                 </>
               )}
 
-              <div className={`mb-sc-status is-${d.status}`}>状态：{d.status}</div>
+              <div className="mb-sc-statusrow"><StatusPill status={d.status} /></div>
               {d.error && <div className="mb-sc-result-err">{d.error}</div>}
 
               <button
@@ -664,61 +697,47 @@ export function NodeInspector(): JSX.Element {
           const isImageOp = LLM_IMAGE_OPS.has(d.op);
           return (
             <div className="mb-sc-form">
-              <label className="mb-sc-flabel">操作</label>
-              <select className="mb-select" value={d.op} onChange={(e) => setF({ op: e.target.value as LlmOp })}>
-                {LLM_OPS.map((o) => (
-                  <option key={o} value={o}>
-                    {LLM_OP_LABELS[o]}
-                  </option>
-                ))}
-              </select>
+              <Field label="操作">
+                <select className="mb-select" value={d.op} onChange={(e) => setF({ op: e.target.value as LlmOp })}>
+                  {LLM_OPS.map((o) => (
+                    <option key={o} value={o}>
+                      {LLM_OP_LABELS[o]}
+                    </option>
+                  ))}
+                </select>
+              </Field>
 
-              <label className="mb-sc-flabel">对话模型{isImageOp ? '（需 vision）' : ''}</label>
-              <select className="mb-select" value={d.modelId} onChange={(e) => setF({ modelId: e.target.value })}>
-                <option value="">（选择模型）</option>
-                {/* 已选模型不在当前可选列表（换方案后失效等）→ 仍占位显示，让用户看到要改 */}
-                {d.modelId && !textModels.some((m) => m.name === d.modelId) && (
-                  <option value={d.modelId} disabled>
-                    {d.modelId}（已失效）
-                  </option>
-                )}
-                {textModels.map((m) => (
-                  <option key={m.name} value={m.name} disabled={!m.usable}>
-                    {m.usable ? m.name : `${m.name}（实际ID未填）`}
-                  </option>
-                ))}
-              </select>
-              {textModels.length === 0 && <div className="mb-sc-note">当前方案没有对话模型，请到设置页配置。</div>}
-              {(() => {
-                const why = d.modelId ? diagnoseChatModel(configs, plans, activePlanId, d.modelId) : null;
-                return why ? <div className="mb-sc-result-err">{why}</div> : null;
-              })()}
+              <Field label={`对话模型${isImageOp ? '（需 vision）' : ''}`}>
+                <select className="mb-select" value={d.modelId} onChange={(e) => setF({ modelId: e.target.value })}>
+                  <option value="">（选择模型）</option>
+                  {/* 已选模型不在当前可选列表（换方案后失效等）→ 仍占位显示，让用户看到要改 */}
+                  {d.modelId && !textModels.some((m) => m.name === d.modelId) && (
+                    <option value={d.modelId} disabled>
+                      {d.modelId}（已失效）
+                    </option>
+                  )}
+                  {textModels.map((m) => (
+                    <option key={m.name} value={m.name} disabled={!m.usable}>
+                      {m.usable ? m.name : `${m.name}（实际ID未填）`}
+                    </option>
+                  ))}
+                </select>
+              </Field>
 
               {isImageOp ? (
-                <>
-                  <label className="mb-sc-flabel">反推类型</label>
-                  <select
-                    className="mb-select"
+                <Field label="反推类型">
+                  <SegmentedControl
                     value={d.reverseType}
-                    onChange={(e) => setF({ reverseType: e.target.value as LlmNodeData['reverseType'] })}
-                  >
-                    <option value="description">描述</option>
-                    <option value="tags">标签</option>
-                    <option value="style">风格</option>
-                  </select>
-                  <div className="mb-sc-note">连一个上游图片节点，反推成提示词文本喂给下游。</div>
-                </>
-              ) : (
-                <>
-                  <label className="mb-sc-flabel">输入文本（与上游文本/提示词合并）</label>
-                  <textarea
-                    className="mb-textarea mb-sc-itext"
-                    value={d.input}
-                    {...editProps}
-                    onChange={(e) => setF({ input: e.target.value })}
-                    placeholder="可留空，仅用上游提示词…"
+                    options={[
+                      { value: 'description', label: '描述' },
+                      { value: 'tags', label: '标签' },
+                      { value: 'style', label: '风格' }
+                    ]}
+                    onChange={(v) => setF({ reverseType: v as LlmNodeData['reverseType'] })}
                   />
-                  <label className="mb-sc-flabel">额外指令（可选）</label>
+                </Field>
+              ) : (
+                <Field label="额外指令（可选）">
                   <input
                     className="mb-input"
                     value={d.instruction}
@@ -726,24 +745,47 @@ export function NodeInspector(): JSX.Element {
                     onChange={(e) => setF({ instruction: e.target.value })}
                     placeholder="例如：偏写实 / 限 50 词以内"
                   />
-                </>
+                </Field>
               )}
 
-              <button
-                className="mb-btn mb-btn-primary mb-sc-run"
-                disabled={d.status === 'running'}
-                onClick={() => void runWithUpstream(sel.id)}
-              >
-                {d.status === 'running' ? '运行中…' : '运行此节点'}
-              </button>
-              <div className={`mb-sc-status is-${d.status}`}>状态：{d.status}</div>
+              {textModels.length === 0 && <div className="mb-sc-note">当前方案没有对话模型，请到设置页配置。</div>}
+              {(() => {
+                const why = d.modelId ? diagnoseChatModel(configs, plans, activePlanId, d.modelId) : null;
+                return why ? <div className="mb-sc-result-err">{why}</div> : null;
+              })()}
+
+              {isImageOp ? (
+                <div className="mb-sc-note">连一个上游图片节点，反推成提示词文本喂给下游。</div>
+              ) : up.prompts.length > 0 ? (
+                <div className="mb-sc-fromup is-fed">输入文本由上游输入（{up.prompts.length} 段），无需手填</div>
+              ) : (
+                <Field label="输入文本（与上游文本/提示词合并）" wide>
+                  <textarea
+                    className="mb-textarea mb-sc-itext"
+                    value={d.input}
+                    {...editProps}
+                    onChange={(e) => setF({ input: e.target.value })}
+                    placeholder="可留空，仅用上游提示词…"
+                  />
+                </Field>
+              )}
+
+              <div className="mb-sc-fb is-wide mb-sc-runrow">
+                <button
+                  className="mb-btn mb-btn-primary mb-sc-run"
+                  disabled={d.status === 'running'}
+                  onClick={() => void runWithUpstream(sel.id)}
+                >
+                  {d.status === 'running' ? '运行中…' : '运行此节点'}
+                </button>
+                <StatusPill status={d.status} />
+                <ExportLogBtn title="LLM 节点" logs={d.logs} error={d.error} />
+              </div>
               {d.error && <div className="mb-sc-result-err">{d.error}</div>}
-              <ExportLogBtn title="LLM 节点" logs={d.logs} error={d.error} />
               {d.resultText?.trim() && (
-                <>
-                  <label className="mb-sc-flabel">输出文本</label>
+                <Field label="输出文本" wide>
                   <textarea className="mb-textarea mb-sc-itext" readOnly value={d.resultText} />
-                </>
+                </Field>
               )}
             </div>
           );
@@ -755,46 +797,93 @@ export function NodeInspector(): JSX.Element {
             update(sel.id, { controlValues: { ...d.controlValues, [cid]: v } } as Partial<SmartNodeData>);
           return (
             <div className="mb-sc-form">
-              <label className="mb-sc-flabel">工作流模板</label>
-              <select
-                className="mb-select"
-                value={d.workflowId}
-                onChange={(e) => void pickComfyTemplate(sel.id, e.target.value)}
-              >
-                <option value="">（选择模板）</option>
-                {comfyTemplates.map((t) => (
-                  <option key={t.workflowId} value={t.workflowId}>
-                    {t.name}
-                  </option>
-                ))}
-              </select>
+              <Field label="工作流模板" wide>
+                <select
+                  className="mb-select"
+                  value={d.workflowId}
+                  onChange={(e) => void pickComfyTemplate(sel.id, e.target.value)}
+                >
+                  <option value="">（选择模板）</option>
+                  {comfyTemplates.map((t) => (
+                    <option key={t.workflowId} value={t.workflowId}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+              </Field>
               {comfyTemplates.length === 0 && (
                 <div className="mb-sc-note">「工作流」模块（Ctrl+4）里还没保存模板，先去建一个并保存。</div>
               )}
 
               {d.workflowId && (
                 <>
-                  <label className="mb-sc-flabel">工作流参数（在此调整，运行时随工作流发出）</label>
-                  {d.controls.filter((c) => c.visible !== false).map((c) => renderComfyControl(c, d.controlValues[c.id], setCv))}
-                  <div className="mb-sc-note">
-                    图片 / 文本输入控件由画布上游节点喂入（连图片 / 提示词节点进来即覆盖）；其余参数在此调好即可，一次配置重复运行。
-                  </div>
+                  <Field label="工作流参数（按所属节点分模块，运行时随工作流发出）" wide />
+                  {(() => {
+                    // 按「节点标题」把控件分类成一个个模块卡片，横向铺开（3:1~4:1 宽屏）
+                    const visible = d.controls.filter((c) => c.visible !== false);
+                    if (visible.length === 0) return null;
+                    // 哪些输入槽会被上游覆盖（与运行引擎 runComfyNode 同逻辑）：
+                    //   文本槽 i 被喂入 ⟺ 上游提示词数 > i；图片槽被喂入 ⟺ 有上游图片。
+                    const slots = comfyInputSlots(visible);
+                    const fedText = new Set<string>();
+                    slots.text.forEach((c, i) => {
+                      if (up.prompts.length > i) fedText.add(c.id);
+                    });
+                    const imagesFed = up.images.length > 0;
+                    const modules = new Map<string, InputControl[]>();
+                    for (const c of visible) {
+                      const { group } = comfyGroupOf(c.label);
+                      const arr = modules.get(group);
+                      if (arr) arr.push(c);
+                      else modules.set(group, [c]);
+                    }
+                    // 被上游喂入的输入：去掉输入框、改黄色「由上游输入」一行字（省空间 + 防误填）
+                    const renderCtl = (c: InputControl): JSX.Element => {
+                      const field = comfyGroupOf(c.label).field;
+                      if (COMFY_IMAGE_KINDS.has(c.type)) {
+                        return (
+                          <div key={c.id} className={`mb-sc-fromup ${imagesFed ? 'is-fed' : ''}`}>
+                            {field}：{imagesFed ? '由上游输入图片' : '由上游喂入（未接则用工作流默认）'}
+                          </div>
+                        );
+                      }
+                      if (fedText.has(c.id)) {
+                        return (
+                          <div key={c.id} className="mb-sc-fromup is-fed">
+                            {field}：由上游输入（无需手填）
+                          </div>
+                        );
+                      }
+                      return renderComfyControl({ ...c, label: field }, d.controlValues[c.id], setCv);
+                    };
+                    return (
+                      <div className="mb-sc-modules">
+                        {[...modules].map(([g, cs]) => (
+                          <div className="mb-sc-module" key={g}>
+                            <div className="mb-sc-module-h">{g}</div>
+                            <div className="mb-sc-module-b">{cs.map(renderCtl)}</div>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })()}
+                  <div className="mb-sc-note">图片 / 文本输入由上游节点喂入；其余参数在此调。</div>
                 </>
               )}
 
-              <button
-                className="mb-btn mb-btn-primary mb-sc-run"
-                disabled={d.status === 'running' || !d.workflowId}
-                onClick={() => void runWithUpstream(sel.id)}
-              >
-                {d.status === 'running' ? '运行中…' : '运行此节点'}
-              </button>
-              <div className={`mb-sc-status is-${d.status}`}>状态：{d.status}</div>
+              <div className="mb-sc-fb is-wide mb-sc-runrow">
+                <button
+                  className="mb-btn mb-btn-primary mb-sc-run"
+                  disabled={d.status === 'running' || !d.workflowId}
+                  onClick={() => void runWithUpstream(sel.id)}
+                >
+                  {d.status === 'running' ? '运行中…' : '运行此节点'}
+                </button>
+                <StatusPill status={d.status} />
+                <ExportLogBtn title="ComfyUI 节点" logs={d.logs} error={d.error} />
+              </div>
               {d.error && <div className="mb-sc-result-err">{d.error}</div>}
-              <ExportLogBtn title="ComfyUI 节点" logs={d.logs} error={d.error} />
-              {d.result?.images?.length ? (
-                <ResultActionsBlock images={d.result.images} durationMs={d.result?.durationMs ?? undefined} />
-              ) : null}
+              {/* 结果模块已去除（作用不大）：结果在节点卡上看 / 连「结果」节点查看 */}
             </div>
           );
         })()
@@ -810,13 +899,14 @@ export function NodeInspector(): JSX.Element {
         </div>
       ) : sel.type === 'group' ? (
         <div className="mb-sc-form">
-          <label className="mb-sc-flabel">分组名</label>
-          <input
-            className="mb-input"
-            value={(sel.data as unknown as GroupNodeData).title ?? ''}
-            onChange={(e) => update(sel.id, { title: e.target.value } as Partial<SmartNodeData>)}
-          />
-          <div className="mb-sc-note">分组是聚合器：把图片/提示词连进来，再连到生成节点。拖角可调整尺寸。</div>
+          <Field label="分组名" wide>
+            <input
+              className="mb-input"
+              value={(sel.data as unknown as GroupNodeData).title ?? ''}
+              onChange={(e) => update(sel.id, { title: e.target.value } as Partial<SmartNodeData>)}
+            />
+          </Field>
+          <div className="mb-sc-note">把图片 / 提示词连进来，再连到生成节点。</div>
         </div>
       ) : sel.type === 'image' ? (
         (() => {
@@ -848,7 +938,7 @@ export function NodeInspector(): JSX.Element {
           };
           return (
             <div className="mb-sc-form">
-              <div className="mb-sc-note">接入一张图片（或在节点里上传）→ 拖滑块 / 在预览上拖动调三向角度 → 实时生成「改视角」提示词输出给下游。</div>
+              <div className="mb-sc-note">接入图片 → 拖滑块 / 预览上拖动调角度 → 输出「改视角」提示词。</div>
 
               <label className="mb-sc-flabel">
                 水平旋转：{a.horizontalAngle > 0 ? `向右 ${a.horizontalAngle}°` : a.horizontalAngle < 0 ? `向左 ${-a.horizontalAngle}°` : '正面'}
@@ -917,64 +1007,72 @@ export function NodeInspector(): JSX.Element {
           const boxMode = d.mode === 'fit' || d.mode === 'exact';
           return (
             <div className="mb-sc-form">
-              <label className="mb-sc-flabel">缩放模式</label>
-              <select className="mb-select" value={d.mode} onChange={(e) => setF({ mode: e.target.value as ScaleMode })}>
-                {SCALE_MODES.map((m) => (
-                  <option key={m} value={m}>
-                    {SCALE_MODE_LABELS[m]}
-                  </option>
-                ))}
-              </select>
+              <Field label="缩放模式">
+                <select className="mb-select" value={d.mode} onChange={(e) => setF({ mode: e.target.value as ScaleMode })}>
+                  {SCALE_MODES.map((m) => (
+                    <option key={m} value={m}>
+                      {SCALE_MODE_LABELS[m]}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+
+              <Field label="输出格式">
+                <SegmentedControl
+                  value={d.format}
+                  options={[
+                    { value: 'png', label: 'PNG' },
+                    { value: 'jpeg', label: 'JPEG' },
+                    { value: 'webp', label: 'WebP' }
+                  ]}
+                  onChange={(v) => setF({ format: v as 'png' | 'jpeg' | 'webp' })}
+                />
+              </Field>
 
               {d.mode === 'factor' && (
-                <>
-                  <label className="mb-sc-flabel">倍数 ×{d.factor}</label>
+                <Field label={`倍数 ×${d.factor}`} wide>
                   <input className="mb-sc-range" type="range" min={0.1} max={4} step={0.1} value={d.factor} onChange={(e) => setF({ factor: Number(e.target.value) })} />
-                </>
+                </Field>
               )}
               {edgeMode && (
-                <>
-                  <label className="mb-sc-flabel">目标像素（px）</label>
+                <Field label="目标像素（px）">
                   <ClampNumberInput value={d.edge} min={16} max={8192} onCommit={(v) => setF({ edge: v })} />
-                </>
+                </Field>
               )}
               {boxMode && (
-                <>
-                  <label className="mb-sc-flabel">{d.mode === 'fit' ? '限制框 宽×高' : '目标 宽×高'}（px）</label>
+                <Field label={`${d.mode === 'fit' ? '限制框 宽×高' : '目标 宽×高'}（px）`}>
                   <div className="mb-sc-seedrow">
                     <ClampNumberInput value={d.fitW} min={1} max={8192} onCommit={(v) => setF({ fitW: v })} />
                     <ClampNumberInput value={d.fitH} min={1} max={8192} onCommit={(v) => setF({ fitH: v })} />
                   </div>
-                </>
+                </Field>
               )}
               {d.mode === 'pixels' && (
-                <>
-                  <label className="mb-sc-flabel">总像素 {d.megapixels} MP</label>
+                <Field label={`总像素 ${d.megapixels} MP`} wide>
                   <input className="mb-sc-range" type="range" min={0.25} max={16} step={0.25} value={d.megapixels} onChange={(e) => setF({ megapixels: Number(e.target.value) })} />
-                </>
+                </Field>
               )}
+
               {d.mode === 'exact' && (
-                <label className="mb-sc-switch-row">
-                  <input type="checkbox" checked={d.keepAspect} onChange={(e) => setF({ keepAspect: e.target.checked })} /> 等比（不拉伸，缩到框内）
-                </label>
+                <Field>
+                  <label className="mb-sc-switch-row">
+                    <input type="checkbox" checked={d.keepAspect} onChange={(e) => setF({ keepAspect: e.target.checked })} /> 等比缩到框内
+                  </label>
+                </Field>
               )}
-              <label className="mb-sc-switch-row">
-                <input type="checkbox" checked={d.noUpscale} onChange={(e) => setF({ noUpscale: e.target.checked })} /> 仅缩小不放大
-              </label>
-              <label className="mb-sc-flabel">输出格式</label>
-              <select className="mb-select" value={d.format} onChange={(e) => setF({ format: e.target.value as 'png' | 'jpeg' | 'webp' })}>
-                <option value="png">PNG（无损）</option>
-                <option value="jpeg">JPEG（更小）</option>
-                <option value="webp">WebP</option>
-              </select>
+              <Field>
+                <label className="mb-sc-switch-row">
+                  <input type="checkbox" checked={d.noUpscale} onChange={(e) => setF({ noUpscale: e.target.checked })} /> 仅缩小不放大
+                </label>
+              </Field>
+
               {d.inW && d.outW ? (
                 <div className="mb-sc-result-meta">
                   输入 {d.inW}×{d.inH} → 输出 {d.outW}×{d.outH}
                 </div>
               ) : (
-                <div className="mb-sc-note">连一个图片来源进来即自动按上面设定缩放。</div>
+                <div className="mb-sc-note">连一个图片来源进来即自动缩放（预处理，非高清化）。</div>
               )}
-              <div className="mb-sc-note">预处理（非高清化）：解决「输入图过大模型不收」「图太小达不到效果」。</div>
             </div>
           );
         })()
@@ -984,21 +1082,158 @@ export function NodeInspector(): JSX.Element {
             尺寸分析：连一个图片来源进来，节点上显示最接近的常用比例 + 各档（1K/2K/4K）实际分辨率 + GPT Image 2 像素预算尺寸。纯参考，不输出。
           </div>
         </div>
+      ) : sel.type === 'light' ? (
+        (() => {
+          const l = sel.data as unknown as LightNodeData;
+          const setL = (patch: Partial<LightNodeData>): void => {
+            const next = { ...l, ...patch };
+            next.generatedPrompt = buildLightPrompt(next);
+            update(sel.id, next as Partial<SmartNodeData>);
+          };
+          const OCCS = Object.keys(LIGHT_OCCLUSION_LABELS) as LightOcclusion[];
+          const EFFS = Object.keys(LIGHT_EFFECT_LABELS) as LightEffect[];
+          return (
+            <div className="mb-sc-form">
+              <div className="mb-sc-note">接入图片 → 在节点上拖光点 / 调下列参数 → 输出光照提示词喂下游。</div>
+
+              <label className="mb-sc-flabel">方位角 {l.azimuth}°（0 正前 / 90 右 / 180 逆光 / -90 左）</label>
+              <input className="mb-sc-range" type="range" min={-180} max={180} step={1} value={l.azimuth} onChange={(e) => setL({ azimuth: Number(e.target.value) })} />
+
+              <label className="mb-sc-flabel">高度角 {l.elevation}°（0 地平线 / 90 头顶）</label>
+              <input className="mb-sc-range" type="range" min={0} max={90} step={1} value={l.elevation} onChange={(e) => setL({ elevation: Number(e.target.value) })} />
+
+              <label className="mb-sc-flabel">强度 {l.intensity}</label>
+              <input className="mb-sc-range" type="range" min={0} max={100} step={1} value={l.intensity} onChange={(e) => setL({ intensity: Number(e.target.value) })} />
+
+              <label className="mb-sc-flabel">色温 {l.warmth}（负 = 冷 / 正 = 暖）</label>
+              <input className="mb-sc-range" type="range" min={-100} max={100} step={1} value={l.warmth} onChange={(e) => setL({ warmth: Number(e.target.value) })} />
+
+              <label className="mb-sc-flabel">遮挡</label>
+              <select className="mb-select" value={l.occlusion} onChange={(e) => setL({ occlusion: e.target.value as LightOcclusion })}>
+                {OCCS.map((o) => (
+                  <option key={o} value={o}>
+                    {LIGHT_OCCLUSION_LABELS[o]}
+                  </option>
+                ))}
+              </select>
+
+              <label className="mb-sc-flabel">光效</label>
+              <select className="mb-select" value={l.effect} onChange={(e) => setL({ effect: e.target.value as LightEffect })}>
+                {EFFS.map((o) => (
+                  <option key={o} value={o}>
+                    {LIGHT_EFFECT_LABELS[o]}
+                  </option>
+                ))}
+              </select>
+
+              <label className="mb-sc-switch-row">
+                <input type="checkbox" checked={l.appendConsistencyInstruction} onChange={(e) => setL({ appendConsistencyInstruction: e.target.checked })} />
+                一致性约束（只改光照）
+              </label>
+              <button className="mb-btn mb-btn-sm mb-btn-ghost" onClick={() => setL({ azimuth: 35, elevation: 55, intensity: 60, warmth: 30, occlusion: 'none', effect: 'none' })}>
+                全部重置
+              </button>
+
+              <label className="mb-sc-flabel">生成的光照提示词（实时输出给下游）</label>
+              <textarea className="mb-textarea mb-sc-itext" readOnly value={l.generatedPrompt} />
+            </div>
+          );
+        })()
+      ) : sel.type === 'text' ? (
+        (() => {
+          const t = sel.data as unknown as TextNodeData;
+          const setT = (patch: Partial<TextNodeData>): void => update(sel.id, patch as Partial<SmartNodeData>);
+          const ALIGNS: Array<{ v: TextAlign; label: string }> = [
+            { v: 'left', label: '左' },
+            { v: 'center', label: '中' },
+            { v: 'right', label: '右' }
+          ];
+          return (
+            <div className="mb-sc-form">
+              <Field label="文字内容" wide>
+                <textarea
+                  className="mb-textarea mb-sc-itext"
+                  value={t.text}
+                  {...editProps}
+                  placeholder="输入文字…"
+                  onChange={(e) => setT({ text: e.target.value })}
+                />
+              </Field>
+
+              <Field label="字体">
+                <select className="mb-select" value={t.fontFamily} onChange={(e) => setT({ fontFamily: e.target.value })}>
+                  {TEXT_FONTS.map((f) => (
+                    <option key={f.label} value={f.value}>
+                      {f.label}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+
+              <Field label="颜色">
+                <div className="mb-sc-seedrow">
+                  <input
+                    className="mb-input"
+                    type="color"
+                    value={t.color || '#e6e6e6'}
+                    title="文字颜色"
+                    onChange={(e) => setT({ color: e.target.value })}
+                  />
+                  <button className="mb-btn mb-btn-sm mb-btn-ghost" onClick={() => setT({ color: '' })} title="跟随主题文字色">
+                    跟随主题
+                  </button>
+                </div>
+              </Field>
+
+              <Field label="样式">
+                <div className="mb-sc-seedrow">
+                  <button className={`mb-btn mb-btn-sm ${t.bold ? '' : 'mb-btn-ghost'}`} onClick={() => setT({ bold: !t.bold })} title="加粗">
+                    <b>B</b>
+                  </button>
+                  <button className={`mb-btn mb-btn-sm ${t.italic ? '' : 'mb-btn-ghost'}`} onClick={() => setT({ italic: !t.italic })} title="斜体">
+                    <i>I</i>
+                  </button>
+                </div>
+              </Field>
+
+              <Field label="对齐">
+                <SegmentedControl
+                  value={t.align ?? 'left'}
+                  options={ALIGNS.map((a) => ({ value: a.v, label: a.label }))}
+                  onChange={(v) => setT({ align: v as TextAlign })}
+                />
+              </Field>
+
+              <Field label={`字号 ${t.fontSize ?? 22}px`} wide>
+                <input
+                  className="mb-sc-range"
+                  type="range"
+                  min={10}
+                  max={120}
+                  step={1}
+                  value={t.fontSize ?? 22}
+                  onChange={(e) => setT({ fontSize: Number(e.target.value) })}
+                />
+              </Field>
+              <div className="mb-sc-note">双击画布上的文字即可编辑内容。</div>
+            </div>
+          );
+        })()
       ) : (
         (() => {
           const acc = resultAccum[sel.id] ?? [];
           const allImages = acc.flatMap((r) => r.images);
           const allTexts = acc.flatMap((r) => r.texts ?? []);
+          const allVideos = acc.flatMap((r) => r.videos ?? []);
           const last = acc[acc.length - 1];
           const metaParts: string[] = [];
           if (allImages.length) metaParts.push(`${allImages.length} 图`);
           if (allTexts.length) metaParts.push(`${allTexts.length} 文本`);
+          if (allVideos.length) metaParts.push(`${allVideos.length} 视频`);
           return (
             <div className="mb-sc-form">
               {acc.length === 0 ? (
-                <div className="mb-sc-note">
-                  结果节点（统一集合）：连接 生成 / ComfyUI 的图或 LLM 的文本，每次运行结果都累积在这里（重启清空）。每项可在画布上拖出成节点，本节点也能继续往下连。
-                </div>
+                <div className="mb-sc-note">连 生成 / ComfyUI 的图或 LLM 的文本，结果在此累积（重启清空），每项可拖出成节点。</div>
               ) : (
                 <>
                   <div className="mb-sc-result-meta">
@@ -1006,22 +1241,41 @@ export function NodeInspector(): JSX.Element {
                     {last ? ` · 最近 ${providerLabel(last.provider)}` : ''}
                   </div>
                   {last?.error && <div className="mb-sc-result-err">{last.error}</div>}
-                  {allImages.length > 0 && <ResultActionsBlock images={allImages} durationMs={last?.durationMs} />}
-                  {allTexts.length > 0 && (
-                    <>
-                      <label className="mb-sc-flabel">文本输出（{allTexts.length}）</label>
-                      <textarea className="mb-textarea mb-sc-itext" readOnly value={allTexts.join('\n\n')} />
-                    </>
+                  {allImages.length > 0 && (
+                    <div className="mb-sc-fb is-wide">
+                      <ResultActionsBlock images={allImages} durationMs={last?.durationMs} />
+                    </div>
                   )}
-                  <button
-                    className="mb-btn mb-btn-sm mb-btn-ghost"
-                    onClick={() => {
-                      clearResult(sel.id);
-                      update(sel.id, { result: null } as Partial<SmartNodeData>);
-                    }}
-                  >
-                    清空累积结果
-                  </button>
+                  {allTexts.length > 0 && (
+                    <Field label={`文本输出（${allTexts.length}）`} wide>
+                      <textarea className="mb-textarea mb-sc-itext" readOnly value={allTexts.join('\n\n')} />
+                    </Field>
+                  )}
+                  {allVideos.length > 0 && (
+                    <Field label={`视频输出（${allVideos.length}）`} wide>
+                      <div className="mb-sc-result-videos">
+                        {allVideos.map((v, i) => (
+                          <video
+                            key={i}
+                            className="mb-sc-result-video"
+                            src={v.startsWith('data:') || v.startsWith('http') ? v : localPathToImageUrl(v)}
+                            controls
+                          />
+                        ))}
+                      </div>
+                    </Field>
+                  )}
+                  <div className="mb-sc-fb is-wide">
+                    <button
+                      className="mb-btn mb-btn-sm mb-btn-ghost"
+                      onClick={() => {
+                        clearResult(sel.id);
+                        update(sel.id, { result: null } as Partial<SmartNodeData>);
+                      }}
+                    >
+                      清空累积结果
+                    </button>
+                  </div>
                   {last?.logs.length ? <pre className="mb-sc-logs">{last.logs.join('\n')}</pre> : null}
                 </>
               )}

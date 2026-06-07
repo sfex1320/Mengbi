@@ -13,6 +13,7 @@ import { useSettingsStore } from '@/store/settingsStore';
 import { diagnoseChatModel } from './modelMapping';
 import { toast } from '@/store/toastStore';
 import { localPathToImageUrl } from '@/lib/imageUrl';
+import { captureVideoPoster } from '@/lib/videoPoster';
 import {
   REAL_WORK_TYPES,
   WORK_TYPE_LABELS,
@@ -29,11 +30,14 @@ import {
   type LlmOp,
   type ComfyNodeData,
   type AnglePromptNodeData,
+  type LightNodeData,
   type ScaleNodeData,
   type ChatMsg,
+  type VideoNodeData,
   type SmartNodeData
 } from '@shared/smartCanvas';
 import type { OutputFile, InputControl } from '@shared/comfyui';
+import type { VideoProgressPayload, VideoDonePayload } from '@shared/ipc';
 
 /** 第一个可用绘画模型显示名（复用 settingsStore 配置；排除 ComfyUI） */
 export function firstImageModel(): string {
@@ -85,6 +89,9 @@ function collectOwnOutput(n: Node, images: string[], prompts: string[], refs: In
       break;
     case 'angle-prompt':
       pushText((n.data as unknown as AnglePromptNodeData).generatedPrompt, n.id);
+      break;
+    case 'light':
+      pushText((n.data as unknown as LightNodeData).generatedPrompt, n.id);
       break;
     case 'scale': {
       const out = (n.data as unknown as ScaleNodeData).outputImage;
@@ -173,6 +180,13 @@ export function computeUpstream(nodes: Node[], edges: Edge[], workId: string): C
       } else if (n.type === 'angle-prompt') {
         // 视角提示词节点的输出当作上游提示词
         const t = (n.data as unknown as AnglePromptNodeData).generatedPrompt?.trim();
+        if (t) {
+          prompts.push(t);
+          refs.push({ kind: 'prompt', from: n.id, preview: t.slice(0, 40) });
+        }
+      } else if (n.type === 'light') {
+        // 光源节点的输出当作上游提示词
+        const t = (n.data as unknown as LightNodeData).generatedPrompt?.trim();
         if (t) {
           prompts.push(t);
           refs.push({ kind: 'prompt', from: n.id, preview: t.slice(0, 40) });
@@ -482,7 +496,7 @@ export async function runWorkNode(
 
   // 记录上游输入快照（显式 inputRefs 字段）；新一轮运行清掉上次的取消标记
   cancelledWork.delete(workId);
-  setWork(workId, { inputRefs: inputs.refs, status: 'running', result: null, error: null, logs: [], taskId: undefined });
+  setWork(workId, { inputRefs: inputs.refs, status: 'running', result: null, error: null, logs: [], taskId: undefined, lastRunAt: Date.now() });
 
   // 计时：从这里到出结果的耗时，注入到 WorkResult.durationMs（结果区显示「用时 X.Xs」）
   const t0 = Date.now();
@@ -1116,6 +1130,30 @@ export function cancelComfy(comfyId: string): void {
   }
 }
 
+/**
+ * 强制重置一个 ComfyUI 节点的「界面状态」——用于「点取消没反应、后台又查不到任务」的卡死：
+ * 不依赖后端响应，直接把节点状态拉回 idle，并清掉所有指向它的在途记录 / 唤醒所有等待，
+ * 释放被占住的并发槽。best-effort 通知后端取消（成不成都不影响界面恢复）。
+ */
+export function forceResetComfy(comfyId: string): void {
+  const node = useSmartCanvasStore.getState().nodes.find((n) => n.id === comfyId);
+  if (!node || node.type !== 'comfy') return;
+  const d = node.data as unknown as ComfyNodeData;
+  // 清掉所有指向该节点的在途记录（即使 runId 对不上也清），并唤醒各自的等待
+  for (const [rid, p] of pendingComfy) {
+    if (p.comfyId === comfyId) {
+      pendingComfy.delete(rid);
+      resolveComfyWait(rid);
+    }
+  }
+  if (d.runId) {
+    void window.electronAPI.comfyui.cancel({ runId: d.runId });
+    pendingComfy.delete(d.runId);
+    resolveComfyWait(d.runId);
+  }
+  setComfy(comfyId, { status: 'idle', runId: undefined, error: null, logs: ['已强制重置界面状态'] });
+}
+
 /** 把 ComfyUI 结果写到节点 + 推给下游结果节点；切文档后回灌正确文档。 */
 function placeComfyResult(comfyId: string, result: WorkResult, docId: string | null): void {
   if (docId && docId !== currentDocId()) {
@@ -1338,6 +1376,195 @@ async function runOne(node: Node, allowCascade = true): Promise<void> {
   if (node.type === 'work') await runWorkNode(node.id, new Set(), allowCascade);
   else if (node.type === 'comfy') await runComfyNode(node.id);
   else if (node.type === 'llm') await runLlmNode(node.id);
+  else if (node.type === 'video') await runVideoNode(node.id);
+}
+
+// ───────────────────────── 视频节点（异步：提交→轮询在主进程，结果走 video:done）─────────────────────────
+const pendingVideo = new Map<string, { nodeId: string; docId: string | null; startedAt: number }>();
+const pendingVideoResolve = new Map<string, () => void>();
+
+function setVideo(id: string, patch: Partial<VideoNodeData>): void {
+  useSmartCanvasStore.getState().updateNodeData(id, patch as Partial<SmartNodeData>);
+}
+
+/** 运行一个视频节点：合并上游提示词/图片 → 提交 api:video:generate → 等 video:done 回来。 */
+export async function runVideoNode(videoId: string): Promise<void> {
+  const st = useSmartCanvasStore.getState();
+  const node = st.nodes.find((n) => n.id === videoId);
+  if (!node || node.type !== 'video') return;
+  const d = node.data as unknown as VideoNodeData;
+  if (!d.modelId) {
+    toast.error('请先在视频节点选择视频模型', '到「设置 → 视频模型」配置后再选');
+    return;
+  }
+  const up = computeUpstream(st.nodes, st.edges, videoId);
+  const prompt = [up.prompts.join('\n'), d.prompt].filter((s) => s && s.trim()).join('\n').trim();
+  const image = up.images[0];
+  if (!prompt && !image) {
+    toast.error('视频节点没有输入', '连一个提示词节点，或（图生视频）连一张图片');
+    return;
+  }
+  const resolution = (d.resolution || '720p').trim();
+  const params: Record<string, unknown> = {
+    mode: image ? 'image-to-video' : 'text-to-video',
+    duration: d.duration || '5',
+    aspect: d.aspect || '16:9',
+    resolution,
+    ...(d.seed != null ? { seed: d.seed } : {}),
+    ...(image ? { image } : {}),
+    // sora：分辨率若填成像素串（如 1280x720）则同时作为 size
+    ...(/\d+\s*x\s*\d+/i.test(resolution) ? { size: resolution } : {})
+  };
+  const docId = currentDocId();
+  setVideo(videoId, { status: 'running', error: null, videoPath: null, progress: 0, phase: '提交中', logs: [] });
+  const r = await window.electronAPI.video.generate({
+    modelId: d.modelId,
+    prompt,
+    negativePrompt: d.negativePrompt,
+    params
+  });
+  if (!r.ok) {
+    setVideo(videoId, { status: 'error', error: r.error.message });
+    toast.error(r.error.message, r.error.hint);
+    return;
+  }
+  const taskId = r.data.taskId;
+  pendingVideo.set(taskId, { nodeId: videoId, docId, startedAt: Date.now() });
+  setVideo(videoId, { taskId });
+  // 等真正完成（video:done → routeVideoDone）再返回；11 分钟兜底：
+  // 若 video:done 丢失（webContents 重载/推送异常），这里收尾——复位节点为错误 + 清 pending（防永久「生成中…」与 Map 泄漏）。
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      pendingVideoResolve.delete(taskId);
+      const ent = pendingVideo.get(taskId);
+      pendingVideo.delete(taskId);
+      const errPatch: Partial<VideoNodeData> = {
+        status: 'error',
+        error: '视频生成超时（未在限时内返回），请重试',
+        taskId: undefined,
+        phase: undefined
+      };
+      if (ent && ent.docId && ent.docId !== currentDocId()) {
+        patchDocNodes(ent.docId, [{ nodeId: ent.nodeId, patch: errPatch as Record<string, unknown> }]);
+      } else {
+        setVideo(videoId, errPatch);
+      }
+      resolve();
+    }, 660_000);
+    pendingVideoResolve.set(taskId, () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
+/** 取消一个视频节点的进行中任务。 */
+export function cancelVideo(videoId: string): void {
+  const node = useSmartCanvasStore.getState().nodes.find((n) => n.id === videoId);
+  if (!node || node.type !== 'video') return;
+  const d = node.data as unknown as VideoNodeData;
+  setVideo(videoId, { status: 'idle', taskId: undefined, phase: undefined, logs: ['已取消'] });
+  if (d.taskId) {
+    void window.electronAPI.video.cancel(d.taskId);
+    pendingVideo.delete(d.taskId);
+    const f = pendingVideoResolve.get(d.taskId);
+    if (f) {
+      pendingVideoResolve.delete(d.taskId);
+      f();
+    }
+  }
+}
+
+/** video:progress 推送 → 更新节点进度（仅当前文档）。 */
+export function routeVideoProgress(payload: unknown): void {
+  const p = payload as VideoProgressPayload;
+  const ent = pendingVideo.get(p.taskId);
+  if (!ent || (ent.docId && ent.docId !== currentDocId())) return;
+  setVideo(ent.nodeId, { progress: p.percent, phase: p.phase });
+}
+
+/** 把视频结果包成 WorkResult（含 videos），供下游「结果」节点累积展示。 */
+function buildVideoResult(p: VideoDonePayload, modelId: string): WorkResult {
+  return {
+    ok: !!p.ok,
+    summary: '视频生成',
+    images: [],
+    videos: p.filePath ? [p.filePath] : [],
+    logs: [],
+    error: p.ok ? undefined : p.error ?? '视频生成失败',
+    workType: 'video-generation',
+    runMode: 'single',
+    provider: 'mengbi',
+    model: modelId,
+    simulated: false,
+    durationMs: p.durationMs
+  };
+}
+
+/** video:done 推送 → 写回节点结果 + 推给下游「结果」节点（跨文档则回灌该文档存储）。 */
+export function routeVideoDone(payload: unknown): void {
+  const p = payload as VideoDonePayload;
+  const ent = pendingVideo.get(p.taskId);
+  if (!ent) return;
+  pendingVideo.delete(p.taskId);
+  const patch: Partial<VideoNodeData> = p.ok
+    ? {
+        status: 'success',
+        videoPath: p.filePath ?? null,
+        error: null,
+        durationMs: p.durationMs,
+        progress: 100,
+        phase: '完成',
+        taskId: undefined
+      }
+    : { status: 'error', error: p.error ?? '视频生成失败', taskId: undefined, phase: undefined };
+
+  if (ent.docId && ent.docId !== currentDocId()) {
+    // 后台文档：回灌视频节点 + 给其下游结果节点推结果（成功时）
+    patchDocNodes(ent.docId, [{ nodeId: ent.nodeId, patch: patch as Record<string, unknown> }]);
+    if (p.ok) {
+      const doc = readDocDoc(ent.docId);
+      if (doc) {
+        const src = doc.nodes.find((n) => n.id === ent.nodeId);
+        const modelId = src ? ((src.data as unknown as VideoNodeData).modelId ?? '') : '';
+        const result = buildVideoResult(p, modelId);
+        for (const c of doc.connections.filter((x) => x.source === ent.nodeId)) {
+          const tgt = doc.nodes.find((n) => n.id === c.target);
+          if (tgt?.type === 'result') useSmartResultStore.getState().push(tgt.id, result);
+        }
+      }
+    }
+  } else {
+    setVideo(ent.nodeId, patch);
+    if (p.ok) {
+      const st = useSmartCanvasStore.getState();
+      const node = st.nodes.find((n) => n.id === ent.nodeId);
+      const modelId = node ? (node.data as unknown as VideoNodeData).modelId : '';
+      const result = buildVideoResult(p, modelId);
+      for (const e of st.edges.filter((x) => x.source === ent.nodeId)) {
+        const tgt = st.nodes.find((n) => n.id === e.target);
+        if (tgt?.type === 'result') {
+          useSmartResultStore.getState().push(tgt.id, result);
+          st.updateNodeData(tgt.id, { result } as Partial<SmartNodeData>);
+        }
+      }
+    }
+  }
+
+  const f = pendingVideoResolve.get(p.taskId);
+  if (f) {
+    pendingVideoResolve.delete(p.taskId);
+    f();
+  }
+  // 抓首帧当图库封面（免 ffmpeg：渲染端 <video>+canvas），后台静默补，失败忽略
+  if (p.ok && p.imageId != null && p.filePath) {
+    const imageId = p.imageId;
+    void captureVideoPoster(localPathToImageUrl(p.filePath)).then((du) => {
+      if (du) void window.electronAPI.video.saveThumbnail({ imageId, dataUri: du });
+    });
+  }
+  if (p.ok) toast.success('视频生成完成', '已入图库 / 已推到结果节点');
+  else toast.error('视频生成失败', p.error);
 }
 
 /** 递归把上游需要运行的工作流节点按依赖顺序（更上游优先）跑完，不含当前节点。
@@ -1356,6 +1583,10 @@ async function ensureUpstreamRun(nodeId: string, visited: Set<string>): Promise<
 
 /** 运行节点（自动先跑上游）：先把上游需要运行的节点出齐结果，再运行本节点。供节点/检查器「运行」按钮用。 */
 export async function runWithUpstream(nodeId: string): Promise<void> {
+  // 生成时若 work/comfy 节点下游没接结果节点，自动创建一个并连上（让结果有处可显示）
+  const me = useSmartCanvasStore.getState().nodes.find((n) => n.id === nodeId);
+  if (me && (me.type === 'work' || me.type === 'comfy' || me.type === 'video'))
+    useSmartCanvasStore.getState().ensureResultNode(nodeId);
   await ensureUpstreamRun(nodeId, new Set());
   const node = useSmartCanvasStore.getState().nodes.find((n) => n.id === nodeId);
   if (node) await runOne(node);

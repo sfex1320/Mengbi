@@ -25,12 +25,9 @@ export function GroupNode({ id, data }: NodeProps): JSX.Element {
         label={d.label}
         labelColor={d.labelColor}
         headRight={
-          <>
-            <span className="mb-sc-group-count">{childCount} 项</span>
-            <button className="mb-sc-node-x nodrag" onClick={() => toggle(id)} title={collapsed ? '展开' : '折叠'}>
-              {collapsed ? '▸' : '▾'}
-            </button>
-          </>
+          <button className="mb-sc-node-x nodrag" onClick={() => toggle(id)} title={collapsed ? '展开' : '折叠'}>
+            {collapsed ? '▸' : '▾'}
+          </button>
         }
       >
         {collapsed ? (
@@ -38,19 +35,16 @@ export function GroupNode({ id, data }: NodeProps): JSX.Element {
             {d.title || '分组'} · {childCount} 个节点（已折叠）
           </div>
         ) : (
-          <>
+          // 分组名 + 节点数同一行（在子节点之上、不被自动归组的节点遮住）；去掉原说明文字
+          <div className="mb-sc-group-titlerow nodrag">
             <input
-              className="mb-sc-input nodrag"
+              className="mb-sc-input"
               value={d.title ?? ''}
               onChange={(e) => update(id, { title: e.target.value })}
               placeholder="分组名"
             />
-            <div className="mb-sc-empty">
-              {childCount > 0
-                ? `已含 ${childCount} 个节点。拖更多节点进框自动归入；把分组连到生成节点即整组喂入。`
-                : '把图片 / 提示词节点拖进这个框 → 自动归入；再把分组连到生成节点，整组一起喂给生成。'}
-            </div>
-          </>
+            <span className="mb-sc-group-count" title="组内节点数">{childCount} 项</span>
+          </div>
         )}
       </NodeShell>
     </>

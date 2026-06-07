@@ -137,10 +137,17 @@ export function ResultNode({ id, data }: NodeProps): JSX.Element {
                     key={`img-${i}`}
                     src={mediaUrl(p)}
                     alt={`结果图 ${i + 1}`}
-                    title="点击放大 · 拖出成图片节点 · 角标=实际分辨率"
+                    title="点击放大 · 拖出成图片节点 · 右键复制/另存 · 角标=实际分辨率"
                     draggable
                     onDragStart={(e) => dragImage(e, p)}
                     onClick={() => openPreview(mediaUrl(p))}
+                    onContextMenu={(e) =>
+                      areaMenu(e, [
+                        { label: '复制图片', onClick: () => void copyImage(mediaUrl(p)) },
+                        { label: '放大预览', onClick: () => openPreview(mediaUrl(p)) },
+                        { label: '另存…', onClick: () => void imageSaveAs(p, 'smart-canvas-result.png') }
+                      ])
+                    }
                   />
                 ))}
               </div>

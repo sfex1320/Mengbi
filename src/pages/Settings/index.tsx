@@ -43,7 +43,7 @@ import {
   type Atmosphere,
   type Palette
 } from '@shared/theme';
-import type { ApiConfig, ApiConfigInput, ImageKind, OfficialKind } from '@shared/domain';
+import type { ApiConfig, ApiConfigInput, ImageKind, OfficialKind, VideoKind } from '@shared/domain';
 import { detectProtocolFromUrl } from '@shared/protocolDetect';
 import { parseSdkSnippet } from '@/lib/sdkSnippetParser';
 import { getUpscaleModelMeta, groupModelsByCategory } from '@/lib/upscaleModelMeta';
@@ -88,6 +88,25 @@ const OFFICIAL_KINDS: Array<{ value: OfficialKind; label: string; hint: string }
     label: '本地（llama.cpp / Ollama / LM Studio）',
     hint:
       '选一个 .gguf 文件由梦笔内嵌 llama-cpp 启动；或填外部已运行服务 URL 直接连。'
+  }
+];
+
+/** 视频协议变种下拉（仅 type='video' 用）。视频几乎全异步：提交→轮询→取 mp4→下载。 */
+const VIDEO_KINDS: Array<{ value: VideoKind; label: string; hint: string }> = [
+  {
+    value: 'kling',
+    label: '可灵代理型 Kling（中转站最主流）',
+    hint: 'POST {base}/kling/v1/videos/{text2video|image2video} → 轮询 .../{task_id} → data.task_result.videos[0].url。字段 model_name/prompt/negative_prompt/mode(std|pro)/aspect_ratio/duration/image/image_tail。'
+  },
+  {
+    value: 'sora',
+    label: 'OpenAI Sora 原生',
+    hint: 'POST {base}/v1/videos（model/prompt/size/seconds/input_reference）→ 轮询 GET /v1/videos/{id} → GET /v1/videos/{id}/content。'
+  },
+  {
+    value: 'unified',
+    label: '聚合站统一端点',
+    hint: 'POST {base}/video/generations（model 区分各家）→ 轮询 → video.url / data[0].url。各站字段差异用「请求体覆盖」兜底。'
   }
 ];
 
@@ -245,6 +264,7 @@ function PlansTab(): JSX.Element {
       supports_vision: cfg.supports_vision,
       official_kind: cfg.official_kind,
       image_kind: cfg.image_kind ?? null,
+      video_kind: cfg.video_kind ?? null,
       body_overrides_json: cfg.body_overrides_json ?? null,
       comfyui_workflow_json: cfg.comfyui_workflow_json ?? null,
       local_model_path: cfg.local_model_path ?? null,
@@ -254,7 +274,7 @@ function PlansTab(): JSX.Element {
     });
   }
 
-  function openNew(type: 'image' | 'text'): void {
+  function openNew(type: 'image' | 'text' | 'video'): void {
     if (activePlanId === null) return;
     setEditingExisting(false);
     setEditingDraft({
@@ -269,6 +289,7 @@ function PlansTab(): JSX.Element {
       supports_vision: false,
       official_kind: null,
       image_kind: null,
+      video_kind: type === 'video' ? 'kling' : null,
       body_overrides_json: null,
       comfyui_workflow_json: null,
       local_model_path: null,
@@ -320,6 +341,7 @@ function PlansTab(): JSX.Element {
       supports_vision: cfg.supports_vision,
       official_kind: cfg.official_kind,
       image_kind: cfg.image_kind ?? null,
+      video_kind: cfg.video_kind ?? null,
       body_overrides_json: cfg.body_overrides_json ?? null,
       comfyui_workflow_json: cfg.comfyui_workflow_json ?? null,
       local_model_path: cfg.local_model_path ?? null,
@@ -442,11 +464,11 @@ function PlansTab(): JSX.Element {
       <Modal
         open={editingDraft !== null}
         onClose={() => setEditingDraft(null)}
-        title={
-          editingExisting
-            ? `编辑${editingDraft?.type === 'text' ? '对话' : '绘画'}模型配置`
-            : `新增${editingDraft?.type === 'text' ? '对话' : '绘画'}模型配置`
-        }
+        title={(() => {
+          const t = editingDraft?.type;
+          const label = t === 'text' ? '对话' : t === 'video' ? '视频' : '绘画';
+          return `${editingExisting ? '编辑' : '新增'}${label}模型配置`;
+        })()}
         width={580}
       >
         {editingDraft && (
@@ -476,7 +498,7 @@ function ConfigList({
 }: {
   planId: number;
   configs: ApiConfig[];
-  onAdd: (type: 'image' | 'text') => void;
+  onAdd: (type: 'image' | 'text' | 'video') => void;
   onEdit: (cfg: ApiConfig) => void;
   onDuplicateConfig: (cfg: ApiConfig) => void;
   onDeleteConfig: (cfg: ApiConfig) => void;
@@ -487,6 +509,7 @@ function ConfigList({
   const imageConfigs = configs.filter(
     (c) => c.type === 'image' && c.image_kind !== 'comfyui'
   );
+  const videoConfigs = configs.filter((c) => c.type === 'video');
 
   return (
     <div className="mb-settings-config-list">
@@ -498,6 +521,9 @@ function ConfigList({
           </button>
           <button className="mb-btn mb-btn-secondary mb-btn-sm" onClick={() => onAdd('image')}>
             <PlusIcon size={14} /> 绘画模型
+          </button>
+          <button className="mb-btn mb-btn-secondary mb-btn-sm" onClick={() => onAdd('video')}>
+            <PlusIcon size={14} /> 视频模型
           </button>
           <button className="mb-btn mb-btn-danger mb-btn-sm" onClick={onDeletePlan}>
             <TrashIcon size={14} /> 删除方案
@@ -524,6 +550,13 @@ function ConfigList({
           <ConfigGroup
             label="绘画"
             configs={imageConfigs}
+            onEdit={onEdit}
+            onDuplicate={onDuplicateConfig}
+            onDelete={onDeleteConfig}
+          />
+          <ConfigGroup
+            label="视频"
+            configs={videoConfigs}
             onEdit={onEdit}
             onDuplicate={onDuplicateConfig}
             onDelete={onDeleteConfig}
@@ -1259,7 +1292,31 @@ function ConfigForm({
 
       {/* ComfyUI workflow 由 /comfyui 工作流编排器管理，此处不再渲染 */}
 
-      {draft.type === 'image' && draft.image_kind !== 'comfyui' && (
+      {draft.type === 'video' && (
+        <Field label="视频 API 协议">
+          <select
+            className="mb-select"
+            style={{ width: '100%' }}
+            value={draft.video_kind ?? 'kling'}
+            onChange={(e) => update('video_kind', e.target.value as VideoKind)}
+          >
+            {VIDEO_KINDS.map((k) => (
+              <option key={k.value ?? 'kling'} value={k.value ?? 'kling'}>
+                {k.label}
+              </option>
+            ))}
+          </select>
+          <div className="mb-field-hint">
+            {VIDEO_KINDS.find((k) => k.value === (draft.video_kind ?? 'kling'))?.hint}
+          </div>
+          <div className="mb-field-hint">
+            视频均为<b>异步</b>：提交任务 → 轮询 → 下载 mp4 落盘（自动入图库）。模型映射里填真实模型 ID（如
+            <code> kling-v2-1-master</code> / <code>sora-2</code> / <code>veo-3.1</code>）。各站字段差异用下方「请求体覆盖」兜底。
+          </div>
+        </Field>
+      )}
+
+      {(draft.type === 'image' && draft.image_kind !== 'comfyui') || draft.type === 'video' ? (
         <Field label="请求体覆盖（高级）">
           <textarea
             className="mb-textarea"
@@ -1313,7 +1370,7 @@ function ConfigForm({
             示例：屏蔽 response_format
           </button>
         </Field>
-      )}
+      ) : null}
 
       <Field label={`模型映射（${Object.keys(draft.model_mapping).length}）`}>
         <div className="mb-mapping-list">
@@ -1864,7 +1921,8 @@ function Toggle({
 // ─────────────────────────────────────────────────────
 
 function AppearanceTab(): JSX.Element {
-  const { atmosphere, palette, setAtmosphere, setPalette, flowColor, setFlowColor } = useThemeStore();
+  const { atmosphere, palette, setAtmosphere, setPalette, flowColor, setFlowColor, appZoom, setAppZoom } =
+    useThemeStore();
   const haloStyle = useCursorHaloStore((s) => s.style);
   const setHaloStyle = useCursorHaloStore((s) => s.setStyle);
 
@@ -1925,6 +1983,51 @@ function AppearanceTab(): JSX.Element {
             </motion.button>
           ))}
         </div>
+      </Field>
+
+      <Field label="界面缩放">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            className="mb-btn mb-btn-sm mb-btn-ghost"
+            onClick={() => setAppZoom(appZoom - 0.1)}
+            title="缩小界面（Ctrl −）"
+          >
+            −
+          </button>
+          <input
+            type="range"
+            min={0.5}
+            max={2}
+            step={0.05}
+            value={appZoom}
+            onChange={(e) => setAppZoom(Number(e.target.value))}
+            style={{ flex: 1, minWidth: 160, maxWidth: 260 }}
+            title="整窗界面缩放"
+          />
+          <button
+            type="button"
+            className="mb-btn mb-btn-sm mb-btn-ghost"
+            onClick={() => setAppZoom(appZoom + 0.1)}
+            title="放大界面（Ctrl +）"
+          >
+            +
+          </button>
+          <span style={{ fontWeight: 700, minWidth: 48, textAlign: 'center' }}>
+            {Math.round(appZoom * 100)}%
+          </span>
+          <button
+            type="button"
+            className={`mb-btn mb-btn-sm ${appZoom === 1 ? 'is-active' : 'mb-btn-ghost'}`}
+            onClick={() => setAppZoom(1)}
+            title="复位 100%（Ctrl 0）"
+          >
+            复位
+          </button>
+        </div>
+        <span className="mb-appearance-flow-hint">
+          整窗界面缩放（webFrame）。快捷键：Ctrl + 放大 / Ctrl − 缩小 / Ctrl 0 复位（画板页这些键用于缩放画布）。
+        </span>
       </Field>
 
       <Field label="智能画布连线流动色">

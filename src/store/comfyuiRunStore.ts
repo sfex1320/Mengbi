@@ -29,6 +29,8 @@ interface ComfyuiRunState {
   finishRun: (status: string, outputs?: OutputFile[], error?: string) => void;
   /** 只清输出（本会话累积的结果）；不动运行状态 */
   clearOutputs: () => void;
+  /** 强制重置「运行状态」（卡死自救）：running/进度/队列/runId 全清回空闲，**保留已有输出**。 */
+  forceReset: () => void;
   reset: () => void;
 }
 
@@ -58,5 +60,8 @@ export const useComfyuiRunStore = create<ComfyuiRunState>((set) => ({
       lastError: status === 'failed' ? (error ?? '运行失败') : s.lastError
     })),
   clearOutputs: () => set({ outputs: [], lastError: null }),
+  // 强制重置运行状态（不动 outputs）——「点取消没反应、后台又查不到任务」时手动自救
+  forceReset: () =>
+    set({ running: false, progress: null, queue: null, currentRunId: null, currentBatchId: null, lastError: null }),
   reset: () => set({ running: false, progress: null, outputs: [], lastError: null, queue: null })
 }));

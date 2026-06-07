@@ -8,40 +8,51 @@ const ITEMS: Array<[SmartNodeKind, string]> = [
   ['prompt', '提示词'],
   ['llm', 'LLM'],
   ['angle-prompt', '视角'],
+  ['light', '光源'],
   ['scale', '缩放'],
   ['ratio', '尺寸分析'],
   ['work', '生成'],
   ['comfy', 'ComfyUI'],
+  ['video', '视频'],
   ['result', '结果'],
+  ['compare', '对比'],
   ['group', '分组']
 ];
 
 /** 从「输出口」拖出 → 能接到哪些下游节点（图片/提示词无输入口，不作目标；结果/缩放可作来源继续往下连）。 */
 const DOWNSTREAM: Record<SmartNodeKind, SmartNodeKind[]> = {
-  image: ['work', 'comfy', 'llm', 'group', 'angle-prompt', 'scale', 'ratio', 'result'],
-  prompt: ['work', 'comfy', 'llm', 'group', 'result'],
-  llm: ['work', 'comfy', 'llm', 'group', 'result'],
-  'angle-prompt': ['work', 'comfy', 'llm', 'group', 'result'],
-  work: ['result', 'work', 'comfy', 'llm', 'angle-prompt', 'scale', 'ratio'],
-  comfy: ['result', 'work', 'comfy', 'llm', 'angle-prompt', 'scale', 'ratio'],
-  group: ['work', 'comfy', 'llm', 'angle-prompt', 'scale', 'ratio', 'result'],
-  result: ['work', 'comfy', 'llm', 'group', 'angle-prompt', 'scale', 'ratio'],
-  scale: ['work', 'comfy', 'llm', 'group', 'angle-prompt', 'scale', 'ratio', 'result'],
-  ratio: []
+  image: ['work', 'comfy', 'video', 'llm', 'group', 'angle-prompt', 'light', 'scale', 'ratio', 'result', 'compare'],
+  prompt: ['work', 'comfy', 'video', 'llm', 'group', 'result'],
+  llm: ['work', 'comfy', 'video', 'llm', 'group', 'result'],
+  'angle-prompt': ['work', 'comfy', 'video', 'llm', 'group', 'result'],
+  light: ['work', 'comfy', 'video', 'llm', 'group', 'result'],
+  work: ['result', 'work', 'comfy', 'video', 'llm', 'angle-prompt', 'light', 'scale', 'ratio', 'compare'],
+  comfy: ['result', 'work', 'comfy', 'video', 'llm', 'angle-prompt', 'light', 'scale', 'ratio', 'compare'],
+  group: ['work', 'comfy', 'video', 'llm', 'angle-prompt', 'light', 'scale', 'ratio', 'result', 'compare'],
+  result: ['work', 'comfy', 'video', 'llm', 'group', 'angle-prompt', 'light', 'scale', 'ratio', 'compare'],
+  scale: ['work', 'comfy', 'video', 'llm', 'group', 'angle-prompt', 'light', 'scale', 'ratio', 'result', 'compare'],
+  ratio: [],
+  text: [],
+  compare: [],
+  video: ['result']
 };
 
-/** 从「输入口」拖出 → 能建哪些上游节点（谁能喂进本节点；结果只接 生成/ComfyUI/LLM；视角/缩放/比例只接图片来源）。 */
+/** 从「输入口」拖出 → 能建哪些上游节点（谁能喂进本节点；结果只接 生成/ComfyUI/LLM；视角/光源/缩放/比例只接图片来源）。 */
 const UPSTREAM: Record<SmartNodeKind, SmartNodeKind[]> = {
-  work: ['image', 'prompt', 'llm', 'angle-prompt', 'work', 'comfy', 'group', 'result', 'scale'],
-  comfy: ['image', 'prompt', 'llm', 'angle-prompt', 'work', 'comfy', 'group', 'result', 'scale'],
-  llm: ['image', 'prompt', 'llm', 'angle-prompt', 'work', 'comfy', 'group', 'result', 'scale'],
-  group: ['image', 'prompt', 'llm', 'angle-prompt', 'work', 'comfy', 'group', 'result', 'scale'],
+  work: ['image', 'prompt', 'llm', 'angle-prompt', 'light', 'work', 'comfy', 'group', 'result', 'scale'],
+  comfy: ['image', 'prompt', 'llm', 'angle-prompt', 'light', 'work', 'comfy', 'group', 'result', 'scale'],
+  llm: ['image', 'prompt', 'llm', 'angle-prompt', 'light', 'work', 'comfy', 'group', 'result', 'scale'],
+  group: ['image', 'prompt', 'llm', 'angle-prompt', 'light', 'work', 'comfy', 'group', 'result', 'scale'],
   'angle-prompt': ['image', 'group', 'work', 'comfy', 'result', 'scale'],
+  light: ['image', 'group', 'work', 'comfy', 'result', 'scale'],
   scale: ['image', 'group', 'work', 'comfy', 'result', 'scale'],
   ratio: ['image', 'group', 'work', 'comfy', 'result', 'scale'],
-  result: ['work', 'comfy', 'llm', 'group', 'prompt', 'image', 'angle-prompt', 'scale'],
+  result: ['work', 'comfy', 'llm', 'group', 'prompt', 'image', 'angle-prompt', 'light', 'scale', 'video'],
+  compare: ['image', 'group', 'work', 'comfy', 'result', 'scale'],
+  video: ['image', 'prompt', 'llm', 'angle-prompt', 'light', 'work', 'comfy', 'group', 'result', 'scale'],
   image: [],
-  prompt: []
+  prompt: [],
+  text: []
 };
 
 /** 拖出连线 / 双击画布时弹出的快捷创建菜单（fixed 定位在光标处）。 */
@@ -111,7 +122,7 @@ export function CreateMenu(): JSX.Element | null {
           const Ico = NODE_ICONS[k];
           return (
             <button key={k} className="mb-sc-create-menu-item" onClick={() => create(k)}>
-              <Ico size={15} />
+              <Ico size={16} />
               {l}
             </button>
           );

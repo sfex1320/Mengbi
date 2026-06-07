@@ -4,6 +4,7 @@ import { useSmartCanvasStore, useSmartPreviewStore } from '@/store/smartCanvasSt
 import { localPathToImageUrl } from '@/lib/imageUrl';
 import type { ImageNodeData } from '@shared/smartCanvas';
 import { NodeShell } from './NodeShell';
+import { ImagePlusIcon } from '../icons';
 import { CopyButton, areaMenu, copyImage, imageToGallery, imageSaveAs } from '../nodeArea';
 import { useGalleryPickerStore } from '../GalleryPickerDialog';
 
@@ -98,7 +99,8 @@ export function ImageNode({ id, data }: NodeProps): JSX.Element {
           ) : (
             <div className="mb-sc-img-empty nodrag">
               <button className="mb-sc-img-drop" onClick={() => fileRef.current?.click()}>
-                点击选择 · 拖入 · 粘贴图片
+                <ImagePlusIcon size={34} />
+                <span>点击选择 · 拖入 · 粘贴图片</span>
               </button>
               <button className="mb-btn mb-btn-sm mb-btn-ghost" onClick={() => pickFromGallery(id)}>
                 从图库选图

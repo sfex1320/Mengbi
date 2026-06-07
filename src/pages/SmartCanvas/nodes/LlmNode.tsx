@@ -6,7 +6,7 @@ import { LLM_OP_LABELS, type LlmNodeData, type SmartNodeData } from '@shared/sma
 import { NodeShell } from './NodeShell';
 import { CopyButton, areaMenu, copyText, fitNodeHeight, estimateTextHeight, autoGrowNode, getNodeWidth, makePromptNodeFrom } from '../nodeArea';
 
-/** LLM 节点：两块——「节点」单次操作 / 「聊天」流式对话（像生图页对话）。 */
+/** LLM 节点：两块——「节点」单次操作 / 「聊天」流式对话（像生图页对话）。参数在弹出检查器里调。 */
 export function LlmNode({ id, data }: NodeProps): JSX.Element {
   const update = useSmartCanvasStore((s) => s.updateNodeData);
   const remove = useSmartCanvasStore((s) => s.removeNode);
@@ -16,12 +16,10 @@ export function LlmNode({ id, data }: NodeProps): JSX.Element {
   const [draft, setDraft] = useState('');
   const outRef = useRef<HTMLPreElement>(null);
 
-  /** 用一段文字在本节点右侧建一个提示词节点（聊天选段 / 输出转下游用，统一走 nodeArea 助手）。 */
   function makePromptFrom(text: string): void {
     makePromptNodeFrom(id, text);
   }
 
-  /** 聊天气泡右键：选中文字优先复制/建节点，否则整条。 */
   function chatMsgMenu(e: React.MouseEvent, full: string): void {
     const sel = (window.getSelection()?.toString() ?? '').trim();
     areaMenu(e, [
@@ -33,13 +31,19 @@ export function LlmNode({ id, data }: NodeProps): JSX.Element {
     ]);
   }
 
-  // 自适应增高：节点模式按输入+输出长度撑高，保证输出提示词完整可见（聊天模式不强制；宽度即时取、不入依赖）
+  // 自适应增高：节点模式按 输入/输出 文本估高；聊天模式按全部对话消息估高，
+  // 切到聊天 / 每来一条消息都把节点撑高，尽量完整展示对话（封顶后内部滚动）。
   useEffect(() => {
-    if (d.mode === 'chat') return;
     const width = getNodeWidth(id);
+    if (d.mode === 'chat') {
+      const msgsH = d.chatMessages.reduce((sum, m) => sum + estimateTextHeight(m.content || '…', width) + 14, 0);
+      const need = 184 + Math.max(70, msgsH); // 标题 + 模型行 + 输入框 + 消息区
+      autoGrowNode(id, need, 1100);
+      return;
+    }
     const need = 150 + estimateTextHeight(d.input ?? '', width) + estimateTextHeight(d.resultText ?? '', width);
     autoGrowNode(id, need);
-  }, [id, d.mode, d.input, d.resultText]);
+  }, [id, d.mode, d.input, d.resultText, d.chatMessages]);
 
   const setMode = (mode: 'node' | 'chat'): void => update(id, { mode } as Partial<SmartNodeData>);
   function send(): void {
@@ -59,8 +63,6 @@ export function LlmNode({ id, data }: NodeProps): JSX.Element {
         outputs
         fill
         onDelete={() => remove(id)}
-        label={d.label}
-        labelColor={d.labelColor}
         headRight={
           <div className="mb-sc-tabs nodrag">
             <button className={`mb-sc-tab ${d.mode !== 'chat' ? 'is-on' : ''}`} onClick={() => setMode('node')}>
@@ -74,7 +76,7 @@ export function LlmNode({ id, data }: NodeProps): JSX.Element {
       >
         {d.mode === 'chat' ? (
           <div className="mb-sc-chat">
-            <div className="mb-sc-chat-model">{d.modelId || '未选对话模型（右侧选）'}</div>
+            <div className="mb-sc-chat-model">{d.modelId || '未选对话模型（选中后在检查器里选）'}</div>
             <div className="mb-sc-chat-msgs nodrag">
               {d.chatMessages.length === 0 && <div className="mb-sc-empty">和模型流式对话…</div>}
               {d.chatMessages.map((m, i) => (
@@ -111,7 +113,7 @@ export function LlmNode({ id, data }: NodeProps): JSX.Element {
           <>
             <div className="mb-sc-work-line">{LLM_OP_LABELS[d.op]}</div>
             <div className="mb-sc-work-model" title={d.modelId}>
-              {d.modelId || '未选对话模型（右侧检查器里选）'}
+              {d.modelId || '未选对话模型（选中后在检查器里选）'}
             </div>
             <button className="mb-btn mb-btn-sm mb-btn-primary nodrag" disabled={running} onClick={() => void runWithUpstream(id)}>
               {running ? (
@@ -129,16 +131,24 @@ export function LlmNode({ id, data }: NodeProps): JSX.Element {
                 <pre
                   ref={outRef}
                   className="mb-sc-llm-out nodrag"
-                  onContextMenu={(e) =>
+                  onContextMenu={(e) => {
+                    const sel = (window.getSelection()?.toString() ?? '').trim();
                     areaMenu(e, [
+                      ...(sel
+                        ? [
+                            { label: '复制选中文字', onClick: () => copyText(sel) },
+                            { label: '用选中文字建提示词节点', onClick: () => makePromptFrom(sel) },
+                            { separator: true as const }
+                          ]
+                        : []),
                       { label: '放大查看', onClick: () => openText(d.resultText ?? '', 'LLM 输出') },
-                      { label: '复制输出', onClick: () => copyText(d.resultText ?? '') },
-                      { label: '用输出建提示词节点', onClick: () => makePromptFrom(d.resultText ?? '') },
+                      { label: sel ? '复制全部输出' : '复制输出', onClick: () => copyText(d.resultText ?? '') },
+                      { label: sel ? '用全部输出建提示词节点' : '用输出建提示词节点', onClick: () => makePromptFrom(d.resultText ?? '') },
                       { label: '适配高度', onClick: () => fitNodeHeight(id, outRef.current) },
                       { separator: true },
                       { label: '清空输出', variant: 'danger', onClick: () => update(id, { resultText: '' } as Partial<SmartNodeData>) }
-                    ])
-                  }
+                    ]);
+                  }}
                 >
                   {d.resultText.trim()}
                 </pre>

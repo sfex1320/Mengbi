@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { useReactFlow } from '@xyflow/react';
+import { useReactFlow, useStore } from '@xyflow/react';
 import { useSmartCanvasStore, useSmartCanvasUiStore, useSmartRunStore } from '@/store/smartCanvasStore';
 import { useSmartDocsStore } from '@/store/smartDocsStore';
 import { exportCanvasToFile, importCanvasFromText } from '@/lib/smartCanvasApi';
@@ -7,38 +7,38 @@ import { backToLauncher } from '@/lib/smartDocStorage';
 import { runAllNodes, abortRunAll } from '@/lib/smartCanvasRunner';
 import { toast } from '@/store/toastStore';
 import { confirmDialog } from '@/components/ConfirmDialog';
-import type { SmartNodeKind } from '@shared/smartCanvas';
-import { NODE_ICONS, OpenIcon, SaveIcon, FitViewIcon, TrashIcon, BackIcon, RunAllIcon, StopIcon, TemplateIcon } from './icons';
-import { TemplatePanel } from './TemplatePanel';
+import {
+  OpenIcon,
+  SaveIcon,
+  FitViewIcon,
+  TrashIcon,
+  BackIcon,
+  RunAllIcon,
+  StopIcon,
+  TemplateIcon,
+  LayoutIcon,
+  SlidersIcon,
+  SearchIcon,
+  KeyboardIcon,
+  ZoomInIcon,
+  ZoomOutIcon
+} from './icons';
 
-const ADD: Array<[SmartNodeKind, string]> = [
-  ['image', '图片'],
-  ['prompt', '提示词'],
-  ['llm', 'LLM'],
-  ['angle-prompt', '视角'],
-  ['scale', '缩放'],
-  ['ratio', '尺寸分析'],
-  ['work', '生成'],
-  ['comfy', 'ComfyUI'],
-  ['result', '结果'],
-  ['group', '分组']
-];
-
-/** 顶部工具栏：点选节点类型→点画布落位 + 打开/保存/重置视图/清空（均配图标）。排布在画布左下角控件。 */
+/** 顶部工具条：左=画布菜单 + 标题；右=视图/文件/面板/运行 的图标工具条（图标统一、悬停出名）。 */
 export function CanvasToolbar(): JSX.Element {
   const reset = useSmartCanvasStore((s) => s.reset);
   const count = useSmartCanvasStore((s) => s.nodes.length);
-  const pendingKind = useSmartCanvasUiStore((s) => s.pendingKind);
-  const setPendingKind = useSmartCanvasUiStore((s) => s.setPendingKind);
   const activeDocId = useSmartDocsStore((s) => s.activeDocId);
   const docTitle = useSmartDocsStore((s) => s.docs.find((d) => d.id === s.activeDocId)?.title ?? '智能画布');
   const renameDoc = useSmartDocsStore((s) => s.renameDoc);
   const running = useSmartRunStore((s) => s.running);
   const runDone = useSmartRunStore((s) => s.done);
   const runTotal = useSmartRunStore((s) => s.total);
-  const { fitView, setViewport } = useReactFlow();
+  const panel = useSmartCanvasUiStore((s) => s.panel);
+  const togglePanel = useSmartCanvasUiStore((s) => s.togglePanel);
+  const { fitView, setViewport, zoomIn, zoomOut, zoomTo } = useReactFlow();
+  const zoom = useStore((s) => s.transform[2]);
   const openRef = useRef<HTMLInputElement>(null);
-  const [tplOpen, setTplOpen] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState('');
 
@@ -71,101 +71,99 @@ export function CanvasToolbar(): JSX.Element {
   }
 
   return (
-    <div className="mb-sc-toolbar mb-card">
-      <button
-        className="mb-btn mb-btn-sm mb-btn-ghost mb-sc-tbtn"
-        title="返回画布菜单（先自动保存当前画布）"
-        onClick={backToLauncher}
-      >
-        <BackIcon size={15} />
-        画布菜单
-      </button>
-      {editingTitle ? (
-        <input
-          className="mb-sc-doctitle-input"
-          autoFocus
-          value={titleDraft}
-          onChange={(e) => setTitleDraft(e.target.value)}
-          onBlur={commitTitle}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') commitTitle();
-            else if (e.key === 'Escape') setEditingTitle(false);
-          }}
-        />
-      ) : (
-        <button
-          className="mb-sc-doctitle"
-          title="点击重命名"
-          onClick={() => {
-            setTitleDraft(docTitle);
-            setEditingTitle(true);
-          }}
-        >
-          {docTitle}
+    <div className="mb-sc-topbar">
+      {/* 左：画布菜单 + 标题 */}
+      <div className="mb-sc-topbar-left mb-card">
+        <button className="mb-sc-ubtn" title="返回画布菜单（先自动保存当前画布）" onClick={backToLauncher}>
+          <BackIcon size={16} />
         </button>
-      )}
-      <span className="mb-sc-divider" />
-      <span className="mb-sc-toolbar-label">添加节点</span>
-      {ADD.map(([k, l]) => {
-        const Ico = NODE_ICONS[k];
-        return (
+        {editingTitle ? (
+          <input
+            className="mb-sc-doctitle-input"
+            autoFocus
+            value={titleDraft}
+            onChange={(e) => setTitleDraft(e.target.value)}
+            onBlur={commitTitle}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') commitTitle();
+              else if (e.key === 'Escape') setEditingTitle(false);
+            }}
+          />
+        ) : (
           <button
-            key={k}
-            className={`mb-btn mb-btn-sm mb-sc-tbtn ${pendingKind === k ? 'is-armed' : ''}`}
-            onClick={() => setPendingKind(pendingKind === k ? null : k)}
+            className="mb-sc-doctitle"
+            title="点击重命名"
+            onClick={() => {
+              setTitleDraft(docTitle);
+              setEditingTitle(true);
+            }}
           >
-            <Ico size={15} />
-            {l}
+            {docTitle}
           </button>
-        );
-      })}
-      {pendingKind && <span className="mb-sc-armed-hint">点画布落位 · Esc 取消</span>}
+        )}
+      </div>
 
-      <span className="mb-sc-divider" />
-      <button className="mb-btn mb-btn-sm mb-btn-ghost mb-sc-tbtn" onClick={() => openRef.current?.click()}>
-        <OpenIcon size={15} />
-        打开
-      </button>
-      <button className="mb-btn mb-btn-sm mb-btn-ghost mb-sc-tbtn" onClick={() => exportCanvasToFile()}>
-        <SaveIcon size={15} />
-        保存
-      </button>
-      <button className="mb-btn mb-btn-sm mb-btn-ghost mb-sc-tbtn" onClick={resetView}>
-        <FitViewIcon size={15} />
-        重置视图
-      </button>
-      <button className="mb-btn mb-btn-sm mb-btn-ghost mb-sc-tbtn" onClick={() => void clear()}>
-        <TrashIcon size={15} />
-        清空
-      </button>
-      <button className="mb-btn mb-btn-sm mb-btn-ghost mb-sc-tbtn" onClick={() => setTplOpen((v) => !v)}>
-        <TemplateIcon size={15} />
-        模板
-      </button>
-      <span className="mb-sc-divider" />
-      {running ? (
-        <>
-          <span className="mb-sc-count">
-            运行中 {runDone}/{runTotal}
-          </span>
-          <button className="mb-btn mb-btn-sm mb-btn-danger mb-sc-tbtn" onClick={abortRunAll} title="停止并立即取消正在运行的节点">
-            <StopIcon size={15} />
-            停止
-          </button>
-        </>
-      ) : (
-        <button
-          className="mb-btn mb-btn-sm mb-btn-primary mb-sc-tbtn"
-          onClick={() => void runAllNodes()}
-          title="按依赖顺序运行全图的工作 / ComfyUI / LLM 节点"
-        >
-          <RunAllIcon size={14} />
-          运行全部
+      {/* 右：视图 / 文件 / 面板 / 运行 */}
+      <div className="mb-sc-topbar-right mb-card">
+        <button className="mb-sc-ubtn" title="缩小" onClick={() => void zoomOut({ duration: 200 })}>
+          <ZoomOutIcon size={16} />
         </button>
-      )}
-      <span className="mb-sc-spacer" />
-      <span className="mb-sc-count">{count} 节点</span>
-      {tplOpen && <TemplatePanel onClose={() => setTplOpen(false)} />}
+        <button className="mb-sc-ubtn mb-sc-zoomval" title="点击恢复 100%" onClick={() => void zoomTo(1, { duration: 200 })}>
+          {Math.round((zoom || 1) * 100)}%
+        </button>
+        <button className="mb-sc-ubtn" title="放大" onClick={() => void zoomIn({ duration: 200 })}>
+          <ZoomInIcon size={16} />
+        </button>
+        <button className="mb-sc-ubtn" title="适应全部（重置视图）" onClick={resetView}>
+          <FitViewIcon size={16} />
+        </button>
+
+        <span className="mb-sc-ubar-sep" aria-hidden />
+        <button className="mb-sc-ubtn" title="打开画布文件" onClick={() => openRef.current?.click()}>
+          <OpenIcon size={16} />
+        </button>
+        <button className="mb-sc-ubtn" title="保存画布到文件" onClick={() => exportCanvasToFile()}>
+          <SaveIcon size={16} />
+        </button>
+        <button className={`mb-sc-ubtn ${panel === 'template' ? 'is-on' : ''}`} title="节点模板" onClick={() => togglePanel('template')}>
+          <TemplateIcon size={16} />
+        </button>
+
+        <span className="mb-sc-ubar-sep" aria-hidden />
+        <button className={`mb-sc-ubtn ${panel === 'arrange' ? 'is-on' : ''}`} title="排布" onClick={() => togglePanel('arrange')}>
+          <LayoutIcon size={16} />
+        </button>
+        <button className={`mb-sc-ubtn ${panel === 'viewPrefs' ? 'is-on' : ''}`} title="外观（连线 / 对齐）" onClick={() => togglePanel('viewPrefs')}>
+          <SlidersIcon size={16} />
+        </button>
+        <button className={`mb-sc-ubtn ${panel === 'search' ? 'is-on' : ''}`} title="搜索节点（Ctrl+F）" onClick={() => togglePanel('search')}>
+          <SearchIcon size={16} />
+        </button>
+        <button className={`mb-sc-ubtn ${panel === 'keys' ? 'is-on' : ''}`} title="快捷键" onClick={() => togglePanel('keys')}>
+          <KeyboardIcon size={16} />
+        </button>
+        <button className="mb-sc-ubtn" title="清空画布" onClick={() => void clear()}>
+          <TrashIcon size={16} />
+        </button>
+
+        <span className="mb-sc-ubar-sep" aria-hidden />
+        {running ? (
+          <button className="mb-sc-runbtn is-stop" onClick={abortRunAll} title="停止并立即取消正在运行的节点">
+            <StopIcon size={15} />
+            停止 {runDone}/{runTotal}
+          </button>
+        ) : (
+          <button
+            className="mb-sc-runbtn"
+            onClick={() => void runAllNodes()}
+            title="按依赖顺序运行全图的工作 / ComfyUI / LLM 节点"
+          >
+            <RunAllIcon size={14} />
+            运行全部
+          </button>
+        )}
+      </div>
+
       <input
         ref={openRef}
         type="file"

@@ -21,8 +21,12 @@ const TYPE_LABEL: Record<string, string> = {
   result: '结果',
   group: '分组',
   'angle-prompt': '视角',
+  light: '光源',
   scale: '缩放',
-  ratio: '尺寸分析'
+  ratio: '尺寸分析',
+  text: '文字',
+  compare: '对比',
+  video: '视频'
 };
 
 /** 节点的可搜索文本（类型名 + 内容片段）。导出供画布筛选 dim 复用。 */

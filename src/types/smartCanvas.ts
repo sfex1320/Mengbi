@@ -16,7 +16,11 @@ export type SmartNodeKind =
   | 'comfy'
   | 'angle-prompt'
   | 'scale'
-  | 'ratio';
+  | 'ratio'
+  | 'text'
+  | 'light'
+  | 'compare'
+  | 'video';
 
 export type WorkType =
   | 'image-generation' // 图片生成
@@ -38,6 +42,14 @@ export type RunMode =
 export type WorkProvider = 'mengbi' | 'mock';
 
 export type RunStatus = 'idle' | 'running' | 'success' | 'error';
+
+/** 运行状态中文文案（UI 一律用此，不显示英文 idle/running/…）。 */
+export const RUN_STATUS_LABELS: Record<RunStatus, string> = {
+  idle: '待运行',
+  running: '运行中',
+  success: '已完成',
+  error: '失败'
+};
 
 export const WORK_TYPE_LABELS: Record<WorkType, string> = {
   'image-generation': '图片生成',
@@ -79,10 +91,16 @@ export const REAL_WORK_TYPES: ReadonlySet<WorkType> = new Set<WorkType>([
 
 /** 所有节点共享的注释/标签元数据（可选）：自定义标签文字 + 颜色标识，用于分类与一眼区分。 */
 export interface NodeMeta {
+  /** 节点显示名称（属性面板标题用，如 IMG_01；空则回退到类型名 + 短 id） */
+  name?: string;
   /** 节点标签 / 注释文字（展示在标题条下方的彩色小条） */
   label?: string;
   /** 标签颜色（CSS 颜色值，取主题 token 之一；空 = 用默认 accent） */
   labelColor?: string;
+  /** 备注（多行，属性面板展示，最长 200 字） */
+  notes?: string;
+  /** 创建时间戳（addNode 时打；属性面板「创建时间」展示） */
+  createdAt?: number;
 }
 
 export interface ImageNodeData extends NodeMeta {
@@ -139,6 +157,10 @@ export interface WorkNodeData extends NodeMeta {
   error?: string | null;
   /** 进行中任务 id（匹配 image:done） */
   taskId?: number;
+  /** 输出格式偏好（''=系统自动 / 'png' / 'jpeg' / 'webp'）；属性面板控制，后续接生成管线 */
+  outputFormat?: string;
+  /** 最近一次运行的时间戳（runWithUpstream 起跑时打；属性面板「最后运行」展示） */
+  lastRunAt?: number;
   /** Mock 真实化（provider='mock' 时生效）：随机延迟下限（ms），默认 200 */
   mockDelayMin?: number;
   /** Mock 随机延迟上限（ms），默认 800 */
@@ -312,6 +334,130 @@ export interface ScaleNodeData extends NodeMeta {
 
 export type RatioNodeData = NodeMeta;
 
+// ───────────────────────── 文字节点（text）─────────────────────────
+// 画布上的自由文字元素（标题 / 备注 / 标注），可调字体、字号、颜色、粗细、对齐。
+// 纯画布注释，不参与生成（无输入 / 输出连接口）。
+
+export type TextAlign = 'left' | 'center' | 'right';
+
+export interface TextNodeData extends NodeMeta {
+  text: string;
+  /** 字体（CSS font-family；预设见 TEXT_FONTS） */
+  fontFamily: string;
+  /** 字号 px */
+  fontSize: number;
+  /** 颜色（CSS 颜色；空 = 跟随主题文字色） */
+  color?: string;
+  bold?: boolean;
+  italic?: boolean;
+  align?: TextAlign;
+}
+
+/** 文字节点字体预设（值即 CSS font-family）。 */
+export const TEXT_FONTS: Array<{ label: string; value: string }> = [
+  { label: '系统默认', value: '' },
+  { label: '无衬线 Sans', value: "'Inter', system-ui, -apple-system, sans-serif" },
+  { label: '衬线 Serif', value: "Georgia, 'Times New Roman', serif" },
+  { label: '等宽 Mono', value: "'JetBrains Mono', 'Consolas', monospace" },
+  { label: '黑体', value: "'Microsoft YaHei', 'PingFang SC', sans-serif" },
+  { label: '宋体', value: "'SimSun', 'Songti SC', serif" },
+  { label: '楷体', value: "'KaiTi', 'Kaiti SC', serif" }
+];
+
+// ───────────────────────── 光源节点（light）─────────────────────────
+// 接入一张图 → 圆顶预览 + 拖光点调光照方位/高度 + 强度/色温/遮挡/光效 → 实时生成光照提示词喂下游。
+// 与视角节点同类（不直接生成图片，输出文本）。
+
+export type LightOcclusion = 'none' | 'leaves' | 'window' | 'blinds' | 'branches' | 'curtain';
+export type LightEffect = 'none' | 'tyndall' | 'fog' | 'godrays' | 'backlight' | 'flare';
+
+export const LIGHT_OCCLUSION_LABELS: Record<LightOcclusion, string> = {
+  none: '无遮挡',
+  leaves: '树叶（光斑）',
+  window: '窗格',
+  blinds: '百叶窗',
+  branches: '树枝',
+  curtain: '薄纱窗帘'
+};
+export const LIGHT_EFFECT_LABELS: Record<LightEffect, string> = {
+  none: '无',
+  tyndall: '丁达尔效应（体积光）',
+  fog: '穿过雾气',
+  godrays: '上帝之光（云隙光）',
+  backlight: '逆光轮廓',
+  flare: '镜头光晕'
+};
+
+export interface LightNodeData extends NodeMeta {
+  /** 手动上传的图（上游图片优先；本字段为兜底）。 */
+  inputImage?: { url: string; name?: string };
+  /** 方位角 -180~180（0=正前 / 90=右 / 180=正后逆光 / -90=左） */
+  azimuth: number;
+  /** 高度角 0~90（0=地平线 / 90=头顶） */
+  elevation: number;
+  /** 强度 0~100 */
+  intensity: number;
+  /** 色温 -100(冷)~100(暖) */
+  warmth: number;
+  occlusion: LightOcclusion;
+  effect: LightEffect;
+  /** 实时生成的光照提示词（文本输出，下游可读） */
+  generatedPrompt: string;
+  /** 是否追加「保持主体一致，只改光照」约束句 */
+  appendConsistencyInstruction: boolean;
+}
+
+/** 对比节点：左右两图 + 对比滑块（wipe）。两图优先取上游图片（A=上游[0] / B=上游[1]），
+ *  也可往左/右半区拖图手动指定（srcA/srcB 覆盖上游）。纯查看，不生成、不输出。 */
+export interface CompareNodeData extends NodeMeta {
+  /** 手动指定的 A 图（覆盖上游[0]）；data:URI 或本地路径 */
+  srcA?: string;
+  /** 手动指定的 B 图（覆盖上游[1]）；data:URI 或本地路径 */
+  srcB?: string;
+  /** 对比分隔线位置 0-100（左侧露 A、右侧露 B） */
+  slider: number;
+}
+
+/** 视频生成模式 */
+export type VideoMode = 'text-to-video' | 'image-to-video';
+export const VIDEO_MODE_LABELS: Record<VideoMode, string> = {
+  'text-to-video': '文生视频',
+  'image-to-video': '图生视频'
+};
+
+/**
+ * 视频节点：复用 type='video' 的设置配置，按 video_kind 走 kling/sora/unified 协议（异步）。
+ * 上游接提示词（文本）→ prompt；接图片 → 图生视频首帧（自动切 image-to-video）。
+ * 运行结果是本地 mp4 路径（已自动入图库），节点卡上直接播放。
+ */
+export interface VideoNodeData extends NodeMeta {
+  /** 视频模型显示名（复用 settingsStore type='video' 配置） */
+  modelId: string;
+  prompt: string;
+  negativePrompt?: string;
+  /** 文生 / 图生（有上游图时运行端自动切 image-to-video） */
+  mode: VideoMode;
+  /** 时长（秒，字符串，如 '5' / '10' / '8'） */
+  duration: string;
+  /** 画幅，如 '16:9' / '9:16' / '1:1' */
+  aspect: string;
+  /** 分辨率/档位：kling 用 std|pro；其它用 720p|1080p；sora 可填 size 如 1280x720 */
+  resolution: string;
+  /** 随机种子；空 = 随机（部分协议忽略） */
+  seed?: number | null;
+  status: RunStatus;
+  /** 生成结果：本地 mp4 绝对路径 */
+  videoPath?: string | null;
+  error?: string | null;
+  logs?: string[];
+  durationMs?: number;
+  /** 进行中的 video taskId（匹配 video:done） */
+  taskId?: string;
+  /** 进度 0-100 + 阶段中文 */
+  progress?: number;
+  phase?: string;
+}
+
 export type SmartNodeData =
   | ImageNodeData
   | PromptNodeData
@@ -322,7 +468,11 @@ export type SmartNodeData =
   | ComfyNodeData
   | AnglePromptNodeData
   | ScaleNodeData
-  | RatioNodeData;
+  | RatioNodeData
+  | TextNodeData
+  | LightNodeData
+  | CompareNodeData
+  | VideoNodeData;
 
 // ───────────────────────── 运行结果 ─────────────────────────
 

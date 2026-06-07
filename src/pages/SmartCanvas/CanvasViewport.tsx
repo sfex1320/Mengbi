@@ -2,8 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ReactFlow,
   Background,
-  Controls,
-  ControlButton,
   MiniMap,
   MarkerType,
   SelectionMode,
@@ -21,6 +19,8 @@ import {
   useSmartCanvasStore,
   useSmartCanvasUiStore,
   useSmartKeybindStore,
+  useSmartPreviewStore,
+  useSmartResultStore,
   comboFromEvent,
   absPosition,
   registerViewCenterProvider,
@@ -29,10 +29,23 @@ import {
 } from '@/store/smartCanvasStore';
 import { useSmartViewStore } from '@/store/smartViewStore';
 import { exportCanvasToFile } from '@/lib/smartCanvasApi';
+import { runWithUpstream } from '@/lib/smartCanvasRunner';
+import { localPathToImageUrl } from '@/lib/imageUrl';
 import { toast } from '@/store/toastStore';
 import { confirmDialog } from '@/components/ConfirmDialog';
 import { openContextMenu, type ContextMenuEntry } from '@/components/ContextMenu';
-import type { SmartNodeKind } from '@shared/smartCanvas';
+import { makePromptNodeFrom, imageSaveAs, imageToGallery } from './nodeArea';
+import { useGalleryPickerStore } from './GalleryPickerDialog';
+import type {
+  SmartNodeKind,
+  ImageNodeData,
+  WorkNodeData,
+  ComfyNodeData,
+  LlmNodeData,
+  PromptNodeData,
+  AnglePromptNodeData,
+  LightNodeData
+} from '@shared/smartCanvas';
 import { ImageNode } from './nodes/ImageNode';
 import { PromptNode } from './nodes/PromptNode';
 import { WorkNode } from './nodes/WorkNode';
@@ -43,13 +56,17 @@ import { ComfyNode } from './nodes/ComfyNode';
 import { AnglePromptNode } from './nodes/AnglePromptNode';
 import { ScaleNode } from './nodes/ScaleNode';
 import { RatioNode } from './nodes/RatioNode';
+import { TextNode } from './nodes/TextNode';
+import { LightNode } from './nodes/LightNode';
+import { CompareNode } from './nodes/CompareNode';
+import { VideoNode } from './nodes/VideoNode';
 import { DeletableEdge } from './DeletableEdge';
 import { CreateMenu } from './CreateMenu';
 import { ArrangePanel } from './ArrangePanel';
 import { ViewPrefsPanel } from './ViewPrefsPanel';
 import { KeybindingsDialog } from './KeybindingsDialog';
 import { NodeSearch, nodeSearchText } from './NodeSearch';
-import { LayoutIcon, SlidersIcon, KeyboardIcon } from './icons';
+import { TemplatePanel } from './TemplatePanel';
 
 // 模块级稳定引用，否则 React Flow 每次渲染都重建节点/连线类型
 const nodeTypes: NodeTypes = {
@@ -62,22 +79,26 @@ const nodeTypes: NodeTypes = {
   comfy: ComfyNode,
   'angle-prompt': AnglePromptNode,
   scale: ScaleNode,
-  ratio: RatioNode
+  ratio: RatioNode,
+  text: TextNode,
+  light: LightNode,
+  compare: CompareNode,
+  video: VideoNode
 };
 const edgeTypes: EdgeTypes = { deletable: DeletableEdge };
 const defaultEdgeOptions = { type: 'deletable' };
 
 // 能产出（可作连线起点）/ 能接收（可作连线终点）的节点类型。
 // result/scale 也是 producer：结果（图/文）、缩放（图）可继续连到下游节点。
-const PRODUCERS = new Set(['image', 'prompt', 'llm', 'work', 'comfy', 'group', 'angle-prompt', 'result', 'scale']);
-const CONSUMERS = new Set(['work', 'comfy', 'result', 'llm', 'group', 'angle-prompt', 'scale', 'ratio']);
-// 只吃图片来源的输入（视角/缩放/比例分析节点）：图片/分组/生成/ComfyUI/结果/缩放 产出的图
+const PRODUCERS = new Set(['image', 'prompt', 'llm', 'work', 'comfy', 'group', 'angle-prompt', 'light', 'result', 'scale', 'video']);
+const CONSUMERS = new Set(['work', 'comfy', 'result', 'llm', 'group', 'angle-prompt', 'light', 'scale', 'ratio', 'compare', 'video']);
+// 只吃图片来源的输入（视角/光源/缩放/比例分析/对比节点）：图片/分组/生成/ComfyUI/结果/缩放 产出的图
 const IMAGE_SOURCES = new Set(['image', 'group', 'work', 'comfy', 'result', 'scale']);
-// 只吃图片来源做输入的节点（视角 / 缩放 / 比例分析）
-const IMAGE_INPUT_ONLY = new Set(['angle-prompt', 'scale', 'ratio']);
-// 能连进结果节点的来源：生成/ComfyUI/LLM 写运行结果；图片/提示词/分组/缩放/视角=组合「实时预览」
+// 只吃图片来源做输入的节点（视角 / 光源 / 缩放 / 比例分析 / 对比）
+const IMAGE_INPUT_ONLY = new Set(['angle-prompt', 'light', 'scale', 'ratio', 'compare']);
+// 能连进结果节点的来源：生成/ComfyUI/LLM 写运行结果；图片/提示词/分组/缩放/视角/光源=组合「实时预览」
 // （分组连结果 → 预览组内多段提示词/图片如何组合）。result→result 由同类型校验挡掉。
-const RESULT_SOURCES = new Set(['work', 'comfy', 'llm', 'group', 'prompt', 'image', 'scale', 'angle-prompt']);
+const RESULT_SOURCES = new Set(['work', 'comfy', 'llm', 'group', 'prompt', 'image', 'scale', 'angle-prompt', 'light', 'video']);
 
 /** 纯类型级连线校验（不依赖具体节点存在；插入连线时新节点尚未建，需用类型判断）。 */
 function canConnectKinds(sk: string | undefined, tk: string | undefined): boolean {
@@ -85,6 +106,8 @@ function canConnectKinds(sk: string | undefined, tk: string | undefined): boolea
   if (!PRODUCERS.has(sk) || !CONSUMERS.has(tk)) return false;
   if (tk === 'result' && !RESULT_SOURCES.has(sk)) return false;
   if (IMAGE_INPUT_ONLY.has(tk) && !IMAGE_SOURCES.has(sk)) return false;
+  // 视频节点的产出是视频文件，下游只有「结果」节点能消费（computeUpstream 不收集视频）
+  if (sk === 'video' && tk !== 'result') return false;
   return true;
 }
 
@@ -95,7 +118,74 @@ function invalidReason(sk: string | undefined, tk: string | undefined): string {
   if (tk && !CONSUMERS.has(tk)) return '图片 / 提示词只能作为输入来源，不能接收输入';
   if (tk === 'result' && sk && !RESULT_SOURCES.has(sk)) return '结果节点只接 生成 / ComfyUI / LLM 的输出';
   if (tk && IMAGE_INPUT_ONLY.has(tk) && sk && !IMAGE_SOURCES.has(sk)) return '该节点的输入只接图片来源（图片 / 分组 / 生成 / ComfyUI / 结果 / 缩放）';
+  if (sk === 'video' && tk !== 'result') return '视频节点的输出只能连到「结果」节点';
   return '这两个节点之间不允许连接';
+}
+
+/** 取节点「最新一张图」（用于右键「预览 / 另存 / 入图库」）。无图返回 undefined。 */
+function latestImageOf(cur: Node): string | undefined {
+  switch (cur.type) {
+    case 'image':
+      return (cur.data as unknown as ImageNodeData).src;
+    case 'work':
+    case 'comfy': {
+      const imgs = (cur.data as unknown as WorkNodeData | ComfyNodeData).result?.images;
+      return imgs && imgs.length ? imgs[imgs.length - 1] : undefined;
+    }
+    case 'result': {
+      const acc = useSmartResultStore.getState().accum[cur.id] ?? [];
+      const imgs = acc.flatMap((r) => r.images);
+      return imgs.length ? imgs[imgs.length - 1] : undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
+/** 取节点「文本输出」（用于右键「用文本建提示词节点」）。无文本返回空串。 */
+function textOutputOf(cur: Node): string {
+  switch (cur.type) {
+    case 'prompt':
+      return ((cur.data as unknown as PromptNodeData).text ?? '').trim();
+    case 'llm':
+      return ((cur.data as unknown as LlmNodeData).resultText ?? '').trim();
+    case 'angle-prompt':
+      return ((cur.data as unknown as AnglePromptNodeData).generatedPrompt ?? '').trim();
+    case 'light':
+      return ((cur.data as unknown as LightNodeData).generatedPrompt ?? '').trim();
+    case 'comfy':
+      return ((cur.data as unknown as ComfyNodeData).result?.texts ?? []).join('\n').trim();
+    case 'result': {
+      const acc = useSmartResultStore.getState().accum[cur.id] ?? [];
+      return acc.flatMap((r) => r.texts ?? []).join('\n').trim();
+    }
+    default:
+      return '';
+  }
+}
+
+/** 节点右键菜单的「类型专属操作」（运行 / 选图 / 预览 / 另存 / 入图库 / 建提示词节点），置顶展示。 */
+function nodeTypeActions(cur: Node): ContextMenuEntry[] {
+  const items: ContextMenuEntry[] = [];
+  const id = cur.id;
+  if (cur.type === 'work' || cur.type === 'comfy' || cur.type === 'llm' || cur.type === 'video') {
+    items.push({ label: '运行此节点', onClick: () => void runWithUpstream(id) });
+  }
+  if (cur.type === 'image') {
+    items.push({ label: '从图库选图', onClick: () => useGalleryPickerStore.getState().open(id) });
+  }
+  const img = latestImageOf(cur);
+  if (img) {
+    const u = img.startsWith('data:') ? img : localPathToImageUrl(img);
+    items.push({ label: '放大预览', onClick: () => useSmartPreviewStore.getState().open(u) });
+    items.push({ label: '另存…', onClick: () => void imageSaveAs(img, 'smart-canvas.png') });
+    items.push({ label: '入图库', onClick: () => void imageToGallery(img) });
+  }
+  const txt = textOutputOf(cur);
+  if (txt) {
+    items.push({ label: '用文本建提示词节点', onClick: () => makePromptNodeFrom(id, txt) });
+  }
+  return items;
 }
 
 /** 按上游节点运行状态给连线着色（statusColorEdges 开时用；颜色取主题 token）。 */
@@ -162,13 +252,15 @@ export function CanvasViewport(): JSX.Element {
   const snapSize = useSmartViewStore((s) => s.snapSize);
   const alignGuides = useSmartViewStore((s) => s.alignGuides);
   const dimFilter = useSmartCanvasUiStore((s) => s.dimFilter);
+  const panel = useSmartCanvasUiStore((s) => s.panel);
+  const setPanel = useSmartCanvasUiStore((s) => s.setPanel);
   const { screenToFlowPosition, fitView } = useReactFlow();
-  const [arrangeOpen, setArrangeOpen] = useState(false);
-  const [viewPrefsOpen, setViewPrefsOpen] = useState(false);
-  const [keysOpen, setKeysOpen] = useState(false);
-  const [searchOpen, setSearchOpen] = useState(false);
   // 拖动时的对齐参考线（世界坐标；undefined = 不显示）
   const [guides, setGuides] = useState<{ x?: number; y?: number }>({});
+  // 拖一个节点到另一个节点上时的「上游/下游」落点提示（目标节点世界坐标盒 + 当前半区 + 该方向是否可连）
+  const [dropHint, setDropHint] = useState<
+    { x: number; y: number; w: number; h: number; half: 'up' | 'down'; valid: boolean } | null
+  >(null);
   // 连线结束（落空白）会合成一次 pane click，会误关刚弹出的菜单；用时间戳挡掉
   const lastConnectEndRef = useRef(0);
 
@@ -204,6 +296,43 @@ export function CanvasViewport(): JSX.Element {
   // 拖动中：计算对齐参考线（与其它顶层节点的 左/中/右 · 上/中/下 对齐）
   const onNodeDrag = useCallback(
     (_e: unknown, node: Node) => {
+      // 拖到另一个节点上 → 在目标节点上显示「上游 / 下游」分区高亮（鼠标落点左半=上游、右半=下游）
+      if (node.type !== 'group' && !node.parentId) {
+        const st = useSmartCanvasStore.getState();
+        const cur = st.nodes.find((n) => n.id === node.id);
+        if (cur) {
+          // 命中判定用鼠标位置（与松手时一致）；无 clientX 回退到节点中心
+          const cb = topLevelBox(cur);
+          const me = _e as { clientX?: number; clientY?: number } | null;
+          const mp =
+            me && typeof me.clientX === 'number' && typeof me.clientY === 'number'
+              ? screenToFlowPosition({ x: me.clientX, y: me.clientY })
+              : { x: cb.x + cb.w / 2, y: cb.y + cb.h / 2 };
+          const cx = mp.x;
+          const cy = mp.y;
+          const hit = st.nodes.find((t) => {
+            if (t.id === node.id || t.type === 'group' || t.parentId) return false;
+            const b = topLevelBox(t);
+            return cx >= b.x && cx <= b.x + b.w && cy >= b.y && cy <= b.y + b.h;
+          });
+          if (hit) {
+            const b = topLevelBox(hit);
+            const half: 'up' | 'down' = cx < b.x + b.w / 2 ? 'up' : 'down';
+            const valid = half === 'up' ? canConnectKinds(cur.type, hit.type) : canConnectKinds(hit.type, cur.type);
+            setDropHint((prev) =>
+              prev && prev.x === b.x && prev.y === b.y && prev.w === b.w && prev.h === b.h && prev.half === half && prev.valid === valid
+                ? prev
+                : { x: b.x, y: b.y, w: b.w, h: b.h, half, valid }
+            );
+          } else {
+            setDropHint((prev) => (prev ? null : prev));
+          }
+        }
+      } else {
+        setDropHint((prev) => (prev ? null : prev));
+      }
+
+      // 对齐参考线（原有）
       if (!alignGuides || node.parentId) return;
       const drag = topLevelBox(node);
       const dXs = [drag.x, drag.x + drag.w / 2, drag.x + drag.w];
@@ -226,13 +355,14 @@ export function CanvasViewport(): JSX.Element {
       }
       setGuides((prev) => (prev.x === gx && prev.y === gy ? prev : { x: gx, y: gy }));
     },
-    [alignGuides]
+    [alignGuides, screenToFlowPosition]
   );
 
   // 分组容器化：拖动结束时，若节点中心落在某分组框内 → 归入该分组；否则移出。
   const onNodeDragStop = useCallback(
     (_e: unknown, node: Node) => {
       setGuides({});
+      setDropHint(null);
       if (node.type === 'group') return;
       const st = useSmartCanvasStore.getState();
       const cur = st.nodes.find((n) => n.id === node.id);
@@ -245,6 +375,44 @@ export function CanvasViewport(): JSX.Element {
       const { w, h } = dim(cur, 220, 120);
       const cx = abs.x + w / 2;
       const cy = abs.y + h / 2;
+      // 命中判定用「鼠标松手位置」（而非被拖节点中心）——更符合直觉：松在哪个节点上就连哪个。
+      // 触摸等无 clientX 的情况回退到节点中心。
+      const me = _e as { clientX?: number; clientY?: number } | null;
+      const hp =
+        me && typeof me.clientX === 'number' && typeof me.clientY === 'number'
+          ? screenToFlowPosition({ x: me.clientX, y: me.clientY })
+          : { x: cx, y: cy };
+
+      // 「拖一个节点落到另一个节点上」→ 自动连线：鼠标落目标左半 = 作上游(拖→目标)，右半 = 作下游(目标→拖)，
+      // 并把拖动的节点贴到目标旁（上游在左 / 下游在右）。仅两个顶层非分组节点之间生效；落进分组容器仍走下方归组。
+      if (!cur.parentId) {
+        const hit = st.nodes.find((t) => {
+          if (t.id === node.id || t.type === 'group' || t.parentId) return false;
+          const ta = absPosition(t, st.nodes);
+          const td = dim(t, 220, 120);
+          return hp.x >= ta.x && hp.x <= ta.x + td.w && hp.y >= ta.y && hp.y <= ta.y + td.h;
+        });
+        if (hit) {
+          const ta = absPosition(hit, st.nodes);
+          const td = dim(hit, 220, 120);
+          const onLeft = hp.x < ta.x + td.w / 2;
+          const GAP = 48;
+          const source = onLeft ? node.id : hit.id;
+          const dest = onLeft ? hit.id : node.id;
+          const sk = onLeft ? cur.type : hit.type;
+          const tk = onLeft ? hit.type : cur.type;
+          if (canConnectKinds(sk, tk)) {
+            const newPos = onLeft ? { x: ta.x - w - GAP, y: ta.y } : { x: ta.x + td.w + GAP, y: ta.y };
+            st.linkAndMove(source, dest, node.id, newPos);
+            toast.success(onLeft ? '已连为上游' : '已连为下游', '拖到节点上 → 自动连线');
+          } else {
+            toast.error('该连接不允许', invalidReason(sk, tk));
+          }
+          return; // 已按「落到节点上」处理，跳过归组
+        }
+      }
+
+      // —— 分组容器化（原有）——
       let target: string | null = null;
       for (const g of st.nodes) {
         if (g.type !== 'group' || g.id === node.id) continue;
@@ -257,7 +425,7 @@ export function CanvasViewport(): JSX.Element {
       }
       if ((cur.parentId ?? null) !== target) setNodeParent(node.id, target);
     },
-    [setNodeParent]
+    [setNodeParent, screenToFlowPosition]
   );
 
   // 连线校验（四边 loose 连接也靠它约束语义）：源须能产出、目标须能接收；
@@ -444,7 +612,15 @@ export function CanvasViewport(): JSX.Element {
       const cur = st.nodes.find((n) => n.id === node.id);
       const selCount = st.nodes.filter((n) => n.selected).length;
       if (cur?.selected && selCount >= 2 && openGroupMenu(e.clientX, e.clientY)) return;
-      const items: ContextMenuEntry[] = [
+      const items: ContextMenuEntry[] = [];
+      // 类型专属操作置顶（运行 / 选图 / 预览 / 另存 / 入图库 / 建提示词节点）
+      if (cur) {
+        const typeActions = nodeTypeActions(cur);
+        if (typeActions.length) {
+          items.push(...typeActions, { separator: true });
+        }
+      }
+      items.push(
         {
           label: '再制节点',
           onClick: () => {
@@ -459,7 +635,11 @@ export function CanvasViewport(): JSX.Element {
             st.copySelection();
           }
         }
-      ];
+      );
+      if (cur?.parentId) {
+        // 子节点：可靠地移出分组（拖不出大分组时用），移出后即顶层节点可正常删除
+        items.push({ label: '移出分组', onClick: () => st.setNodeParent(node.id, null) });
+      }
       if (node.type === 'group') {
         items.push({ label: '解散分组（保留子节点）', onClick: () => st.removeNode(node.id) });
       }
@@ -521,7 +701,7 @@ export function CanvasViewport(): JSX.Element {
           useSmartCanvasStore.getState().duplicateSelection();
           break;
         case 'search':
-          setSearchOpen((v) => !v);
+          useSmartCanvasUiStore.getState().togglePanel('search');
           break;
       }
     }
@@ -686,19 +866,24 @@ export function CanvasViewport(): JSX.Element {
             )}
           </ViewportPortal>
         )}
+        {dropHint && (
+          <ViewportPortal>
+            <div
+              className={`mb-sc-drophint ${dropHint.valid ? '' : 'is-invalid'}`}
+              style={{ position: 'absolute', left: dropHint.x, top: dropHint.y, width: dropHint.w, height: dropHint.h }}
+            >
+              <div className={`mb-sc-drophint-half ${dropHint.half === 'up' ? 'is-active' : ''}`}>
+                <span>上游</span>
+              </div>
+              <div className={`mb-sc-drophint-half ${dropHint.half === 'down' ? 'is-active' : ''}`}>
+                <span>下游</span>
+              </div>
+            </div>
+          </ViewportPortal>
+        )}
         <Background gap={18} />
-        <Controls showInteractive={false}>
-          <ControlButton onClick={() => setArrangeOpen((v) => !v)} title="排布">
-            <LayoutIcon size={14} />
-          </ControlButton>
-          <ControlButton onClick={() => setViewPrefsOpen((v) => !v)} title="外观（连线 / 对齐）">
-            <SlidersIcon size={14} />
-          </ControlButton>
-          <ControlButton onClick={() => setKeysOpen(true)} title="快捷键">
-            <KeyboardIcon size={14} />
-          </ControlButton>
-        </Controls>
         <MiniMap
+          position="top-right"
           pannable
           zoomable
           className="mb-sc-minimap"
@@ -707,10 +892,11 @@ export function CanvasViewport(): JSX.Element {
           nodeStrokeWidth={2}
         />
       </ReactFlow>
-      {arrangeOpen && <ArrangePanel onClose={() => setArrangeOpen(false)} />}
-      {viewPrefsOpen && <ViewPrefsPanel onClose={() => setViewPrefsOpen(false)} />}
-      {keysOpen && <KeybindingsDialog onClose={() => setKeysOpen(false)} />}
-      {searchOpen && <NodeSearch onClose={() => setSearchOpen(false)} />}
+      {panel === 'arrange' && <ArrangePanel onClose={() => setPanel(null)} />}
+      {panel === 'viewPrefs' && <ViewPrefsPanel onClose={() => setPanel(null)} />}
+      {panel === 'keys' && <KeybindingsDialog onClose={() => setPanel(null)} />}
+      {panel === 'search' && <NodeSearch onClose={() => setPanel(null)} />}
+      {panel === 'template' && <TemplatePanel onClose={() => setPanel(null)} />}
       <CreateMenu />
     </>
   );

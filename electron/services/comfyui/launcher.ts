@@ -63,12 +63,20 @@ class ComfyLauncher {
 
     this.logTail = [];
 
-    const proc = spawn('cmd.exe', ['/c', cfg.command], {
+    // Windows cmd.exe 引号陷阱：命令含多个带空格的引号路径时（如
+    // `"G:\ciomfyui AI\...\python.exe" -s "...\main.py"`），若直接 `cmd /c <command>`，
+    // Node 会把整个 command 再加一层引号并把内部 " 转义成 \"，而 cmd 不认 \" → 报
+    // `'\"G:\...python.exe\"' 不是内部或外部命令`。解决办法是官方文档的写法：
+    // `cmd /s /c "<整条命令>"`——/s 让 cmd 只剥掉最外层首尾引号、其余原样执行；
+    // 配 windowsVerbatimArguments=true 阻止 Node 再次加引号/转义。
+    // 另设 PYTHONUTF8/PYTHONIOENCODING，让 ComfyUI(Python) 日志稳定输出 UTF-8、不再乱码。
+    const proc = spawn('cmd.exe', ['/d', '/s', '/c', `"${cfg.command}"`], {
       cwd: cfg.cwd,
       detached: false,
       windowsHide: true,
+      windowsVerbatimArguments: true,
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env }
+      env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' }
     });
     this.proc = proc;
 

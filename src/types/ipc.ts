@@ -30,6 +30,8 @@ export interface ElectronAPI {
   plan: PlanAPI;
   chat: ChatAPI;
   image: ImageAPI;
+  /** AI 视频生成（异步：提交→轮询→下载 mp4 落盘+入图库） */
+  video: VideoAPI;
   gallery: GalleryAPI;
   prompt: PromptAPI;
   album: AlbumAPI;
@@ -262,7 +264,9 @@ export type PushChannel =
   | 'comfyui:status'
   | 'comfyui:run-progress'
   | 'comfyui:run-done'
-  | 'comfyui:queue';
+  | 'comfyui:queue'
+  | 'video:progress'
+  | 'video:done';
 
 /**
  * chat:sources 推送 payload —— 代搜（DDG/Tavily/SearXNG）路径下，
@@ -270,7 +274,7 @@ export type PushChannel =
  */
 export interface ChatSourcesPayload {
   id: string;
-  backend: 'native' | 'ddg' | 'tavily' | 'searxng' | 'off';
+  backend: 'native' | 'ddg' | 'tavily' | 'searxng' | 'bocha' | 'zhipu' | 'jina' | 'serper' | 'off';
   hits: Array<{ title: string; url: string; snippet: string; hostname: string }>;
   /** 用户强制 🌐 联网但出问题时填上,前端弹 toast 让用户知道 */
   error?: string;
@@ -323,7 +327,7 @@ export interface SaveSettingsInput {
 export interface TestConnectionInput {
   base_url: string;
   api_key_plain: string;
-  type: 'image' | 'text';
+  type: 'image' | 'text' | 'video';
   /** 用于测试的模型 ID */
   model_id?: string;
 }
@@ -403,6 +407,43 @@ export interface ImageAPI {
   status(taskId: number): Promise<Result<{ status: string; result_paths?: string[] }>>;
   cancel(taskId: number): Promise<Result<true>>;
   queue(): Promise<Result<unknown[]>>;
+}
+
+/** AI 视频生成入参（异步任务）。params 见运行端：mode/duration/resolution/aspect/seed/image/imageTail/size 等。 */
+export interface VideoGenerateInput {
+  modelId: string;
+  prompt: string;
+  negativePrompt?: string;
+  params: Record<string, unknown>;
+}
+
+export interface VideoAPI {
+  /** 提交视频任务，立即返回 taskId；进度走 video:progress、完成走 video:done 推送。 */
+  generate(input: VideoGenerateInput): Promise<Result<{ taskId: string }>>;
+  /** 取消进行中的视频任务（停止轮询 + abort 提交）。 */
+  cancel(taskId: string): Promise<Result<true>>;
+  /** 写视频封面缩略图（渲染端抓首帧 webp dataURI → 落 .thumbs + 更新 images.thumbnail_path）。 */
+  saveThumbnail(input: { imageId: number; dataUri: string }): Promise<Result<{ thumbnail: string }>>;
+}
+
+/** video:progress 推送 payload */
+export interface VideoProgressPayload {
+  taskId: string;
+  percent?: number;
+  /** 阶段中文：提交中 / 排队中 / 生成中 / 下载中 */
+  phase?: string;
+}
+
+/** video:done 推送 payload */
+export interface VideoDonePayload {
+  taskId: string;
+  ok: boolean;
+  /** 成功时的本地 mp4 绝对路径（渲染端用 localPathToImageUrl 转可播放 URL） */
+  filePath?: string;
+  /** 入图库后的 images.id（若入库成功） */
+  imageId?: number;
+  durationMs?: number;
+  error?: string;
 }
 
 export interface ImageGenerateInput {
@@ -1271,6 +1312,9 @@ export interface WindowAPI {
   maximizeToggle(): Promise<Result<{ maximized: boolean }>>;
   close(): Promise<Result<true>>;
   state(): Promise<Result<{ maximized: boolean }>>;
+  /** 整窗界面缩放（renderer 本地 webFrame，同步）。1=100%；setZoom 返回 clamp 后实际系数。 */
+  getZoom(): number;
+  setZoom(factor: number): number;
 }
 
 /**

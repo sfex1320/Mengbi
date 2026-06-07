@@ -1,0 +1,996 @@
+/* 智能画布「图片生成节点」横向控制台。前缀 mb-np-*。颜色走主题 token（随主题浅/深自适应，
+   保持与系统风格统一）；圆角 + 轻阴影 + 卡片分区，偏 3:1 宽屏。窗口几何由 ResizablePanelWrapper 控制。 */
+
+/* 渲染在 .mb-sc-canvas（position:relative + overflow:hidden）内，用 absolute 贴节点旁。
+   z-index 8 压过 浮动检查器(7)/工具坞(6)/节点(4-5)。双类 .mb-np-window.mb-card 提特异性，
+   压过全局 .mb-card{position:relative}。 */
+.mb-np-window.mb-card {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--mb-bg-card-solid, var(--mb-bg-base)) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  border: 1px solid var(--mb-border);
+  border-radius: 18px;
+  box-shadow: 0 24px 70px -18px rgba(0, 0, 0, 0.5);
+}
+.mb-np-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+/* 自适应尺寸：宽高随内容（max-width/max-height 由 JS 夹在画布内；超出整窗滚动）。
+   三栏给定宽度 → 面板宽度稳定可预期、内部控件在各栏内自动换行（不被 max-content 撑爆）。 */
+.mb-np-window.is-autosize {
+  width: max-content;
+  height: auto;
+  overflow: auto;
+}
+.mb-np-window.is-autosize .mb-np-root {
+  height: auto;
+}
+.mb-np-window.is-autosize .mb-np-body {
+  flex: none;
+  overflow: visible;
+}
+.mb-np-window.is-autosize .mb-np-top3 {
+  grid-template-columns: 232px 468px 248px;
+}
+
+/* ── 长条形控制台（生成节点）：字段块横向铺开 + 换行，整体宽 > 高 ── */
+.mb-np-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 11px 14px;
+  padding: 12px 14px;
+  /* 更宽 → 字段块一行能放更多 → 行数更少 → 整体更矮（长条形） */
+  max-width: 1060px;
+}
+.mb-np-bf {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.mb-np-bf > .mb-np-flabel {
+  white-space: nowrap;
+}
+.mb-np-bf-model {
+  flex: 1 1 188px;
+  min-width: 188px;
+}
+.mb-np-bf-seed {
+  min-width: 150px;
+}
+.mb-np-bar-sep {
+  align-self: stretch;
+  flex: 0 0 1px;
+  width: 1px;
+  background: var(--mb-border-soft);
+  margin: 2px 1px;
+}
+.mb-np-bar-run {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  margin-top: 18px; /* 与其它字段的控件行对齐（跳过标签高度） */
+  flex: 1 1 100%; /* 运行行独占整行 → 运行按钮在左、预览/清除/状态推到最右 */
+  min-width: 0;
+}
+/* 运行按钮：醒目主操作（更大） */
+.mb-np-bar-run .mb-np-run {
+  height: 40px;
+  margin-top: 0;
+  padding: 0 28px;
+  font-size: 14.5px;
+  font-weight: 800;
+}
+/* 预览 / 清除 / 待运行：推到整行最右（与运行按钮拉开距离） */
+.mb-np-run-side {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-left: auto;
+}
+.mb-np-bar-more {
+  padding: 0 14px 12px;
+}
+.mb-np-bar-note {
+  padding: 0 14px 11px;
+}
+
+/* ── 顶部标题栏 ── */
+.mb-np-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 48px;
+  flex-shrink: 0;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--mb-border-soft);
+  user-select: none;
+}
+.mb-np-header-left {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+.mb-np-header-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--mb-accent-soft, var(--mb-bg-hover));
+  color: var(--mb-accent);
+  flex-shrink: 0;
+}
+.mb-np-header-title {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--mb-text-primary);
+  white-space: nowrap;
+}
+.mb-np-header-dot {
+  color: var(--mb-text-muted);
+}
+.mb-np-header-name {
+  width: 96px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--mb-text-primary);
+  font-weight: 700;
+  font-size: 13px;
+}
+.mb-np-header-name:hover {
+  border-color: var(--mb-border-soft);
+}
+.mb-np-header-name:focus {
+  border-color: var(--mb-accent);
+  background: var(--mb-bg-card-solid, var(--mb-bg-card));
+  outline: none;
+}
+.mb-np-tag-type {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--mb-accent);
+  background: var(--mb-accent-soft, var(--mb-bg-hover));
+  border-radius: 999px;
+  padding: 2px 9px;
+  white-space: nowrap;
+}
+.mb-np-header-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.mb-np-hbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  padding: 0 11px;
+  border-radius: 9px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--mb-text-secondary);
+  background: var(--mb-bg-card-solid, var(--mb-bg-card));
+  border: 1px solid var(--mb-border-soft);
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+.mb-np-hbtn:hover {
+  background: var(--mb-bg-hover);
+  color: var(--mb-text-primary);
+}
+.mb-np-hbtn-ico {
+  width: 30px;
+  padding: 0;
+  justify-content: center;
+}
+
+/* ── 主体：上 3 栏 + 下 3 块，整体可内部滚动 ── */
+.mb-np-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.mb-np-top3 {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.85fr) minmax(520px, 1.9fr) minmax(300px, 0.85fr);
+  gap: 12px;
+  align-items: stretch; /* 节点信息 / 生成设置 / 运行控制 三大模块等高 */
+}
+.mb-np-top3 > .mb-np-card {
+  height: 100%;
+}
+/* 提示词从上游接入的说明条（本面板不再填提示词） */
+.mb-np-prompthint {
+  flex-shrink: 0;
+  padding: 9px 12px;
+  border: 1px dashed var(--mb-border);
+  border-radius: 10px;
+  background: var(--mb-accent-soft, var(--mb-bg-hover));
+  color: var(--mb-text-secondary);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+/* ── 卡片 ── */
+.mb-np-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--mb-bg-card-solid, var(--mb-bg-card));
+  border: 1px solid var(--mb-border-soft);
+  border-radius: 14px;
+  overflow: hidden;
+}
+.mb-np-card-h {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 12px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--mb-text-primary);
+  border-bottom: 1px solid var(--mb-border-soft);
+}
+.mb-np-card-h-row {
+  justify-content: space-between;
+}
+.mb-np-card-b {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 11px 12px;
+}
+.mb-np-more-link {
+  border: none;
+  background: none;
+  color: var(--mb-accent);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* ── 字段 / 标签 ── */
+.mb-np-flabel {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--mb-text-secondary);
+}
+.mb-np-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+.mb-np-note {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--mb-text-muted);
+}
+.mb-np-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.mb-np-custom {
+  margin-top: 5px;
+}
+
+/* 生成设置：按行排（每行内再分列：3 列 / 2 列），绘画模型独占整行 */
+.mb-np-gen-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+}
+.mb-np-r4 {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px 12px;
+  align-items: start;
+}
+.mb-np-r3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px 12px;
+  align-items: start;
+}
+.mb-np-r2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+  align-items: start;
+}
+.mb-np-field-full {
+  grid-column: 1 / -1;
+}
+/* 比例/分辨率/质量 行：比例占左、右列上下叠放（分辨率 上 / 质量 下） */
+.mb-np-szrow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px 12px;
+  align-items: start;
+}
+.mb-np-sz-right {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  min-width: 0;
+}
+/* 节点信息：颜色分类 + 创建时间 + 最后运行 + 状态 同一行（窄卡时自动换行） */
+.mb-np-inforow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px 14px;
+  align-items: flex-start;
+}
+.mb-np-inforow > .mb-np-field {
+  flex: 0 1 auto;
+}
+.mb-np-metaval {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--mb-text-secondary);
+}
+
+/* 控件统一：生成类型/执行后端/输出格式 等下拉 与「运行方式」按钮组同高同字号 */
+.mb-np-window .mb-select,
+.mb-np-window .mb-input {
+  height: 28px;
+  min-height: 28px;
+  padding: 2px 9px;
+  font-size: 12px;
+  border-radius: 9px;
+}
+.mb-np-window textarea {
+  border-radius: 9px;
+  font-size: 12.5px;
+}
+.mb-np-window .mb-np-seg.is-sm .mb-np-seg-btn {
+  font-size: 12px;
+}
+.mb-np-window .mb-np-modelsel-field {
+  height: 28px;
+  font-size: 12px;
+}
+.mb-np-window .mb-np-modelsel-row {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.mb-np-window .mb-np-tag {
+  width: 16px;
+  height: 16px;
+}
+
+/* ── Tabs ── */
+.mb-np-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 7px 10px 0;
+  border-bottom: 1px solid var(--mb-border-soft);
+}
+.mb-np-tab {
+  border: none;
+  background: none;
+  padding: 7px 12px 9px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--mb-text-secondary);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.mb-np-tab:hover {
+  color: var(--mb-text-primary);
+}
+.mb-np-tab.is-active {
+  color: var(--mb-accent);
+  border-bottom-color: var(--mb-accent);
+}
+
+/* ── 节点信息 ── */
+.mb-np-namewrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.mb-np-namewrap .mb-input {
+  padding-right: 26px;
+}
+.mb-np-edit-ico {
+  position: absolute;
+  right: 8px;
+  color: var(--mb-text-muted);
+  font-size: 12px;
+  pointer-events: none;
+}
+.mb-np-notewrap {
+  position: relative;
+}
+.mb-np-notes {
+  min-height: 52px;
+  width: 100%;
+}
+.mb-np-count {
+  position: absolute;
+  right: 8px;
+  bottom: 6px;
+  font-size: 10.5px;
+  color: var(--mb-text-muted);
+  background: var(--mb-bg-card-solid, var(--mb-bg-card));
+  padding: 0 3px;
+  border-radius: 4px;
+}
+.mb-np-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px 0;
+  border-top: 1px solid var(--mb-border-soft);
+}
+.mb-np-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11.5px;
+  color: var(--mb-text-muted);
+}
+.mb-np-meta-row b {
+  color: var(--mb-text-secondary);
+  font-weight: 600;
+}
+.mb-np-adv {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 10px;
+  border: 1px solid var(--mb-border-soft);
+  border-radius: 9px;
+  background: var(--mb-bg-hover);
+  color: var(--mb-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.mb-np-advbox {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11.5px;
+  color: var(--mb-text-muted);
+}
+.mb-np-advbox code {
+  font-family: var(--mb-font-mono, monospace);
+  color: var(--mb-text-secondary);
+}
+.mb-np-adv-err {
+  color: var(--mb-danger, #f85149);
+  font-size: 11.5px;
+}
+
+/* ── 运行控制 ── */
+.mb-np-card-run .mb-np-card-b {
+  gap: 8px;
+}
+.mb-np-seedrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.mb-np-seedrow .mb-input {
+  flex: 1;
+  min-width: 0;
+}
+.mb-np-statusbox {
+  display: flex;
+}
+.mb-np-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--mb-bg-hover);
+  color: var(--mb-text-secondary);
+}
+.mb-np-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--mb-text-muted);
+}
+.mb-np-status.is-idle .mb-np-status-dot {
+  background: var(--mb-success, #3fb950);
+}
+.mb-np-status.is-running .mb-np-status-dot {
+  background: var(--mb-warning, #d29922);
+  animation: mb-np-blink 0.9s ease-in-out infinite;
+}
+.mb-np-status.is-success .mb-np-status-dot {
+  background: var(--mb-success, #3fb950);
+}
+.mb-np-status.is-error .mb-np-status-dot {
+  background: var(--mb-danger, #f85149);
+}
+@keyframes mb-np-blink {
+  50% {
+    opacity: 0.35;
+  }
+}
+.mb-np-run {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 42px;
+  margin-top: 2px;
+  border: none;
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: 800;
+  color: #fff;
+  cursor: pointer;
+  background: linear-gradient(135deg, var(--mb-accent), #8b5cf6);
+  box-shadow: 0 8px 20px -8px var(--mb-accent);
+  transition: filter 0.14s ease, transform 0.1s ease;
+}
+.mb-np-run:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.mb-np-run:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.mb-np-run:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.mb-np-cancel {
+  width: 100%;
+}
+.mb-np-run-extra {
+  margin-top: 2px;
+}
+.mb-np-run-extra .mb-btn {
+  flex: 1;
+}
+
+/* ── 提示词工具 ── */
+.mb-np-card-prompt {
+  min-height: 220px;
+}
+.mb-np-prompt-b {
+  flex: 1;
+  min-height: 0;
+}
+.mb-np-ta-wrap {
+  position: relative;
+  flex: 1;
+  display: flex;
+}
+.mb-np-prompt-ta {
+  flex: 1;
+  width: 100%;
+  min-height: 120px;
+  resize: vertical;
+}
+.mb-np-prompt-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.mb-np-chips,
+.mb-np-vars {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.mb-np-chip,
+.mb-np-var {
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--mb-border-soft);
+  background: var(--mb-bg-hover);
+  color: var(--mb-text-secondary);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.mb-np-var {
+  font-family: var(--mb-font-mono, monospace);
+}
+.mb-np-chip:hover,
+.mb-np-var:hover {
+  border-color: var(--mb-accent);
+  color: var(--mb-accent);
+}
+.mb-np-tpl-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow: auto;
+}
+.mb-np-tpl-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+  padding: 7px 9px;
+  border: 1px solid var(--mb-border-soft);
+  border-radius: 9px;
+  background: var(--mb-bg-hover);
+  cursor: pointer;
+}
+.mb-np-tpl-row b {
+  font-size: 12px;
+  color: var(--mb-text-primary);
+}
+.mb-np-tpl-row span {
+  font-size: 10.5px;
+  color: var(--mb-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── 快捷模板卡片 ── */
+.mb-np-tpl-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(78px, 1fr));
+  gap: 8px;
+  padding: 11px 12px;
+  overflow: auto;
+}
+.mb-np-tpl-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 4px;
+  border: 1px solid var(--mb-border-soft);
+  border-radius: 10px;
+  background: var(--mb-bg-hover);
+  cursor: pointer;
+  transition: border-color 0.12s ease, transform 0.1s ease;
+}
+.mb-np-tpl-card:hover {
+  border-color: var(--mb-accent);
+  transform: translateY(-1px);
+}
+.mb-np-tpl-thumb {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: 800;
+  color: #fff;
+  background: linear-gradient(135deg, var(--mb-accent), #8b5cf6);
+}
+.mb-np-tpl-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--mb-text-secondary);
+}
+
+/* ── 参考图 ── */
+.mb-np-refs {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.mb-np-ref {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11.5px;
+}
+.mb-np-ref-k {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: var(--mb-accent-soft, var(--mb-bg-hover));
+  color: var(--mb-accent);
+  font-weight: 700;
+}
+.mb-np-ref-p {
+  color: var(--mb-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 更多生成参数 */
+.mb-np-more {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 11px;
+  border: 1px dashed var(--mb-border);
+  border-radius: 9px;
+  background: var(--mb-bg-hover);
+  color: var(--mb-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.mb-np-adv-params {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 9px 12px;
+  margin-top: 9px;
+}
+.mb-np-range {
+  width: 100%;
+  accent-color: var(--mb-accent);
+}
+
+/* ── 复用基础控件（consoleControls）── */
+.mb-np-seg {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--mb-bg-hover);
+  border: 1px solid var(--mb-border-soft);
+}
+.mb-np-seg-btn {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1.1;
+  border: none;
+  background: none;
+  padding: 5px 11px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--mb-text-secondary);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.mb-np-seg.is-sm .mb-np-seg-btn {
+  padding: 4px 9px;
+  font-size: 11.5px;
+}
+.mb-np-seg-btn:hover {
+  color: var(--mb-text-primary);
+}
+.mb-np-seg-btn.is-active {
+  background: var(--mb-accent);
+  color: #fff;
+}
+.mb-np-seg-sub {
+  font-size: 9px;
+  font-style: normal;
+  opacity: 0.85;
+}
+.mb-np-stepper {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--mb-border-soft);
+  border-radius: 9px;
+  overflow: hidden;
+  background: var(--mb-bg-card-solid, var(--mb-bg-card));
+}
+.mb-np-stepper-btn {
+  width: 30px;
+  height: 30px;
+  border: none;
+  background: var(--mb-bg-hover);
+  color: var(--mb-text-secondary);
+  font-size: 16px;
+  cursor: pointer;
+}
+.mb-np-stepper-btn:hover:not(:disabled) {
+  background: var(--mb-bg-active, var(--mb-bg-hover));
+  color: var(--mb-accent);
+}
+.mb-np-stepper-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.mb-np-stepper-val {
+  width: 46px;
+  height: 30px;
+  border: none;
+  text-align: center;
+  background: transparent;
+  color: var(--mb-text-primary);
+  font-weight: 700;
+  font-size: 13px;
+}
+.mb-np-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.mb-np-tag {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  border: 2px solid transparent;
+  cursor: pointer;
+  box-shadow: 0 0 0 1px var(--mb-border-soft) inset;
+}
+.mb-np-tag.is-active {
+  border-color: var(--mb-text-primary);
+  transform: scale(1.05);
+}
+
+/* 可搜索模型下拉 */
+.mb-np-modelsel {
+  position: relative;
+}
+.mb-np-modelsel-row {
+  display: flex;
+  gap: 8px;
+}
+.mb-np-modelsel-field {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--mb-border);
+  border-radius: 9px;
+  background: var(--mb-bg-card-solid, var(--mb-bg-card));
+  color: var(--mb-text-primary);
+  font-size: 12.5px;
+  cursor: pointer;
+  text-align: left;
+}
+.mb-np-modelsel-cur {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mb-np-modelsel-badge {
+  font-size: 10px;
+  font-style: normal;
+  color: var(--mb-accent);
+  background: var(--mb-accent-soft, var(--mb-bg-hover));
+  border-radius: 999px;
+  padding: 1px 7px;
+  flex-shrink: 0;
+}
+.mb-np-modelsel-caret {
+  color: var(--mb-text-muted);
+  flex-shrink: 0;
+}
+.mb-np-modelsel-manage {
+  flex-shrink: 0;
+}
+.mb-np-modelsel-pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 5;
+  max-height: 260px;
+  display: flex;
+  flex-direction: column;
+  background: var(--mb-bg-card-solid, var(--mb-bg-card));
+  border: 1px solid var(--mb-border);
+  border-radius: 10px;
+  box-shadow: 0 14px 34px -10px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+}
+.mb-np-modelsel-search {
+  display: flex;
+  gap: 6px;
+  padding: 7px;
+  border-bottom: 1px solid var(--mb-border-soft);
+}
+.mb-np-modelsel-search .mb-input {
+  flex: 1;
+}
+.mb-np-modelsel-list {
+  overflow: auto;
+  padding: 5px;
+}
+.mb-np-modelsel-opt {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: none;
+  padding: 7px 9px;
+  border-radius: 7px;
+  font-size: 12.5px;
+  color: var(--mb-text-secondary);
+  cursor: pointer;
+}
+.mb-np-modelsel-opt:hover {
+  background: var(--mb-bg-hover);
+  color: var(--mb-text-primary);
+}
+.mb-np-modelsel-opt.is-active {
+  color: var(--mb-accent);
+  font-weight: 700;
+}
+.mb-np-modelsel-empty {
+  padding: 10px;
+  font-size: 12px;
+  color: var(--mb-text-muted);
+  text-align: center;
+}
+
+/* ── 底部操作栏 ── */
+.mb-np-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 38px;
+  flex-shrink: 0;
+  padding: 0 14px;
+  border-top: 1px solid var(--mb-border-soft);
+  background: var(--mb-bg-card-solid, var(--mb-bg-card));
+}
+.mb-np-footer-hint {
+  font-size: 11.5px;
+  color: var(--mb-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mb-np-footer-right {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* ── 右下角缩放手柄 ── */
+.mb-np-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 18px;
+  height: 18px;
+  cursor: nwse-resize;
+  z-index: 8;
+  background:
+    linear-gradient(135deg, transparent 50%, var(--mb-border-strong, var(--mb-text-muted)) 50%, var(--mb-border-strong, var(--mb-text-muted)) 60%, transparent 60%, transparent 72%, var(--mb-border-strong, var(--mb-text-muted)) 72%, var(--mb-border-strong, var(--mb-text-muted)) 82%, transparent 82%);
+  opacity: 0.7;
+}
+.mb-np-resize:hover {
+  opacity: 1;
+}

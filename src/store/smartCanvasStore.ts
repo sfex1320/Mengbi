@@ -19,6 +19,7 @@ import {
 } from '@xyflow/react';
 import type { SmartNodeKind, SmartNodeData, WorkResult } from '@shared/smartCanvas';
 import { buildAnglePrompt } from '@/lib/anglePrompt';
+import { buildLightPrompt } from '@/lib/lightPrompt';
 
 function rid(): string {
   try {
@@ -227,6 +228,25 @@ export function defaultNodeData(kind: SmartNodeKind): SmartNodeData {
       };
     case 'ratio':
       return {};
+    case 'text':
+      return { text: '双击编辑文字', fontFamily: '', fontSize: 22, color: '', bold: false, italic: false, align: 'left' };
+    case 'light': {
+      const base = { azimuth: 35, elevation: 55, intensity: 60, warmth: 30, occlusion: 'none' as const, effect: 'none' as const, appendConsistencyInstruction: true };
+      return { ...base, generatedPrompt: buildLightPrompt(base) };
+    }
+    case 'compare':
+      return { slider: 50 };
+    case 'video':
+      return {
+        modelId: '',
+        prompt: '',
+        mode: 'text-to-video',
+        duration: '5',
+        aspect: '16:9',
+        resolution: '720p',
+        seed: null,
+        status: 'idle'
+      };
   }
 }
 
@@ -240,7 +260,11 @@ const DEFAULT_SIZE: Record<SmartNodeKind, { width: number; height?: number }> = 
   comfy: { width: 268 },
   'angle-prompt': { width: 300, height: 470 },
   scale: { width: 240, height: 240 },
-  ratio: { width: 240, height: 240 }
+  ratio: { width: 240, height: 240 },
+  text: { width: 260, height: 120 },
+  light: { width: 300, height: 470 },
+  compare: { width: 300, height: 340 },
+  video: { width: 300, height: 380 }
 };
 
 interface SmartCanvasState {
@@ -308,6 +332,11 @@ interface SmartCanvasState {
   insertNodeOnEdge: (kind: SmartNodeKind, pos: { x: number; y: number }, edgeId: string) => string;
   /** 原地复制一个节点（Alt 拖动复制用）：克隆该节点（分组则连同子节点 + 内部连线）在原位、新 id、不选中。 */
   duplicateNodeInPlace: (id: string) => void;
+  /** 自动连线 + 吸附：在 source→target 间加连线（若同向尚无连线），同时把 movedId 移到 newPos。一次进撤销栈。
+   *  用于「把一个节点拖到另一个节点上」自动建立上下游关系（方向 / 合法性由调用方决定）。 */
+  linkAndMove: (source: string, target: string, movedId: string, newPos: { x: number; y: number }) => void;
+  /** 若 work/comfy 节点下游尚无「结果」节点，自动在其右侧创建一个并连上（生成时调用，避免结果无处显示）。 */
+  ensureResultNode: (sourceId: string) => void;
   load: (nodes: Node[], edges: Edge[], viewport?: Viewport) => void;
   reset: () => void;
 }
@@ -366,7 +395,7 @@ export const useSmartCanvasStore = create<SmartCanvasState>()((set, get) => ({
       id,
       type: kind,
       position: pos,
-      data: defaultNodeData(kind) as unknown as Record<string, unknown>,
+      data: { ...(defaultNodeData(kind) as object), createdAt: Date.now() } as unknown as Record<string, unknown>,
       width: size.width,
       selected: true, // 新建即选中 → 右侧检查器立刻显示其属性
       ...(size.height ? { height: size.height } : {})
@@ -895,6 +924,44 @@ export const useSmartCanvasStore = create<SmartCanvasState>()((set, get) => ({
     get().pasteClipboard();
   },
 
+  linkAndMove: (source, target, movedId, newPos) =>
+    set((s) => {
+      // 同向已有连线则不重复加；否则按 source→target 连（handle 固定 out→in）
+      const exists = s.edges.some((e) => e.source === source && e.target === target);
+      const conn: Connection = { source, target, sourceHandle: 'out', targetHandle: 'in' };
+      const edges = exists ? s.edges : addEdge({ ...conn, type: 'deletable' }, s.edges);
+      const nodes = s.nodes.map((n) => (n.id === movedId ? { ...n, position: newPos } : n));
+      return { ...commitHistory(s._past, s.nodes, s.edges), edges, nodes };
+    }),
+
+  ensureResultNode: (sourceId) =>
+    set((s) => {
+      const src = s.nodes.find((n) => n.id === sourceId);
+      if (!src || (src.type !== 'work' && src.type !== 'comfy' && src.type !== 'video')) return {};
+      // 下游已有结果节点则不重复创建
+      const hasResult = s.edges.some(
+        (e) => e.source === sourceId && s.nodes.find((n) => n.id === e.target)?.type === 'result'
+      );
+      if (hasResult) return {};
+      const abs = absPosition(src, s.nodes);
+      const w = typeof src.width === 'number' ? src.width : 268;
+      const size = DEFAULT_SIZE.result;
+      const rnode: Node = {
+        id: rid(),
+        type: 'result',
+        position: { x: abs.x + w + 80, y: abs.y },
+        data: { ...(defaultNodeData('result') as object), createdAt: Date.now() } as unknown as Record<string, unknown>,
+        width: size.width,
+        ...(size.height ? { height: size.height } : {})
+      };
+      const conn: Connection = { source: sourceId, target: rnode.id, sourceHandle: 'out', targetHandle: 'in' };
+      return {
+        ...commitHistory(s._past, s.nodes, s.edges),
+        nodes: [...s.nodes, rnode],
+        edges: addEdge({ ...conn, type: 'deletable' }, s.edges)
+      };
+    }),
+
   insertNodeOnEdge: (kind, pos, edgeId) => {
     const id = rid();
     set((s) => {
@@ -1107,6 +1174,8 @@ export interface CreateMenuState {
   /** 打开时间戳：挡掉「开菜单的同一手势」尾随的合成 click 把菜单立刻关掉 */
   openedAt?: number;
 }
+/** 右上工具条唤起的浮层（一次一个）：排布 / 外观 / 快捷键 / 搜索 / 模板。 */
+export type SmartPanel = 'arrange' | 'viewPrefs' | 'keys' | 'search' | 'template';
 interface SmartUiState {
   /** 已点击工具栏、等待在画布上点一下落位的节点类型 */
   pendingKind: SmartNodeKind | null;
@@ -1120,6 +1189,10 @@ interface SmartUiState {
   /** 画布筛选关键词：非空时不匹配的节点在画布上变暗（搜索框驱动） */
   dimFilter: string;
   setDimFilter: (q: string) => void;
+  /** 当前打开的浮层面板（顶部工具条与画布共享，集中渲染） */
+  panel: SmartPanel | null;
+  setPanel: (p: SmartPanel | null) => void;
+  togglePanel: (p: SmartPanel) => void;
 }
 export const useSmartCanvasUiStore = create<SmartUiState>((set) => ({
   pendingKind: null,
@@ -1130,7 +1203,10 @@ export const useSmartCanvasUiStore = create<SmartUiState>((set) => ({
   inspectorCollapsed: false,
   toggleInspector: () => set((s) => ({ inspectorCollapsed: !s.inspectorCollapsed })),
   dimFilter: '',
-  setDimFilter: (dimFilter) => set({ dimFilter })
+  setDimFilter: (dimFilter) => set({ dimFilter }),
+  panel: null,
+  setPanel: (panel) => set({ panel }),
+  togglePanel: (p) => set((s) => ({ panel: s.panel === p ? null : p }))
 }));
 
 /** 「运行全部」进度（拓扑顺序串行跑全图工作/ComfyUI/LLM 节点）。取消=软停（停止后续，不打断已发起的）。 */

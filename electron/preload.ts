@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
+import { contextBridge, ipcRenderer, webFrame, type IpcRendererEvent } from 'electron';
 import type { ElectronAPI, PushChannel } from '@shared/ipc';
 
 /**
@@ -32,7 +32,10 @@ const PUSH_CHANNELS: ReadonlySet<PushChannel> = new Set<PushChannel>([
   'comfyui:status',
   'comfyui:run-progress',
   'comfyui:run-done',
-  'comfyui:queue'
+  'comfyui:queue',
+  // AI 视频生成（异步进度 / 完成）
+  'video:progress',
+  'video:done'
 ]);
 
 function invoke<T>(channel: string, payload?: unknown): Promise<T> {
@@ -68,6 +71,11 @@ const api: ElectronAPI = {
     status: (id) => invoke('api:image:status', id),
     cancel: (id) => invoke('api:image:cancel', id),
     queue: () => invoke('api:image:queue')
+  },
+  video: {
+    generate: (input) => invoke('api:video:generate', input),
+    cancel: (taskId) => invoke('api:video:cancel', taskId),
+    saveThumbnail: (input) => invoke('api:video:save-thumbnail', input)
   },
   gallery: {
     list: (input) => invoke('api:gallery:list', input),
@@ -233,7 +241,14 @@ const api: ElectronAPI = {
     minimize: () => invoke('api:window:minimize'),
     maximizeToggle: () => invoke('api:window:maximize-toggle'),
     close: () => invoke('api:window:close'),
-    state: () => invoke('api:window:state')
+    state: () => invoke('api:window:state'),
+    // 整窗界面缩放：webFrame 同步缩放当前渲染帧（1=100%）。setZoom 在 [0.5, 2.0] 内 clamp 并返回实际系数。
+    getZoom: () => webFrame.getZoomFactor(),
+    setZoom: (factor: number) => {
+      const f = Math.min(2, Math.max(0.5, Math.round(factor * 100) / 100));
+      webFrame.setZoomFactor(f);
+      return f;
+    }
   },
   drag: {
     // fire-and-forget：必须在 dragstart 同步路径里调用；主进程异步起 startDrag

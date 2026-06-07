@@ -6,13 +6,12 @@ import { useSmartDocsStore } from '@/store/smartDocsStore';
 import { useSmartInboxStore } from '@/store/smartInboxStore';
 import { toast } from '@/store/toastStore';
 import { migrateLegacyIfNeeded } from '@/lib/smartDocStorage';
-import { routeImageDone, routeComfyDone, routeChatChunk, routeChatDone, pruneDeletedImages } from '@/lib/smartCanvasRunner';
+import { routeImageDone, routeComfyDone, routeChatChunk, routeChatDone, routeVideoDone, routeVideoProgress, pruneDeletedImages } from '@/lib/smartCanvasRunner';
 import { useDeletedMediaStore } from '@/store/deletedMediaStore';
 import { Lightbox } from '@/components/Lightbox';
 import { CanvasToolbar } from './CanvasToolbar';
 import { CanvasWorkspace } from './CanvasWorkspace';
 import { CanvasLauncher } from './CanvasLauncher';
-import { SmartTabs } from './SmartTabs';
 import { SmartTextViewer } from './SmartTextViewer';
 import { GalleryPickerDialog } from './GalleryPickerDialog';
 import './SmartCanvas.css';
@@ -95,6 +94,16 @@ export default function SmartCanvasPage(): JSX.Element {
     return off;
   }, []);
 
+  // 视频节点：异步生成进度 / 完成 经 video:progress / video:done 路由回对应节点
+  useEffect(() => {
+    const offProg = window.electronAPI.on('video:progress', (payload) => routeVideoProgress(payload));
+    const offDone = window.electronAPI.on('video:done', (payload) => routeVideoDone(payload));
+    return () => {
+      offProg();
+      offDone();
+    };
+  }, []);
+
   // LLM 节点流式聊天：chat:chunk / chat:done 路由回对应节点
   useEffect(() => {
     const offChunk = window.electronAPI.on('chat:chunk', (payload) => routeChatChunk(payload));
@@ -127,7 +136,6 @@ export default function SmartCanvasPage(): JSX.Element {
         ) : (
           <>
             <CanvasToolbar />
-            <SmartTabs />
             <CanvasWorkspace key={activeDocId} docId={activeDocId} />
           </>
         )}

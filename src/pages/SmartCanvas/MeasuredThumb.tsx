@@ -10,7 +10,8 @@ export function MeasuredThumb({
   title,
   draggable,
   onClick,
-  onDragStart
+  onDragStart,
+  onContextMenu
 }: {
   src: string;
   alt?: string;
@@ -18,6 +19,7 @@ export function MeasuredThumb({
   draggable?: boolean;
   onClick?: () => void;
   onDragStart?: (e: React.DragEvent) => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
 }): JSX.Element {
   const [dims, setDims] = useState('');
   return (
@@ -29,6 +31,7 @@ export function MeasuredThumb({
         draggable={draggable}
         onDragStart={onDragStart}
         onClick={onClick}
+        onContextMenu={onContextMenu}
         onLoad={(e) => {
           const t = e.currentTarget;
           if (t.naturalWidth && t.naturalHeight) setDims(`${t.naturalWidth}×${t.naturalHeight}`);

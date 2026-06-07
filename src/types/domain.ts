@@ -9,7 +9,7 @@ export interface ApiPlan {
   updated_at: string;
 }
 
-export type ApiConfigType = 'image' | 'text';
+export type ApiConfigType = 'image' | 'text' | 'video';
 
 /**
  * 对话 / 多模态 API 协议生态：
@@ -52,6 +52,19 @@ export type ImageKind =
   | null;
 
 /**
+ * 视频生成 API 协议变种（几乎全异步：提交任务 → 轮询状态 → 取有时效的 mp4 URL → 下载落盘）：
+ *   - 'kling'   可灵代理型（国内中转站最主流）：POST {base}/kling/v1/videos/{text2video|image2video}
+ *               → 轮询 GET .../{task_id} → data.task_result.videos[0].url。字段 model_name/prompt/
+ *               negative_prompt/cfg_scale/mode(std|pro)/aspect_ratio/duration/image/image_tail。
+ *   - 'sora'    OpenAI Sora 原生：POST {base}/v1/videos（model/prompt/size/seconds/input_reference）
+ *               → 轮询 GET /v1/videos/{id}（status queued/in_progress/completed）→ GET /v1/videos/{id}/content。
+ *   - 'unified' 聚合站统一端点：POST {base}/video/generations（model 区分各家）→ 轮询 → video.url / data[0].url。
+ *   - null      默认按 'kling'。
+ * 各站字段差异用 body_overrides_json 顶层合并兜底（与 image 思路一致）。
+ */
+export type VideoKind = 'kling' | 'sora' | 'unified' | null;
+
+/**
  * 思考模式（reasoning / thinking）强度：
  *   - 'low' / 'medium' / 'high' / 'max' —— 大致映射到各家的强度档位
  *   - null —— 不发字段，使用上游默认（如 Deepseek V4 默认 high）
@@ -82,6 +95,8 @@ export interface ApiConfig {
   supports_vision: boolean;
   official_kind: OfficialKind;
   image_kind: ImageKind;
+  /** 视频协议变种（仅 type='video' 用）；详见 [[VideoKind]]。null/缺省 = 'kling'。 */
+  video_kind?: VideoKind;
   /**
    * 高级：每方案可保存一段 JSON 对象文本，会与默认请求体顶层合并发出。
    * `null` 值表示删除该字段；字符串值若为 `${var}` 整串占位则替换为变量真实类型。
@@ -138,6 +153,8 @@ export interface ApiConfigInput {
   supports_vision: boolean;
   official_kind: OfficialKind;
   image_kind: ImageKind;
+  /** 视频协议变种（仅 type='video' 用）；null/缺省 = 'kling' */
+  video_kind?: VideoKind;
   body_overrides_json: string | null;
   /** 仅 image_kind='comfyui' 用 —— ComfyUI workflow JSON 文本 */
   comfyui_workflow_json: string | null;

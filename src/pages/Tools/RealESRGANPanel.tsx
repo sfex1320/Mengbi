@@ -145,7 +145,6 @@ export function RealESRGANPanel(): JSX.Element {
 
   // ─── 运行态 ───────────────────────────────────────
   const [running, setRunning] = useState(false);
-  const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);
   const [progress, setProgress] = useState<UpscaleProgressPayload | null>(null);
 
   // ─── ONNX 模型清单(主进程内 onnxruntime-node,无需启停) ──────────
@@ -273,7 +272,8 @@ export function RealESRGANPanel(): JSX.Element {
     if (!window.electronAPI?.on) return;
     const offProg = window.electronAPI.on('upscale:progress', (raw) => {
       const p = raw as UpscaleProgressPayload;
-      if (currentTaskId && p.taskId !== currentTaskId) return;
+      // 仅在本面板运行期间反映进度；放大引擎串行执行，单批进度即当前任务进度
+      if (!running) return;
       setProgress(p);
       // 同步更新对应任务的进度
       setTasks((arr) =>
@@ -292,7 +292,7 @@ export function RealESRGANPanel(): JSX.Element {
       offProg?.();
       offInstall?.();
     };
-  }, [currentTaskId]);
+  }, [running]);
 
   // ─── handlers ─────────────────────────────────────
   async function refreshStatus(): Promise<void> {
@@ -472,8 +472,6 @@ export function RealESRGANPanel(): JSX.Element {
     setSelectedTaskId(submittedTaskIds[0]);
     setRunning(true);
     setProgress(null);
-    const reqId = `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    setCurrentTaskId(reqId);
 
     const params = {
       modelName: effectiveModelName!,
@@ -535,7 +533,6 @@ export function RealESRGANPanel(): JSX.Element {
       }
     } finally {
       setRunning(false);
-      setCurrentTaskId(null);
       clearPending();
     }
   }
