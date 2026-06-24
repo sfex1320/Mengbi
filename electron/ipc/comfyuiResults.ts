@@ -1,5 +1,5 @@
 /**
- * ComfyUI 运行结果管理 IPC：列表 / 详情 / 恢复参数 / 删除 / 导出到文件夹 / 加入图库。
+ * ComfyUI 运行结果管理 IPC：列表 / 详情 / 恢复参数 / 删除 / 导出到文件夹 / 加入资产库。
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -75,7 +75,7 @@ export function registerComfyuiResultsHandlers(): void {
     return ok({ copied });
   });
 
-  // 把选中运行的输出图加入图库（去重在 addImagesToGallery 里做；自动同步过的不会重复）
+  // 把选中运行的输出图加入资产库（去重在 addImagesToGallery 里做；自动同步过的不会重复）
   register('api:comfyui:results:to-gallery', ComfyuiResultsToGallerySchema, async (input) => {
     let added = 0;
     for (const id of input.runIds) {

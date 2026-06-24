@@ -3,6 +3,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import Database from 'better-sqlite3';
 import { logger } from './logger';
+import { SEED_PROMPTS, SEED_PROMPTS_V17, SEED_PROMPTS_V19 } from './promptSeeds';
 
 /**
  * 数据库初始化与迁移。
@@ -11,7 +12,7 @@ import { logger } from './logger';
  * - schema_version 在 settings 表里追踪
  */
 
-const CURRENT_SCHEMA_VERSION = 15;
+const CURRENT_SCHEMA_VERSION = 20;
 
 let _db: Database.Database | null = null;
 
@@ -80,7 +81,7 @@ function applySchema(db: Database.Database): void {
 
   if (ver < 3) {
     db.transaction(() => {
-      // prompts 增加 thumb_data_uri：对于反推 / 用户手填这类没有"已存图库的关联图"的卡片，
+      // prompts 增加 thumb_data_uri：对于反推 / 用户手填这类没有"已存资产库的关联图"的卡片，
       // 直接存一个小 data URI 作为缩略图。比走 related_image_ids 更轻。
       const cols = db
         .prepare(`PRAGMA table_info(prompts)`)
@@ -221,7 +222,7 @@ function applySchema(db: Database.Database): void {
   if (ver < 12) {
     db.transaction(() => {
       // 图像转矢量历史:每个完成的 vec 任务(VTracer / Potrace / OmniSVG)落一条。
-      // 与 generation_tasks / images 表分开,因为 SVG 文件不进图库,UI 也是 Tools 页独立的 HistoryDrawer。
+      // 与 generation_tasks / images 表分开,因为 SVG 文件不进资产库,UI 也是 Tools 页独立的 HistoryDrawer。
       db.exec(`
         CREATE TABLE IF NOT EXISTS vectorize_history (
           id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -325,6 +326,100 @@ function applySchema(db: Database.Database): void {
       writeSchemaVersion(db, 15);
     })();
     logger.info('db migrated to v15 (video_kind on api_configs)');
+  }
+
+  if (ver < 16) {
+    db.transaction(() => {
+      // 提示词库内置常用提示词种子（仅此一次；用户删除后不复活，因为只在迁移里种）。
+      // 全部归到内置分类「图片提示词」(slug='image')。分类种子由 applyBuiltinSeeds 在本迁移前已存在，
+      // 但为保险起见这里也确保该分类存在再取其 id。
+      const now = new Date().toISOString();
+      db.prepare(
+        `INSERT OR IGNORE INTO prompt_categories(name, slug, is_builtin, sort_order, created_at)
+         VALUES('图片提示词', 'image', 1, 1, ?)`
+      ).run(now);
+      const cat = db.prepare(`SELECT id FROM prompt_categories WHERE slug = 'image'`).get() as
+        | { id: number }
+        | undefined;
+      const catId = cat?.id ?? null;
+      const insert = db.prepare(
+        `INSERT INTO prompts(title, text, negative_text, kind, category_id, tags, notes, related_image_ids, created_at, updated_at)
+         VALUES(?, ?, ?, 'image', ?, '[]', ?, '[]', ?, ?)`
+      );
+      for (const p of SEED_PROMPTS) {
+        insert.run(p.title, p.text, p.negative_text ?? null, catId, p.notes ?? null, now, now);
+      }
+      writeSchemaVersion(db, 16);
+    })();
+    logger.info(`db migrated to v16 (seeded ${SEED_PROMPTS.length} builtin prompts)`);
+  }
+
+  if (ver < 17) {
+    db.transaction(() => {
+      // 第二批内置提示词（与 v16 合计 36 条）。单独迁移：已种过 v16 的老库只补这 8 条、不重复种前 28 条。
+      const now = new Date().toISOString();
+      const cat = db.prepare(`SELECT id FROM prompt_categories WHERE slug = 'image'`).get() as
+        | { id: number }
+        | undefined;
+      const catId = cat?.id ?? null;
+      const insert = db.prepare(
+        `INSERT INTO prompts(title, text, negative_text, kind, category_id, tags, notes, related_image_ids, created_at, updated_at)
+         VALUES(?, ?, ?, 'image', ?, '[]', ?, '[]', ?, ?)`
+      );
+      for (const p of SEED_PROMPTS_V17) {
+        insert.run(p.title, p.text, p.negative_text ?? null, catId, p.notes ?? null, now, now);
+      }
+      writeSchemaVersion(db, 17);
+    })();
+    logger.info(`db migrated to v17 (seeded ${SEED_PROMPTS_V17.length} more builtin prompts)`);
+  }
+
+  if (ver < 18) {
+    db.transaction(() => {
+      // api_configs 加 header_overrides_json：自定义请求头 JSON（header 名→值），合并进默认请求头。
+      // 用于官方卡密会员 / 特殊中转站需要非标准鉴权头的接入。NULL = 不覆盖。
+      const cols = db.prepare(`PRAGMA table_info(api_configs)`).all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === 'header_overrides_json')) {
+        db.exec(`ALTER TABLE api_configs ADD COLUMN header_overrides_json TEXT`);
+      }
+      writeSchemaVersion(db, 18);
+    })();
+    logger.info('db migrated to v18 (header_overrides_json on api_configs)');
+  }
+
+  if (ver < 19) {
+    db.transaction(() => {
+      // 第三批内置提示词：一批通用扩图（outpaint）提示词。单独迁移：老库只补这批、不重复种前面。
+      const now = new Date().toISOString();
+      const cat = db.prepare(`SELECT id FROM prompt_categories WHERE slug = 'image'`).get() as
+        | { id: number }
+        | undefined;
+      const catId = cat?.id ?? null;
+      const insert = db.prepare(
+        `INSERT INTO prompts(title, text, negative_text, kind, category_id, tags, notes, related_image_ids, created_at, updated_at)
+         VALUES(?, ?, ?, 'image', ?, '[]', ?, '[]', ?, ?)`
+      );
+      for (const p of SEED_PROMPTS_V19) {
+        insert.run(p.title, p.text, p.negative_text ?? null, catId, p.notes ?? null, now, now);
+      }
+      writeSchemaVersion(db, 19);
+    })();
+    logger.info(`db migrated to v19 (seeded ${SEED_PROMPTS_V19.length} outpaint prompts)`);
+  }
+
+  if (ver < 20) {
+    db.transaction(() => {
+      // images 加 group_name：资产库「拖拽分组（文件夹）」。NULL = 未分组（首页）。
+      // 配套 IPC：api:gallery:set-group（写该列 + 物理移动文件到 groups/<name>/ 子目录）、
+      // api:gallery:list-groups（列出 distinct group_name + 计数作文件夹卡）。
+      const cols = db.prepare(`PRAGMA table_info(images)`).all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === 'group_name')) {
+        db.exec(`ALTER TABLE images ADD COLUMN group_name TEXT`);
+      }
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_images_group_name ON images(group_name)`);
+      writeSchemaVersion(db, 20);
+    })();
+    logger.info('db migrated to v20 (group_name on images)');
   }
 
   if (ver > CURRENT_SCHEMA_VERSION) {

@@ -16,17 +16,30 @@ const TYPE_LABEL: Record<string, string> = {
   image: '图片',
   prompt: '提示词',
   llm: 'LLM',
-  work: '生成',
+  work: '生图',
   comfy: 'ComfyUI',
   result: '结果',
   group: '分组',
-  'angle-prompt': '视角',
+  'angle-prompt': '镜头',
   light: '光源',
+  palette: '配色工具',
   scale: '缩放',
   ratio: '尺寸分析',
   text: '文字',
   compare: '对比',
-  video: '视频'
+  video: '视频',
+  'image-reverse': '图像反推',
+  'video-source': '视频上传',
+  'video-reverse': '视频反推',
+  'frame-interp': '插帧',
+  'video-clip': '视频剪辑',
+  storyboard: '智能分镜',
+  'prompt-mall': '提示词商城',
+  loop: '循环',
+  upscale: '保真放大',
+  vectorize: '图像转矢量',
+  'folder-input': '文件夹输入',
+  'folder-output': '文件夹输出'
 };
 
 /** 节点的可搜索文本（类型名 + 内容片段）。导出供画布筛选 dim 复用。 */

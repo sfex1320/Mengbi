@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useSmartKeybindStore, comboFromEvent, KEYBIND_ACTIONS } from '@/store/smartCanvasStore';
+import { useSmartKeybindStore, comboFromEvent, KEYBIND_ACTIONS, KEYBIND_CATEGORIES } from '@/store/smartCanvasStore';
+import { prettyCombo } from '@/lib/keyCombo';
 
 /** 自定义快捷键编辑器：点「录制」后按下任意组合即绑定到该功能。 */
 export function KeybindingsDialog({ onClose }: { onClose: () => void }): JSX.Element {
@@ -8,6 +9,19 @@ export function KeybindingsDialog({ onClose }: { onClose: () => void }): JSX.Ele
   const setBinding = useSmartKeybindStore((s) => s.setBinding);
   const reset = useSmartKeybindStore((s) => s.reset);
   const [recording, setRecording] = useState<string | null>(null);
+
+  // 按分区分组（区内保持 KEYBIND_ACTIONS 原序），区按 order 排列
+  const sections = useMemo(() => {
+    const grouped = new Map<string, typeof KEYBIND_ACTIONS>();
+    for (const a of KEYBIND_ACTIONS) {
+      const cat = a.category || 'other';
+      if (!grouped.has(cat)) grouped.set(cat, []);
+      grouped.get(cat)!.push(a);
+    }
+    return Array.from(grouped.keys())
+      .sort((x, y) => (KEYBIND_CATEGORIES[x]?.order ?? 999) - (KEYBIND_CATEGORIES[y]?.order ?? 999))
+      .map((cat) => ({ cat, label: KEYBIND_CATEGORIES[cat]?.label ?? cat, actions: grouped.get(cat)! }));
+  }, []);
 
   useEffect(() => {
     if (!recording) return;
@@ -39,20 +53,25 @@ export function KeybindingsDialog({ onClose }: { onClose: () => void }): JSX.Ele
         </div>
         <div className="mb-sc-keys-hint">点右侧组合键按钮 → 按下任意组合即可重新绑定；Esc 取消录制。</div>
         <div className="mb-sc-keys-list">
-          {KEYBIND_ACTIONS.map((a) => (
-            <div key={a.id} className="mb-sc-keys-row">
-              <span className="mb-sc-keys-label">{a.label}</span>
-              <button
-                className={`mb-btn mb-btn-sm ${recording === a.id ? 'is-armed' : 'mb-btn-ghost'} mb-sc-keys-combo`}
-                onClick={() => setRecording(recording === a.id ? null : a.id)}
-              >
-                {recording === a.id ? '按下按键…' : bindings[a.id] || '未设置'}
-              </button>
-              {bindings[a.id] && recording !== a.id && (
-                <button className="mb-sc-node-x" title="清除" onClick={() => setBinding(a.id, '')}>
-                  ✕
-                </button>
-              )}
+          {sections.map((sec) => (
+            <div key={sec.cat} className="mb-sc-keys-section">
+              <div className="mb-sc-keys-cat">{sec.label}</div>
+              {sec.actions.map((a) => (
+                <div key={a.id} className="mb-sc-keys-row">
+                  <span className="mb-sc-keys-label">{a.label}</span>
+                  <button
+                    className={`mb-btn mb-btn-sm ${recording === a.id ? 'is-armed' : 'mb-btn-ghost'} mb-sc-keys-combo`}
+                    onClick={() => setRecording(recording === a.id ? null : a.id)}
+                  >
+                    {recording === a.id ? '按下按键…' : prettyCombo(bindings[a.id]) || '未设置'}
+                  </button>
+                  {bindings[a.id] && recording !== a.id && (
+                    <button className="mb-sc-node-x" title="清除" onClick={() => setBinding(a.id, '')}>
+                      ✕
+                    </button>
+                  )}
+                </div>
+              ))}
             </div>
           ))}
         </div>

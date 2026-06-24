@@ -59,10 +59,50 @@ export type ImageKind =
  *   - 'sora'    OpenAI Sora 原生：POST {base}/v1/videos（model/prompt/size/seconds/input_reference）
  *               → 轮询 GET /v1/videos/{id}（status queued/in_progress/completed）→ GET /v1/videos/{id}/content。
  *   - 'unified' 聚合站统一端点：POST {base}/video/generations（model 区分各家）→ 轮询 → video.url / data[0].url。
+ *   - 'seedance' APIMart Seedance 2.0 等富能力 adapter：统一请求 → adapter 映射 7 模式（详见 @shared/videoProviders + electron/services/video）。
+ *   - 'custom'  自定义中转站（基础预留，走通用解析）。
  *   - null      默认按 'kling'。
+ * kling/sora/unified 走 electron/ipc/video.ts 内置简易引擎；seedance/custom 走 VideoProviderAdapter。
  * 各站字段差异用 body_overrides_json 顶层合并兜底（与 image 思路一致）。
  */
-export type VideoKind = 'kling' | 'sora' | 'unified' | null;
+export type VideoKind = 'kling' | 'sora' | 'unified' | 'seedance' | 'veo' | 'runway' | 'fal' | 'custom' | null;
+
+/** 合法 video_kind 白名单（单一真相，避免各处归一逻辑漂移）。 */
+export const VIDEO_KINDS_LIST = ['kling', 'sora', 'unified', 'seedance', 'veo', 'runway', 'fal', 'custom'] as const;
+
+/** 归一任意值为合法 VideoKind；非法 → null（运行时按默认 'kling' 兜底）。 */
+export function normalizeVideoKind(v: unknown): VideoKind {
+  return (VIDEO_KINDS_LIST as readonly string[]).includes(v as string) ? (v as VideoKind) : null;
+}
+
+/** 走 VideoProviderAdapter 的协议（其余 kling/sora/unified 走 legacy 简易引擎）。 */
+export const ADAPTER_VIDEO_KINDS = ['seedance', 'veo', 'runway', 'fal', 'custom'] as const;
+
+/**
+ * 按 地址 / 真实模型 ID 推断更合适的视频协议（与生图 family 自动嗅探同哲学——别让用户背协议）。
+ * 推断不出返回 null（尊重现配置）。
+ */
+export function suggestVideoKind(baseUrl: string, actualModelId?: string): VideoKind {
+  const u = (baseUrl ?? '').toLowerCase();
+  const m = (actualModelId ?? '').toLowerCase();
+  // APIMart 全系视频走它自家 /v1/videos/generations（即 seedance 协议），与具体模型无关
+  if (u.includes('apimart')) return 'seedance';
+  // Seedance / 豆包视频模型只讲 seedance 协议（发到 kling/sora 端点必错）
+  if (/seedance|doubao/.test(m)) return 'seedance';
+  if (u.includes('runway')) return 'runway';
+  if (/fal\.run|fal\.ai/.test(u)) return 'fal';
+  return null;
+}
+
+/**
+ * 运行时自动纠偏：用户显式选了 adapter 协议（seedance/veo/runway/fal/custom）则尊重；
+ * 配置还停在 legacy（kling/sora/unified/空——多为旧默认值）但 地址/模型 明显是别家 → 自动切对的协议，
+ * 免去「协议选错 → 提交进错端点 → 烧钱且取不回视频」。
+ */
+export function autoCorrectVideoKind(kind: VideoKind, baseUrl: string, actualModelId?: string): VideoKind {
+  if (kind && (ADAPTER_VIDEO_KINDS as readonly string[]).includes(kind)) return kind;
+  return suggestVideoKind(baseUrl, actualModelId) ?? kind;
+}
 
 /**
  * 思考模式（reasoning / thinking）强度：
@@ -103,6 +143,13 @@ export interface ApiConfig {
    * 详细语义参见计划文件 1k-2k-validated-wreath.md，逻辑实现在 generate.ts:applyBodyOverrides。
    */
   body_overrides_json: string | null;
+  /**
+   * 高级：自定义请求头 JSON（header 名 → 值），在默认请求头之上合并发出。
+   * 值支持 `${key}` / `${model}` 内嵌替换；值为 `null` 删除该 header（如换掉默认 Authorization）。
+   * 用于官方卡密会员 / 特殊中转站需要非标准鉴权头的接入。对 对话/绘画/视频 各请求点都生效。
+   * 逻辑见 electron/ipc/headerOverrides.ts:applyHeaderOverrides。null = 不覆盖。
+   */
+  header_overrides_json: string | null;
   /**
    * 仅 image_kind='comfyui' 用：用户从 ComfyUI 里"保存（API Format）"导出的 workflow JSON 字符串。
    * 运行时按占位符替换后 POST /prompt。详见 generate.ts:runComfyUIImage。
@@ -156,6 +203,8 @@ export interface ApiConfigInput {
   /** 视频协议变种（仅 type='video' 用）；null/缺省 = 'kling' */
   video_kind?: VideoKind;
   body_overrides_json: string | null;
+  /** 高级：自定义请求头 JSON（header 名 → 值），合并进默认请求头；详见 ApiConfig.header_overrides_json */
+  header_overrides_json: string | null;
   /** 仅 image_kind='comfyui' 用 —— ComfyUI workflow JSON 文本 */
   comfyui_workflow_json: string | null;
   /** 仅 official_kind='local' 用 —— 用户选的 .gguf 文件路径 */

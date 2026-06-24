@@ -2,17 +2,31 @@ import { z } from 'zod';
 import type { WebContents } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
-import { register, ok, err, appendNotification } from './helpers';
+import { register, ok, err, appendNotification, parseModelRef } from './helpers';
 import { ImageGenerateSchema } from './schemas';
 import { getDb } from '../services/db';
 import { decryptString } from '../services/safeStorage';
 import { joinApiUrl } from '../services/apiUrl';
+import { applyHeaderOverrides } from './headerOverrides';
+import { pickStreamImage, type StreamImg } from './imageStreamParse';
 import { logger } from '../services/logger';
 import { makeError } from '@shared/error';
+import { computeImageRemedy } from './imageRemedy';
+import { compositeInpaintResult } from './inpaintComposite';
 import { isMockMode } from './mocks/runtime';
 import { ensureThumbnail } from '../services/thumbnail';
-import { detectFamily, getFamilyById, type ImageFamily } from '@shared/imageModelFamilies';
+import { detectFamily, getFamilyById, mapGptTierSize, clampToImage2Size, type ImageFamily } from '@shared/imageModelFamilies';
 import { chromiumFetch, ChromiumNetError } from '../services/httpClient';
+import {
+  apimartCode,
+  extractApimartSubmit,
+  extractApimartStatus,
+  isApimartDone,
+  isApimartFailed,
+  extractApimartError,
+  extractApimartImageUrls,
+  resolveApimartStatusUrl
+} from './apimartParse';
 import { saveImage, getStorageRoot } from '../services/imageStore';
 import {
   TIER_PIXEL_BUDGET,
@@ -308,11 +322,21 @@ async function executeTask(item: QueueItem): Promise<void> {
         thumbPaths.push(null);
       }
     }
+    // 资产库分组：智能画布等上游可在 params 里塞 gallery_group（如画布名），落库时归入该文件夹。
+    let galleryGroup: string | null = null;
+    try {
+      const tp = JSON.parse(task.params) as Record<string, unknown>;
+      if (typeof tp.gallery_group === 'string' && tp.gallery_group.trim()) {
+        galleryGroup = tp.gallery_group.trim().slice(0, 120);
+      }
+    } catch {
+      /* params 解析失败 → 不分组 */
+    }
     for (let i = 0; i < savedPaths.length; i++) {
       getDb()
         .prepare(
-          `INSERT INTO images(task_id, file_path, thumbnail_path, prompt_positive, prompt_negative, model_used, params_json, created_at)
-           VALUES(?, ?, ?, ?, ?, ?, ?, ?)`
+          `INSERT INTO images(task_id, file_path, thumbnail_path, prompt_positive, prompt_negative, model_used, params_json, group_name, created_at)
+           VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           item.taskId,
@@ -322,6 +346,7 @@ async function executeTask(item: QueueItem): Promise<void> {
           task.negative_prompt,
           task.model_id,
           task.params,
+          galleryGroup,
           now
         );
     }
@@ -424,6 +449,10 @@ async function executeTask(item: QueueItem): Promise<void> {
     } else {
       displayMsg = `[${failedStage}] ${rawMsg}`;
     }
+    // 兜底中文解释：不管哪条协议路径抛上来的错，最终出口统一补一句「原因 + 怎么办」。
+    // （部分 throw 点已就地补过 hint，includes 判断防止重复追加同一句。）
+    const finalHint = upstreamErrorHint(displayMsg);
+    if (finalHint && !displayMsg.includes(finalHint)) displayMsg += finalHint;
     // 完整日志：stack + cause + Chromium 错误码（若有）+ 耗时
     logger.error('image task failed', {
       taskId: item.taskId,
@@ -447,7 +476,9 @@ async function executeTask(item: QueueItem): Promise<void> {
       errorCode: 'API_FAILED',
       severity: 'toast',
       message: displayMsg,
-      taskId: item.taskId
+      taskId: item.taskId,
+      // 可一键修复时附建议：前端通知中心显示「一键修复」按钮，点一下把覆盖写进该绘画模型
+      remedy: computeImageRemedy(displayMsg, task.model_id)
     });
   }
 }
@@ -461,6 +492,8 @@ interface ResolvedImageCfg {
   image_kind: string | null;
   /** 用户在设置页配的 JSON 模板，与默认请求体顶层合并发出。null = 不覆盖。 */
   body_overrides_json: string | null;
+  /** 自定义请求头 JSON（header 名→值，合并进默认头）。null = 不覆盖。 */
+  header_overrides_json: string | null;
   /** image_kind='comfyui' 时存的 workflow JSON 文本（API Format） */
   comfyui_workflow_json: string | null;
 }
@@ -470,31 +503,47 @@ function findImageConfig(modelDisplayId: string): ResolvedImageCfg | null {
     .prepare(`SELECT * FROM api_configs WHERE type = 'image' ORDER BY id`)
     .all() as Array<{
     id: number;
+    provider_name: string | null;
     base_url: string;
     api_key_encrypted: string;
     model_mapping: string;
     image_kind: string | null;
     body_overrides_json: string | null;
+    header_overrides_json: string | null;
     comfyui_workflow_json: string | null;
   }>;
-  for (const c of configs) {
-    let map: Record<string, string> = {};
+  // 模型标识可能是复合「中转站 / 名」（区分同名模型在不同中转站）或旧裸名。
+  const { provider, name } = parseModelRef(modelDisplayId);
+  type Row = (typeof configs)[number];
+  const build = (c: Row, actual: string): ResolvedImageCfg => ({
+    id: c.id,
+    base_url: c.base_url,
+    api_key_encrypted: c.api_key_encrypted,
+    actualModelId: actual,
+    image_kind: c.image_kind ?? null,
+    body_overrides_json: c.body_overrides_json ?? null,
+    header_overrides_json: c.header_overrides_json ?? null,
+    comfyui_workflow_json: c.comfyui_workflow_json ?? null
+  });
+  const mapOf = (c: Row): Record<string, string> => {
     try {
-      map = JSON.parse(c.model_mapping || '{}');
+      return JSON.parse(c.model_mapping || '{}');
     } catch {
-      map = {};
+      return {};
     }
-    if (map[modelDisplayId]) {
-      return {
-        id: c.id,
-        base_url: c.base_url,
-        api_key_encrypted: c.api_key_encrypted,
-        actualModelId: map[modelDisplayId],
-        image_kind: c.image_kind ?? null,
-        body_overrides_json: c.body_overrides_json ?? null,
-        comfyui_workflow_json: c.comfyui_workflow_json ?? null
-      };
+  };
+  // 1) 复合：中转站名 + 映射名 精确命中
+  if (provider) {
+    for (const c of configs) {
+      if ((c.provider_name ?? '').trim() !== provider) continue;
+      const v = mapOf(c)[name];
+      if (v) return build(c, v);
     }
+  }
+  // 2) 回退：按裸名（复合名的 name 段）首个命中——等价旧逻辑，旧裸名存量绝不退化
+  for (const c of configs) {
+    const v = mapOf(c)[name];
+    if (v) return build(c, v);
   }
   return null;
 }
@@ -516,6 +565,52 @@ interface GrsaiImageOpts extends OpenAIImageOpts {
 // 比例 → 像素尺寸 / 档位换算 / 请求体覆盖 等纯函数已抽到 ./imageBody（便于单测）。
 // ASPECT_TO_SIZE / TIER_PIXEL_BUDGET / snapToGrid / pixelsByAspectAndBudget / resolveSize /
 // applyBodyOverrides 均从那里 import。
+
+/** 把上游错误正文翻译成「做什么 + 怎么办」的中文提示（识别不了返回 ''，原文照旧透传）。
+ *  顺序：先具体后通用——通用的 HTTP/网络模式放最后，避免抢先命中。 */
+function upstreamErrorHint(text: string): string {
+  if (/denied for this API key|permission_error|insufficient.*permission/i.test(text))
+    return '——该 API Key 无权使用此模型：换一个绘画模型，或到该中转站为这把 Key 开通此模型';
+  if (/invalid option.*auto.*low.*medium.*high/i.test(text))
+    return '——quality 参数不被该模型接受（gpt-image 系列只认 auto/low/medium/high）：把「质量」换档后重试';
+  if (/insufficient_quota|余额|欠费|quota|arrears|balance/i.test(text))
+    return '——配额/余额不足：到中转站充值，或换一个方案/模型';
+  if (/无可用渠道|无可用通道|model.*(not.*found|does not exist)|unknown model|invalid model/i.test(text))
+    return '——模型不存在或中转站没开通：检查设置里「模型映射」填的真实模型 ID 是否正确，或换模型';
+  if (/content.?policy|safety|sensitive|flagged|violat|moderation|敏感|违规|审核/i.test(text))
+    return '——提示词疑似触发内容安全审核：换个措辞（避开敏感词/人名/品牌）后重试';
+  if (/invalid.*(size|resolution)|size.*not.*support|unsupported.*size/i.test(text))
+    return '——所选尺寸/分辨率不被该模型支持：换一个比例或分辨率档位重试';
+  if (/(^|\D)401(\D|$)|unauthorized|invalid.*api.?key|incorrect.*api.?key|authentication/i.test(text))
+    return '——API Key 无效或过期：到设置里检查这条配置的 Key 是否填错（注意别带空格）';
+  if (/(^|\D)429(\D|$)|rate.?limit|too many requests|concurren/i.test(text))
+    return '——请求太频繁或并发超限（高峰期常见）：等几十秒重试，或减少同时生成的任务数';
+  if (/(^|\D)(502|503|504)(\D|$)|bad gateway|gateway time-?out|service unavailable|overloaded/i.test(text))
+    return '——中转站网关错误（多为排队/过载，常发生在请求已转给上游之后）：⚠️ 上游任务可能仍在处理，先到中转站后台「任务记录」/ 本软件资产库 查看是否已出图，勿立刻重复提交以免重复扣费；确无结果再稍等几分钟重试';
+  if (/(^|\D)(500)(\D|$)|internal server error|server.?error/i.test(text))
+    return '——中转站或上游服务故障（高峰期排队/过载也会这样）：稍等几分钟重试，或换模型/换方案';
+  if (/ETIMEDOUT|ECONNRESET|ECONNREFUSED|fetch failed|socket hang up|network|ERR_(CONNECTION|TIMED)|net::/i.test(text))
+    return '——与中转站的连接中断：⚠️ 若已等待较久，上游任务可能仍在执行，请先到中转站后台 / 资产库确认是否已出图，避免重复提交；确无结果再检查本机网络/代理/防火墙与 API 地址后重试';
+  return '';
+}
+
+/**
+ * 流式请求被中转站「快速拒绝」时抛出的标记（立刻 4xx/5xx，而非慢生成后才失败）。
+ * 上层 runOpenAIImage 捕获它后退回非流式重试；慢生成失败不抛它（照实报错，不诱导重试再等一遍）。
+ */
+class StreamRejectedError extends Error {
+  constructor(
+    readonly status: number,
+    readonly elapsedMs: number
+  ) {
+    super(`streaming rejected fast (HTTP ${status}, ${elapsedMs}ms)`);
+    this.name = 'StreamRejectedError';
+  }
+}
+
+/** 流式快速失败阈值：低于此耗时的 !ok 视为「中转站不支持图像 SSE」→ 退回非流式；
+ *  高于此（如极端比例 4K 跑 100s+ 才 500）视为上游真做不动，照实报错不退回。 */
+const STREAM_REJECT_FAST_MS = 25_000;
 
 async function runOpenAIImage(opts: OpenAIImageOpts): Promise<string[]> {
   const url = joinApiUrl(opts.cfg.base_url, 'images/generations');
@@ -588,41 +683,67 @@ async function runOpenAIImage(opts: OpenAIImageOpts): Promise<string[]> {
 
   // ────────────────────────────────────────────────────────────
   // 流式分支：family 声明了 streaming 能力（目前只有 gpt-image-2）。
-  // 给 body 加 `stream: true` + `partial_images: N`，走 SSE 解析，
-  // 中间步骤图作为心跳让中转的 60s 边缘代理超时永远不触发。
-  // 解决 Now Coding 这类中转跑 GPT Image 4K 必失败的死局。
+  // 拷贝一份 body 加 `stream: true` + `partial_images: N` 走 SSE（中间步骤图作心跳，
+  // 让支持 SSE 的中转的 60s 边缘代理超时不触发）；原 body 保持非流式形态，供
+  // 「中转站快速拒绝 stream:true（很多站对图像接口不支持 SSE，立刻 4xx/5xx）」时无损退回非流式重试。
   // ────────────────────────────────────────────────────────────
-  if (family.streaming) {
-    body.stream = true;
-    body.partial_images = family.streaming.partialImages;
-    delete body.response_format; // SSE 总是 b64_json，response_format 字段反而会被部分中转拒
+  // 用户在「请求体覆盖」里显式写了 "stream": false（如一键修复 SSE 格式不被识别的中转站）→ 尊重它，直接走非流式。
+  if (family.streaming && body.stream !== false) {
+    const streamBody: Record<string, unknown> = {
+      ...body,
+      stream: true,
+      partial_images: family.streaming.partialImages
+    };
+    delete streamBody.response_format; // SSE 总是 b64_json，response_format 字段反而会被部分中转拒
     logger.info('runOpenAIImage: ENTERING streaming branch', {
-      partial_images: body.partial_images,
-      finalBodyKeys: Object.keys(body)
+      partial_images: streamBody.partial_images,
+      finalBodyKeys: Object.keys(streamBody)
     });
-    return await runOpenAIImageStreaming(url, apiKey, body, opts);
+    try {
+      return await runOpenAIImageStreaming(url, apiKey, streamBody, opts);
+    } catch (e) {
+      if (e instanceof StreamRejectedError) {
+        // 快速失败＝中转站根本不支持图像 SSE → 退回非流式重试一次（此前流式没产出，不会二次扣费）。
+        logger.warn('runOpenAIImage: 流式被中转站快速拒绝，退回非流式重试', {
+          status: e.status,
+          elapsedMs: e.elapsedMs
+        });
+        return await postOpenAIImageSync(url, apiKey, body, opts);
+      }
+      throw e;
+    }
   }
-  logger.info('runOpenAIImage: skipping streaming, using sync path', {
-    reason: 'family.streaming is falsy',
-    familyId: family.id
-  });
+  logger.info('runOpenAIImage: family 无 streaming 能力，走非流式', { familyId: family.id });
+  return await postOpenAIImageSync(url, apiKey, body, opts);
+}
 
+/**
+ * 非流式 POST /v1/images/generations + 解析 + 落盘。
+ * 是 runOpenAIImage 的同步出图路径，抽成独立函数，以便「流式被中转站快速拒绝」时无损退回复用。
+ */
+async function postOpenAIImageSync(
+  url: string,
+  apiKey: string,
+  body: Record<string, unknown>,
+  opts: OpenAIImageOpts
+): Promise<string[]> {
   // chromiumFetch（基于 net.request）—— 图像生成上游单次请求常 60–300s，
   // Node 自带 fetch / net.fetch 都会被中间代理掐断成 "fetch failed"，
   // 走 Chromium URLLoader 才稳。
   const res = await chromiumFetch(url, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`
-    },
+    headers: applyHeaderOverrides(
+      { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      opts.cfg.header_overrides_json,
+      { key: apiKey, model: opts.cfg.actualModelId }
+    ),
     body: JSON.stringify(body),
     signal: opts.signal
   });
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new StageError('upstream', `HTTP ${res.status}: ${text.slice(0, 300)}`);
+    throw new StageError('upstream', `HTTP ${res.status}: ${text.slice(0, 300)}${upstreamErrorHint(text)}`);
   }
 
   const respJson = (await parseJsonOrSse(res)) as {
@@ -680,10 +801,12 @@ async function runOpenAIImage(opts: OpenAIImageOpts): Promise<string[]> {
  *   - 请求体已含 `stream: true` + `partial_images: N`（runOpenAIImage 里加好）
  *   - SSE 事件类型：
  *       image_generation.partial_image  → 中间步骤图（保活用，可丢可显示进度）
- *       image_generation.completed      → 终态图（带 b64_json，要保存）
+ *       image_generation.completed      → 终态图（带 b64_json 或 url，要保存）
  *       error                            → 上游报错
  *   - 中转的 60s 边缘超时按"连接静默"计时，partial_image 每 N 秒来一次就清零，
  *     所以 140s 的真实生成时间也能跑通。
+ *   - 兼容差异中转站：终态图字段名/事件名不一致时用 pickStreamImage 兜底；完全没有终态事件
+ *     但有过中间步骤图时，退而用最后一张中间图（near-final，避免「后台已出图却报错丢图」）。
  */
 async function runOpenAIImageStreaming(
   url: string,
@@ -691,7 +814,9 @@ async function runOpenAIImageStreaming(
   body: Record<string, unknown>,
   opts: OpenAIImageOpts
 ): Promise<string[]> {
-  const completedB64: string[] = [];
+  const t0 = Date.now();
+  const completedImgs: StreamImg[] = [];
+  let lastPartial: StreamImg | null = null;
   let buffer = '';
   let upstreamError: string | null = null;
   let partialCount = 0;
@@ -710,30 +835,30 @@ async function runOpenAIImageStreaming(
         const payload = line.slice(5).trim();
         if (!payload || payload === '[DONE]') continue;
         try {
-          const json = JSON.parse(payload) as {
-            type?: string;
-            b64_json?: string;
-            partial_image_index?: number;
-            error?: { message?: string } | string;
-          };
-          if (json.error) {
+          const json = JSON.parse(payload) as Record<string, unknown>;
+          const errField = json.error;
+          const type = typeof json.type === 'string' ? json.type : '';
+          if (errField) {
             upstreamError =
-              typeof json.error === 'string'
-                ? json.error
-                : (json.error.message ?? '上游错误（无 message）');
-          } else if (
-            json.type === 'image_generation.completed' &&
-            typeof json.b64_json === 'string'
-          ) {
-            completedB64.push(json.b64_json);
-            completedCount++;
-            opts.notifyProgress?.({ progress: 100, phase: 'streaming:completed' });
-          } else if (json.type === 'image_generation.partial_image') {
-            partialCount++;
-            // 中间步骤图也是真图；这里不存盘，只汇报进度让 UI 不静默
-            opts.notifyProgress?.({
-              phase: `streaming:partial(${partialCount})`
-            });
+              typeof errField === 'string'
+                ? errField
+                : (typeof (errField as { message?: unknown }).message === 'string'
+                    ? ((errField as { message?: string }).message as string)
+                    : '上游错误（无 message）');
+          } else {
+            const isPartial = type.includes('partial');
+            const img = pickStreamImage(json);
+            if (isPartial) {
+              // 中间步骤图也是真图；不存盘，只记为兜底 + 汇报进度让 UI 不静默
+              if (img) lastPartial = img;
+              partialCount++;
+              opts.notifyProgress?.({ phase: `streaming:partial(${partialCount})` });
+            } else if (img) {
+              // 终态图：兼容 image_generation.completed / 别名事件 / 仅带 url 的中转站
+              completedImgs.push(img);
+              completedCount++;
+              opts.notifyProgress?.({ progress: 100, phase: 'streaming:completed' });
+            }
           }
         } catch {
           // 非标准 data: 行（注释 / keep-alive 心跳）忽略
@@ -748,50 +873,114 @@ async function runOpenAIImageStreaming(
     partial_images: body.partial_images,
     bodyKeys: Object.keys(body)
   });
-  const res = await chromiumFetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-      Accept: 'text/event-stream'
-    },
-    body: JSON.stringify(body),
-    signal: opts.signal,
-    onChunk
-  });
+  // 连接可能在「上游已出图（已扣费）」后才被中转站/边缘代理掐断（unity2 这类长耗时同步出图常见）。
+  // chromiumFetch 是「先 onChunk 收数据、再 reject」，所以收到的 partial/completed 都已落进 completedImgs/lastPartial，
+  // 必须 try/catch 住，否则连接一断就把已经到手的图丢了（用户白扣费）。
+  let res: Awaited<ReturnType<typeof chromiumFetch>> | null = null;
+  let connError: unknown = null;
+  try {
+    res = await chromiumFetch(url, {
+      method: 'POST',
+      headers: applyHeaderOverrides(
+        { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}`, Accept: 'text/event-stream' },
+        opts.cfg.header_overrides_json,
+        { key: apiKey, model: opts.cfg.actualModelId }
+      ),
+      body: JSON.stringify(body),
+      signal: opts.signal,
+      onChunk
+    });
+  } catch (e) {
+    connError = e;
+  }
 
   logger.info('runOpenAIImage:streaming finished', {
-    status: res.status,
+    status: res?.status,
     partialCount,
     completedCount,
-    sawError: upstreamError !== null
+    sawError: upstreamError !== null,
+    connError: connError ? String(connError) : undefined
   });
 
-  if (!res.ok) {
-    throw new StageError(
-      'upstream',
-      `HTTP ${res.status} on streaming /v1/images/generations${
-        upstreamError ? `（上游：${upstreamError}）` : ''
-      }`
-    );
+  if (connError) {
+    // 连接中断：上游明确报过错就抛错；否则已收到的（终态或最后一张中间步骤）图照常保存，避免「后台有图却报错丢图」。
+    if (upstreamError) {
+      throw new StageError('upstream', `上游错误：${upstreamError}${upstreamErrorHint(upstreamError)}`);
+    }
+    if (completedImgs.length === 0 && lastPartial) {
+      logger.warn('runOpenAIImage:streaming 连接中断，用最后一张中间步骤图兜底', { partialCount, err: String(connError) });
+      completedImgs.push(lastPartial);
+    }
+    if (completedImgs.length === 0) {
+      // 真没收到任何图（中转站没发 SSE 心跳、纯缓冲到死）→ 抛原「连接中断」诊断（含 grsai/降分辨率建议）
+      throw connError;
+    }
+    logger.warn('runOpenAIImage:streaming 连接中断但已收到图，照常保存', { count: completedImgs.length });
+  } else if (res) {
+    if (!res.ok) {
+      const elapsedMs = Date.now() - t0;
+      // 快速失败（<阈值）＝中转站不支持图像 SSE，立刻报错 → 抛 StreamRejectedError 让上层退回非流式重试。
+      // 慢生成后失败（如极端比例 4K 跑 100s+ 才 500）＝上游真做不动 → 照实抛 StageError，不诱导上层重试再等一遍。
+      if (elapsedMs < STREAM_REJECT_FAST_MS) {
+        logger.warn('runOpenAIImage:streaming 快速失败，标记为退回非流式', { status: res.status, elapsedMs });
+        throw new StreamRejectedError(res.status, elapsedMs);
+      }
+      throw new StageError(
+        'upstream',
+        `HTTP ${res.status} on streaming /v1/images/generations${
+          upstreamError ? `（上游：${upstreamError}）` : ''
+        }${upstreamErrorHint(upstreamError ?? '')}`
+      );
+    }
+    if (upstreamError) {
+      throw new StageError('upstream', `上游错误：${upstreamError}${upstreamErrorHint(upstreamError)}`);
+    }
   }
-  if (upstreamError) {
-    throw new StageError('upstream', `上游错误：${upstreamError}`);
-  }
-  if (completedB64.length === 0) {
-    throw new StageError(
-      'parse',
-      'SSE 流结束但没收到任何 image_generation.completed 事件'
-    );
+
+  if (completedImgs.length === 0) {
+    // 1) 中转站把 stream 忽略了、直接回普通 JSON（没按 SSE 发事件）→ 从整段 buffer 抢救
+    //    （避免「重发 = 二次扣费」）。兼容 {data:[...]} / 顶层单图 等形态。
+    try {
+      const j = JSON.parse(buffer.trim()) as Record<string, unknown>;
+      const list = Array.isArray((j as { data?: unknown }).data)
+        ? ((j as { data: unknown[] }).data)
+        : [j];
+      for (const it of list) {
+        const im = it && typeof it === 'object' ? pickStreamImage(it as Record<string, unknown>) : null;
+        if (im) completedImgs.push(im);
+      }
+    } catch {
+      /* 不是 JSON，下面再试中间图兜底 */
+    }
+    // 2) 仍没终态图，但流里出现过中间步骤图 → 用最后一张兜底（near-final），
+    //    避免「后台已出图、前端却报错丢图」（差异中转站终态事件名/字段不被识别时尤甚）。
+    if (completedImgs.length === 0 && lastPartial) {
+      logger.warn('runOpenAIImage:streaming 未见终态事件，用最后一张中间步骤图兜底', { partialCount });
+      completedImgs.push(lastPartial);
+    }
+    if (completedImgs.length === 0) {
+      throw new StageError(
+        'parse',
+        'SSE 流结束但没识别出终态图（该中转站的图像流格式不被识别）——可在该绘画模型的「请求体覆盖」里加 {"stream": false} 改用非流式返回'
+      );
+    }
+    logger.info('runOpenAIImage:streaming 兜底取图成功', { count: completedImgs.length });
   }
 
   const saved: string[] = [];
-  for (let i = 0; i < completedB64.length; i++) {
+  for (let i = 0; i < completedImgs.length; i++) {
+    const item = completedImgs[i];
     let buf: Buffer;
-    try {
-      buf = decodeB64Image(completedB64[i]);
-    } catch (e) {
-      throw new StageError('parse', `b64_json 解码失败：${(e as Error).message}`);
+    if (item.b64) {
+      try {
+        buf = decodeB64Image(item.b64);
+      } catch (e) {
+        throw new StageError('parse', `b64 解码失败：${(e as Error).message}`);
+      }
+    } else if (item.url) {
+      buf = await fetchImageBufWithRetry(item.url, opts.signal);
+    } else {
+      throw new StageError('parse', '图片数据格式不明（既无 b64 也无 url）');
     }
     ensureImageBuf(buf);
     try {
@@ -918,8 +1107,9 @@ async function runOpenAIResponsesImage(opts: OpenAIResponsesOpts): Promise<strin
     partial_images: tool.partial_images
   });
 
-  // SSE 解析——与 runOpenAIImageStreaming 同套，只多加 response.* 事件分支
-  const completedB64: string[] = [];
+  // SSE 解析——与 runOpenAIImageStreaming 同套（pickStreamImage 兼容差异中转站字段/事件名/url），只多加 response.* 事件分支
+  const completedImgs: StreamImg[] = [];
+  let lastPartial: StreamImg | null = null;
   let buffer = '';
   let upstreamError: string | null = null;
   let partialCount = 0;
@@ -937,38 +1127,33 @@ async function runOpenAIResponsesImage(opts: OpenAIResponsesOpts): Promise<strin
         const payload = line.slice(5).trim();
         if (!payload || payload === '[DONE]') continue;
         try {
-          const json = JSON.parse(payload) as {
-            type?: string;
-            b64_json?: string;
-            partial_image_index?: number;
-            error?: { message?: string } | string;
-            response?: { error?: { message?: string } };
-          };
-          if (json.error) {
+          const json = JSON.parse(payload) as Record<string, unknown>;
+          const type = typeof json.type === 'string' ? json.type : '';
+          const errField = json.error;
+          const respErr = (json.response as { error?: { message?: unknown } } | undefined)?.error?.message;
+          if (errField) {
             upstreamError =
-              typeof json.error === 'string'
-                ? json.error
-                : (json.error.message ?? '上游错误（无 message）');
-          } else if (
-            json.type === 'image_generation.completed' &&
-            typeof json.b64_json === 'string'
-          ) {
-            completedB64.push(json.b64_json);
-            completedCount++;
-            opts.notifyProgress?.({ progress: 100, phase: 'responses:completed' });
-          } else if (
-            json.type === 'image_generation.partial_image' &&
-            typeof json.b64_json === 'string'
-          ) {
-            partialCount++;
-            opts.notifyProgress?.({
-              phase: `responses:partial(${partialCount})`
-            });
-          } else if (json.type === 'response.failed' || json.type === 'response.error') {
-            const msg = json.response?.error?.message;
-            if (msg) upstreamError = msg;
+              typeof errField === 'string'
+                ? errField
+                : (typeof (errField as { message?: unknown }).message === 'string'
+                    ? ((errField as { message?: string }).message as string)
+                    : '上游错误（无 message）');
+          } else if (type === 'response.failed' || type === 'response.error') {
+            if (typeof respErr === 'string') upstreamError = respErr;
+          } else {
+            const isPartial = type.includes('partial');
+            const img = pickStreamImage(json);
+            if (isPartial) {
+              if (img) lastPartial = img;
+              partialCount++;
+              opts.notifyProgress?.({ phase: `responses:partial(${partialCount})` });
+            } else if (img) {
+              completedImgs.push(img);
+              completedCount++;
+              opts.notifyProgress?.({ progress: 100, phase: 'responses:completed' });
+            }
           }
-          // response.output_item.added / response.completed：仅作流转信号，无需特殊处理
+          // response.output_item.added / response.completed（无图载荷时）：仅作流转信号
         } catch {
           // 非标准 data: 行（注释 / keepalive）忽略
         }
@@ -976,48 +1161,75 @@ async function runOpenAIResponsesImage(opts: OpenAIResponsesOpts): Promise<strin
     }
   };
 
-  const res = await chromiumFetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-      Accept: 'text/event-stream'
-    },
-    body: JSON.stringify(body),
-    signal: opts.signal,
-    onChunk
-  });
+  // 同 runOpenAIImageStreaming：连接可能在上游已出图后被掐断，try/catch 住已收到的图（避免白扣费丢图）。
+  let res: Awaited<ReturnType<typeof chromiumFetch>> | null = null;
+  let connError: unknown = null;
+  try {
+    res = await chromiumFetch(url, {
+      method: 'POST',
+      headers: applyHeaderOverrides(
+        { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}`, Accept: 'text/event-stream' },
+        opts.cfg.header_overrides_json,
+        { key: apiKey, model: opts.cfg.actualModelId }
+      ),
+      body: JSON.stringify(body),
+      signal: opts.signal,
+      onChunk
+    });
+  } catch (e) {
+    connError = e;
+  }
 
   logger.info('runOpenAIResponsesImage finished', {
-    status: res.status,
+    status: res?.status,
     partialCount,
     completedCount,
-    sawError: upstreamError !== null
+    sawError: upstreamError !== null,
+    connError: connError ? String(connError) : undefined
   });
 
-  if (!res.ok) {
+  if (upstreamError) {
+    throw new StageError('upstream', `上游错误：${upstreamError}${upstreamErrorHint(upstreamError)}`);
+  }
+  if (connError) {
+    if (completedImgs.length === 0 && lastPartial) {
+      logger.warn('runOpenAIResponsesImage 连接中断，用最后一张中间步骤图兜底', { partialCount, err: String(connError) });
+      completedImgs.push(lastPartial);
+    }
+    if (completedImgs.length === 0) throw connError;
+    logger.warn('runOpenAIResponsesImage 连接中断但已收到图，照常保存', { count: completedImgs.length });
+  } else if (res && !res.ok) {
     throw new StageError(
       'upstream',
-      `HTTP ${res.status} on /v1/responses${upstreamError ? `（上游：${upstreamError}）` : ''}`
+      `HTTP ${res.status} on /v1/responses${upstreamError ? `（上游：${upstreamError}）` : ''}${upstreamErrorHint(upstreamError ?? '')}`
     );
   }
-  if (upstreamError) {
-    throw new StageError('upstream', `上游错误：${upstreamError}`);
+  if (completedImgs.length === 0 && lastPartial) {
+    // 没有终态事件但出现过中间步骤图 → 用最后一张兜底（避免「后台已出图却报错丢图」）
+    logger.warn('runOpenAIResponsesImage 未见终态事件，用最后一张中间步骤图兜底', { partialCount });
+    completedImgs.push(lastPartial);
   }
-  if (completedB64.length === 0) {
+  if (completedImgs.length === 0) {
     throw new StageError(
       'parse',
-      'Responses SSE 流结束但没收到任何 image_generation.completed 事件（中转可能未实现 /v1/responses 或缓冲了 SSE）'
+      'Responses SSE 流结束但没识别出终态图（中转可能未实现 /v1/responses 或缓冲了 SSE）——可在该绘画模型的「请求体覆盖」里加 {"stream": false} 改用非流式'
     );
   }
 
   const saved: string[] = [];
-  for (let i = 0; i < completedB64.length; i++) {
+  for (let i = 0; i < completedImgs.length; i++) {
+    const item = completedImgs[i];
     let buf: Buffer;
-    try {
-      buf = decodeB64Image(completedB64[i]);
-    } catch (e) {
-      throw new StageError('parse', `b64_json 解码失败：${(e as Error).message}`);
+    if (item.b64) {
+      try {
+        buf = decodeB64Image(item.b64);
+      } catch (e) {
+        throw new StageError('parse', `b64 解码失败：${(e as Error).message}`);
+      }
+    } else if (item.url) {
+      buf = await fetchImageBufWithRetry(item.url, opts.signal);
+    } else {
+      throw new StageError('parse', '图片数据格式不明（既无 b64 也无 url）');
     }
     ensureImageBuf(buf);
     try {
@@ -1121,9 +1333,41 @@ async function runOpenAIImageEdit(opts: OpenAIEditOpts): Promise<string[]> {
   const url = joinApiUrl(opts.cfg.base_url, 'images/edits');
   const apiKey = decryptString(opts.cfg.api_key_encrypted);
 
-  const size = resolveSize(opts.params);
+  // gpt-image-2 选 1K/2K 档 → 与文生图同一套枚举尺寸映射（任意 WxH 在不少中转站被拒）；
+  // 用户给了精确宽高则精确值优先。其它 family 走 resolveSize 原逻辑。
+  const editFamily = detectFamily(opts.cfg.actualModelId);
+  const tierMapped =
+    editFamily.id === 'gpt-image-2' && !opts.params.width && !opts.params.height
+      ? mapGptTierSize(
+          typeof opts.params.image_size === 'string' ? opts.params.image_size : undefined,
+          typeof opts.params.aspect === 'string' ? opts.params.aspect : undefined
+        )
+      : null;
+  // gpt-image-2 且用户给了精确宽高 → 规整到合法尺寸（单边≤3840 / 比例≤3:1 / 655360..8.3MP，
+  // 与文生图 computeSize 同一套约束）；档位映射优先，其它 family / 比例路径仍走 resolveSize。
+  const editW = Number(opts.params.width);
+  const editH = Number(opts.params.height);
+  let size: string;
+  if (tierMapped) {
+    size = `${tierMapped.w}x${tierMapped.h}`;
+  } else if (editFamily.id === 'gpt-image-2' && editW > 0 && editH > 0) {
+    const c = clampToImage2Size(editW, editH);
+    size = `${c.w}x${c.h}`;
+  } else {
+    size = resolveSize(opts.params);
+  }
   const n = typeof opts.params.n === 'number' ? opts.params.n : 1;
-  const quality = typeof opts.params.quality === 'string' ? opts.params.quality : undefined;
+  // gpt-image 系列 quality 枚举 = auto|low|medium|high：「标准」(standard) 是 DALL·E 3 词表，
+  // 严格校验的中转站会 400（与文生图 buildBody 同源映射 standard→medium）。
+  const rawQuality = typeof opts.params.quality === 'string' ? opts.params.quality : undefined;
+  let quality = editFamily.id === 'gpt-image-2' && rawQuality === 'standard' ? 'medium' : rawQuality;
+  // 与文生图 buildBody 同源：「默认」(空)= 自动按分辨率智能选，且绝不发"空 quality"
+  //（部分中转站如 Now Coding 把分辨率挂在 quality 上，不带 quality 会降级到 ~1K 并无视 size）。
+  // gpt-image-2 且用户未显式选 quality 时：4K→high / 2K→medium / 1K→low / 未选档位→auto。
+  if (editFamily.id === 'gpt-image-2' && !quality) {
+    const tier = typeof opts.params.image_size === 'string' ? opts.params.image_size : '';
+    quality = tier === '4K' ? 'high' : tier === '2K' ? 'medium' : tier === '1K' ? 'low' : 'auto';
+  }
 
   // FormData / Blob 是 Node 18+ / Electron 28 内置全局
   const form = new FormData();
@@ -1131,11 +1375,13 @@ async function runOpenAIImageEdit(opts: OpenAIEditOpts): Promise<string[]> {
   form.append('prompt', opts.positivePrompt);
   form.append('size', size);
   form.append('n', String(n));
-  if (quality === 'standard' || quality === 'high') form.append('quality', quality);
+  if (quality === 'standard' || quality === 'high' || quality === 'medium' || quality === 'low' || quality === 'auto')
+    form.append('quality', quality);
 
   // 多张参考图：用 image[] 字段（OpenAI gpt-image-1 支持）
   // 三种来源：fs 路径（文件选择器）/ data URI（拖拽 / 粘贴 / 画板）/ http(s) URL
   let attached = 0;
+  let baseImageBuf: Buffer | null = null; // 首张参考图(底图) buffer，留作局部重绘「合成贴回」
   for (const ref of opts.referenceImages) {
     try {
       let buf: Buffer;
@@ -1162,6 +1408,7 @@ async function runOpenAIImageEdit(opts: OpenAIEditOpts): Promise<string[]> {
       }
       const blob = new Blob([new Uint8Array(buf)], { type: mime });
       form.append('image[]', blob, filename);
+      if (baseImageBuf === null) baseImageBuf = buf; // 首张=底图，合成贴回用
       attached++;
     } catch (e) {
       logger.warn('image edit: failed to attach ref', { ref: ref.slice(0, 80), err: (e as Error).message });
@@ -1177,12 +1424,14 @@ async function runOpenAIImageEdit(opts: OpenAIEditOpts): Promise<string[]> {
   // 局部重绘蒙版（来自画板）：params.inpaint_mask 是一张 PNG dataUri，
   // 约定为 OpenAI /images/edits 的“透明处即编辑区”形式（渲染端已按内部白=AI 规则转换好）。
   let maskAttached = false;
+  let maskBuf: Buffer | null = null; // 留作「合成贴回」（未遮罩区保留底图像素）
   const inpaintMask = typeof opts.params.inpaint_mask === 'string' ? opts.params.inpaint_mask : null;
   if (inpaintMask) {
     const mm = /^data:([^;]+);base64,(.+)$/.exec(inpaintMask);
     if (mm) {
       const mbuf = Buffer.from(mm[2], 'base64');
       form.append('mask', new Blob([new Uint8Array(mbuf)], { type: mm[1] || 'image/png' }), 'mask.png');
+      maskBuf = mbuf;
       maskAttached = true;
     } else {
       logger.warn('inpaint mask is not a valid data URI, skipped');
@@ -1213,7 +1462,7 @@ async function runOpenAIImageEdit(opts: OpenAIEditOpts): Promise<string[]> {
     const text = await res.text().catch(() => '');
     throw new StageError(
       'upstream',
-      `HTTP ${res.status} on /v1/images/edits: ${text.slice(0, 300)}`
+      `HTTP ${res.status} on /v1/images/edits: ${text.slice(0, 300)}${upstreamErrorHint(text)}`
     );
   }
 
@@ -1249,6 +1498,11 @@ async function runOpenAIImageEdit(opts: OpenAIEditOpts): Promise<string[]> {
       throw new StageError('parse', '图片数据格式不明（既无 b64_json 也无 url）');
     }
     ensureImageBuf(buf);
+    // 局部重绘/扩图「合成贴回」：以底图尺寸为准，未遮罩区原样保留底图（修「中间被改」+「比例乱跳」）。
+    if (maskAttached && baseImageBuf && maskBuf) {
+      buf = await compositeInpaintResult(buf, baseImageBuf, maskBuf);
+      ensureImageBuf(buf);
+    }
     try {
       saved.push(
         saveImage(buf, opts.taskId, i + 1, {
@@ -1523,9 +1777,10 @@ async function runGrsaiImage(opts: GrsaiImageOpts): Promise<string[]> {
     opts.notifyProgress?.({ progress: 0, phase: 'submitted' });
 
     // ── 第二步：轮询直到 succeeded / failed / violation ─────────────
-    const POLL_INTERVAL_MS = 5000;
+    // 间隔 3s：状态查询是轻量 GET，间隔越短「后台已出图但还没轮询到」的等待越短
+    const POLL_INTERVAL_MS = 3000;
     const POLL_TIMEOUT_MS = 15 * 60 * 1000; // 15 分钟硬上限——再等就没意义了
-    const MAX_CONSECUTIVE_POLL_ERRORS = 6; // 连续 6 次（30s）失败就放弃
+    const MAX_CONSECUTIVE_POLL_ERRORS = 10; // 连续 10 次（30s）失败就放弃
     const start = Date.now();
     let consecutiveErrors = 0;
 
@@ -1658,32 +1913,17 @@ interface ApimartImageOpts extends OpenAIImageOpts {
   referenceImages: string[];
 }
 
-interface ApimartSubmitResponse {
-  code?: number;
-  msg?: string;
-  data?: Array<{ status?: string; task_id?: string }>;
-}
-
-interface ApimartResultResponse {
-  code?: number;
-  msg?: string;
-  data?: {
-    id?: string;
-    status?: string;
-    error?: string;
-    result?: {
-      images?: Array<{ url?: string[]; expires_at?: number }>;
-    };
-  };
-}
+// apimart 提交/轮询响应的解析全部收口到 ./apimartParse（兼容官方 + 新版 async-generations 两种形态，纯函数可单测）。
 
 async function pollApimartOnce(
   baseUrl: string,
   apiKey: string,
   taskId: string,
-  signal: AbortSignal
-): Promise<ApimartResultResponse['data']> {
-  const url = joinApiUrl(baseUrl, `tasks/${encodeURIComponent(taskId)}`);
+  signal: AbortSignal,
+  statusUrl?: string | null
+): Promise<unknown> {
+  // 新版给了自描述 status_url 就用它；否则回退官方 GET /tasks/{id}
+  const url = statusUrl ?? joinApiUrl(baseUrl, `tasks/${encodeURIComponent(taskId)}`);
   const res = await chromiumFetch(url, {
     method: 'GET',
     headers: { Authorization: `Bearer ${apiKey}` },
@@ -1692,11 +1932,13 @@ async function pollApimartOnce(
   if (!res.ok) {
     throw new Error(`HTTP ${res.status}`);
   }
-  const json = JSON.parse(await res.text()) as ApimartResultResponse;
-  if (json.code !== undefined && json.code !== 200 && json.code !== 0) {
-    throw new Error(`apimart code=${json.code}: ${json.msg ?? ''}`);
+  const json: unknown = JSON.parse(await res.text());
+  const code = apimartCode(json);
+  if (code !== undefined && code !== 200 && code !== 0) {
+    const msg = (json as { msg?: string })?.msg ?? '';
+    throw new Error(`apimart code=${code}: ${msg}`);
   }
-  return json.data;
+  return json;
 }
 
 async function runApimartImage(opts: ApimartImageOpts): Promise<string[]> {
@@ -1769,24 +2011,27 @@ async function runApimartImage(opts: ApimartImageOpts): Promise<string[]> {
     );
   }
 
-  const submitJson = JSON.parse(await submitRes.text()) as ApimartSubmitResponse;
-  if (submitJson.code !== undefined && submitJson.code !== 200 && submitJson.code !== 0) {
-    throw new StageError(
-      'upstream',
-      `apimart 提交 code=${submitJson.code}: ${submitJson.msg ?? ''}`
-    );
+  const submitJson: unknown = JSON.parse(await submitRes.text());
+  const submitCode = apimartCode(submitJson);
+  if (submitCode !== undefined && submitCode !== 200 && submitCode !== 0) {
+    const msg = (submitJson as { msg?: string })?.msg ?? '';
+    throw new StageError('upstream', `apimart 提交 code=${submitCode}: ${msg}`);
   }
-  const upstreamTaskId = submitJson.data?.[0]?.task_id;
+  // 兼容两种异步形态：官方 data[0].task_id；新版 async-generations 把 task_id/job_id 放顶层 + 给 status_url。
+  const { taskId: upstreamTaskId, statusUrl: rawStatusUrl } = extractApimartSubmit(submitJson);
   if (!upstreamTaskId) {
     throw new StageError(
       'parse',
       `apimart 提交未返回 task_id：${JSON.stringify(submitJson).slice(0, 200)}`
     );
   }
+  // 新版给了 status_url（自描述轮询地址）就用它（挂到 origin 避免双 /v1）；否则回退官方 /tasks/{id}
+  const pollStatusUrl = rawStatusUrl ? resolveApimartStatusUrl(opts.cfg.base_url, rawStatusUrl) : null;
 
   logger.info('apimart.draw.task-submitted', {
     localTaskId: opts.taskId,
-    upstreamTaskId
+    upstreamTaskId,
+    statusUrl: pollStatusUrl
   });
   opts.notifyProgress?.({ progress: 0, phase: 'submitted' });
 
@@ -1819,9 +2064,9 @@ async function runApimartImage(opts: ApimartImageOpts): Promise<string[]> {
 
     await sleepWithAbort(POLL_INTERVAL_MS, opts.signal);
 
-    let data: ApimartResultResponse['data'];
+    let pollJson: unknown;
     try {
-      data = await pollApimartOnce(opts.cfg.base_url, apiKey, upstreamTaskId, opts.signal);
+      pollJson = await pollApimartOnce(opts.cfg.base_url, apiKey, upstreamTaskId, opts.signal, pollStatusUrl);
       consecutiveErrors = 0;
       firstErrorAt = 0;
     } catch (e) {
@@ -1846,33 +2091,28 @@ async function runApimartImage(opts: ApimartImageOpts): Promise<string[]> {
       continue;
     }
 
-    if (!data) continue;
+    if (!pollJson) continue;
 
-    const status = (data.status ?? '').toLowerCase();
-    if (status === 'failed') {
+    const status = extractApimartStatus(pollJson);
+    if (isApimartFailed(status)) {
       throw new StageError(
         'upstream',
-        `apimart 任务失败：${data.error ?? '未知原因'}（upstream id=${upstreamTaskId}）`
+        `apimart 任务失败：${extractApimartError(pollJson) ?? '未知原因'}（upstream id=${upstreamTaskId}）`
       );
     }
-    if (status === 'completed' || status === 'succeeded') {
-      // 路径：data.result.images[*].url[*]（url 是字符串数组，单元素居多）
-      const images = data.result?.images ?? [];
-      for (const im of images) {
-        const arr = im.url ?? [];
-        for (const u of arr) {
-          if (typeof u === 'string' && u.length > 0) urls.push(u);
-        }
-      }
-      if (urls.length === 0) {
+    if (isApimartDone(status)) {
+      // 多形态抽图片 URL（官方 data.result.images[].url[] / 新版 result.images / data[].url / output[] 等）
+      const found = extractApimartImageUrls(pollJson);
+      if (found.length === 0) {
         throw new StageError(
           'parse',
-          `apimart 报告完成但没有图片 URL：${JSON.stringify(data).slice(0, 200)}`
+          `apimart 报告完成但没有图片 URL：${JSON.stringify(pollJson).slice(0, 200)}`
         );
       }
+      urls.push(...found);
       break;
     }
-    // submitted / processing / running：上游没暴露 progress，按"模拟值"推一下让 UI 不静默
+    // pending / submitted / processing / running：上游没暴露 progress，按"模拟值"推一下让 UI 不静默
     opts.notifyProgress?.({ phase: status || 'running' });
   }
 
@@ -2099,7 +2339,7 @@ async function runComfyUIImage(opts: ComfyUIOpts): Promise<string[]> {
     batch_size: Number(params.n ?? 1),
     width: sizeMatch ? Number(sizeMatch[1]) : Number(params.width ?? 1024),
     height: sizeMatch ? Number(sizeMatch[2]) : Number(params.height ?? 1024),
-    // {{lora}} 由 imageParamsStore 注入；当前生图侧暂未传入，未来 LoRA UI 完成后会拼好放 params.lora
+    // {{lora}} 由 imageParamsStore 注入：选了 LoRA 时拼成 <lora:name:weight> 串放 params.lora（见 imageParamsStore.buildParams）
     lora: typeof params.lora === 'string' ? (params.lora as string) : ''
   };
 

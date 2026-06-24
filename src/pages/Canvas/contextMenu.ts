@@ -14,6 +14,8 @@ import { renderLayersToCanvas, blobToDataUri } from './canvasEngine/exportPNG';
 import { maskFromAlpha } from './canvasEngine/maskEngine';
 import { mergeLayers } from './canvasEngine/layerOps';
 import { toast } from '@/store/toastStore';
+import { useShortcutsStore, type Shortcut } from '@/store/shortcutsStore';
+import { sendToShortcut, buildShortcutSendMenuItems } from '@/lib/mediaActions';
 import type { Layer } from './types';
 
 export interface CanvasMenuHandlers {
@@ -102,6 +104,22 @@ function smartCanvasSendChildren(run: (f: SendFormat) => void): ContextMenuEntry
   ];
 }
 
+async function layerToShortcut(layerId: string, shortcut: Shortcut): Promise<void> {
+  const c = await layerToCanvas(layerId);
+  if (!c) return;
+  const dataUri = await canvasToDataUri(c, 'png');
+  const layer = useCanvasStore.getState().project.layers.find((l) => l.id === layerId);
+  await sendToShortcut(shortcut, { kind: 'image', src: dataUri, name: layer?.name || '画板图层' });
+}
+
+/** 「发送到快捷方式」的图层图片子菜单（按当前侧栏快捷方式列出，渲染该图层后投送）。 */
+function layerShortcutChildren(layerId: string): ContextMenuEntry[] {
+  return useShortcutsStore.getState().shortcuts.map((s) => ({
+    label: (s.kind === 'app' ? '▶ ' : '📁 ') + s.label,
+    onClick: () => void layerToShortcut(layerId, s)
+  }));
+}
+
 async function layerToInpaintMask(layerId: string): Promise<void> {
   const c = await layerToCanvas(layerId);
   if (!c) return;
@@ -158,8 +176,14 @@ export function buildLayerMenuItems(layer: Layer, handlers: CanvasMenuHandlers):
           { label: '抠除背景…', variant: 'accent' as const, onClick: () => handlers.onBgRemove(layer.id) },
           { label: '转为重绘蒙版', onClick: () => void layerToInpaintMask(layer.id) },
           { label: '作为参考图送生图', onClick: () => void layerAsReference(layer.id) },
-          { label: '发送到智能画布', children: smartCanvasSendChildren((f) => void layerToSmartCanvas(layer.id, f)) }
+          { label: '发送到智能画布', children: smartCanvasSendChildren((f) => void layerToSmartCanvas(layer.id, f)) },
+          ...(useShortcutsStore.getState().shortcuts.length
+            ? [{ label: '发送到快捷方式', children: layerShortcutChildren(layer.id) }]
+            : [])
         ]
+      : []),
+    ...(layer.isText && layer.text
+      ? buildShortcutSendMenuItems({ kind: 'text', text: layer.text, name: layer.name })
       : []),
     { label: '导出此图层为 PNG', onClick: () => void exportLayerPng(layer.id) },
     { separator: true },

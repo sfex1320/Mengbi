@@ -29,7 +29,7 @@ interface Props {
  * 包裹处理结果的容器，挂上右键菜单：
  *   - 复制图片
  *   - 另存为
- *   - 加入图库
+ *   - 加入资产库
  *   - 在文件夹中显示（保存后才出现）
  *
  * 处理结果区还提供顶部按钮组（手动渲染时调用 ResultActionsBar）。
@@ -38,14 +38,12 @@ export function ResultActions({
   dataUri,
   kind,
   defaultName,
-  sourceModel,
-  params,
   children
 }: Props): JSX.Element {
   const [savedPath, setSavedPath] = useState<string | null>(null);
   const navigate = useNavigate();
 
-  async function sendToOtherTool(target: 'upscale' | 'hypir'): Promise<void> {
+  async function sendToOtherTool(target: 'upscale'): Promise<void> {
     try {
       const { useToolsStore } = await import('@/store/toolsStore');
       useToolsStore.setState({ pendingImport: dataUri, activeTab: target });
@@ -72,11 +70,7 @@ export function ResultActions({
           });
         }
       },
-      {
-        label: '加入图库',
-        icon: <GalleryIcon size={13} />,
-        onClick: () => void importToGallery(dataUri, kind, sourceModel, params)
-      },
+      // 「加入资产库」已移除：放大/矢量化产物自 2026-06-12 起在主进程自动入库，手动再入会出重复条目
       {
         label: '发送到智能画布',
         icon: <PlusIcon size={13} />,
@@ -103,10 +97,6 @@ export function ResultActions({
           {
             label: '再用保真放大处理一遍',
             onClick: () => void sendToOtherTool('upscale')
-          },
-          {
-            label: '送 HYPIR 做 AI 修复',
-            onClick: () => void sendToOtherTool('hypir')
           }
           // "SUPIR" 选项已于 2026-05-29 砍除(显存需求过大)
           // "矢量化"菜单项已随矢量化功能整体移除，待重做
@@ -136,9 +126,7 @@ export function ResultActions({
 export function ResultActionsBar({
   dataUri,
   kind,
-  defaultName,
-  sourceModel,
-  params
+  defaultName
 }: Omit<Props, 'children'>): JSX.Element {
   const [savedPath, setSavedPath] = useState<string | null>(null);
   return (
@@ -157,12 +145,9 @@ export function ResultActionsBar({
       >
         <FolderIcon size={13} /> 另存为
       </button>
-      <button
-        className="mb-btn mb-btn-secondary mb-btn-sm"
-        onClick={() => importToGallery(dataUri, kind, sourceModel, params)}
-      >
-        <GalleryIcon size={13} /> 加入图库
-      </button>
+      <span className="mb-result-autogallery" title="处理完成的结果已自动收录进资产库，无需手动入库">
+        <GalleryIcon size={13} /> 已自动入资产库
+      </span>
       <button
         className="mb-btn mb-btn-secondary mb-btn-sm"
         onClick={() =>
@@ -270,22 +255,4 @@ async function autoSave(
   return r.data.filePath;
 }
 
-async function importToGallery(
-  srcOrDataUri: string,
-  kind: 'upscale' | 'vectorize',
-  sourceModel?: string,
-  params?: Record<string, unknown>
-): Promise<void> {
-  const dataUri = await toDataUri(srcOrDataUri);
-  const r = await window.electronAPI.gallery.importFromBuffer({
-    dataUri,
-    kind,
-    sourceModel,
-    params
-  });
-  if (!r.ok) {
-    toast.error('入库失败', r.error.message);
-    return;
-  }
-  toast.success('已加入图库', `图片 #${r.data.id}`);
-}
+// importToGallery 已删除：放大/矢量化产物在主进程自动入库（producedMedia.ts），手动入库会出重复条目

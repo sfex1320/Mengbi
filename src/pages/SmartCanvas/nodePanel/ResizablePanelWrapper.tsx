@@ -9,14 +9,19 @@ import { useStoreApi } from '@xyflow/react';
  * 会让面板落到 app 的另一个层叠上下文后面 → 整块看不见。用 absolute 后坐标天然相对画布 pane，与
  * ReactFlow transform 同坐标系，无需补窗口偏移。
  *
- * 两种尺寸模式：
- * - `autoSize`（默认走 work 控制台）：**宽高随内容自适应**，仅用 max-w/max-h 夹在画布内（超出内部滚动）。
- * - 否则：固定尺寸 + 右下角可拖拽缩放，尺寸记 localStorage[storageKey]。
+ * 尺寸模式（铁律 20：悬浮窗尺寸记忆）：
+ * - `autoSize`：默认宽高随内容自适应；**用户拖右下角手柄后转为「用户固定尺寸」并按 storageKey 持久化**
+ *   （存 `{w,h,user:true}`，切画布/重启保持），手柄旁出现「⟲」可一键恢复自适应默认。
+ * - 非 autoSize：固定尺寸 + 右下角拖拽缩放，尺寸记 localStorage[storageKey]。
  */
 
 interface Size {
   w: number;
   h: number;
+}
+interface StoredGeom extends Size {
+  /** autoSize 面板被用户手动调过尺寸 → true（恢复默认即删除该记录） */
+  user?: boolean;
 }
 export interface Anchor {
   x: number;
@@ -26,7 +31,7 @@ export interface Anchor {
 }
 
 const MIN_W = 360;
-const MIN_H = 260;
+const MIN_H = 220;
 const GAP = 12;
 
 function defaultSize(paneW: number, paneH: number): Size {
@@ -38,12 +43,12 @@ function clampSize(s: Size, paneW: number, paneH: number): Size {
     h: Math.max(MIN_H, Math.min(s.h, Math.round(paneH - 16)))
   };
 }
-function loadSize(key: string): Size | null {
+function loadGeom(key: string): StoredGeom | null {
   try {
     const raw = localStorage.getItem(key);
     if (!raw) return null;
-    const s = JSON.parse(raw) as Partial<Size>;
-    if (typeof s.w === 'number' && typeof s.h === 'number') return { w: s.w, h: s.h };
+    const s = JSON.parse(raw) as Partial<StoredGeom>;
+    if (typeof s.w === 'number' && typeof s.h === 'number') return { w: s.w, h: s.h, user: !!s.user };
   } catch {
     /* ignore */
   }
@@ -60,14 +65,20 @@ export function ResizablePanelWrapper({
   storageKey: string;
   anchor: Anchor | null;
   className?: string;
-  /** true=宽高随内容自适应（仅夹在画布内）；false=固定尺寸 + 拖拽缩放 */
+  /** true=宽高随内容自适应（用户拖动手柄后转用户固定尺寸并记忆）；false=固定尺寸 + 拖拽缩放 */
   autoSize?: boolean;
   children: React.ReactNode;
 }): JSX.Element {
   const storeApi = useStoreApi();
-  const [size, setSize] = useState<Size>(() => loadSize(storageKey) ?? { w: 1000, h: 520 });
+  const initial = loadGeom(storageKey);
+  const [size, setSize] = useState<Size>(() => initial ?? { w: 1000, h: 520 });
+  // autoSize 面板：仅当用户拖过（存档带 user:true）才进固定尺寸模式
+  const [userSized, setUserSized] = useState<boolean>(() => (autoSize ? !!initial?.user : false));
+  const fixedMode = !autoSize || userSized;
   const sizeRef = useRef(size);
   sizeRef.current = size;
+  const fixedRef = useRef(fixedMode);
+  fixedRef.current = fixedMode;
   const anchorRef = useRef(anchor);
   anchorRef.current = anchor;
   const winRef = useRef<HTMLDivElement>(null);
@@ -88,25 +99,26 @@ export function ResizablePanelWrapper({
     return { w: pw || 1200, h: ph || 800 };
   }, [storeApi]);
 
-  // 持久化尺寸（去抖）——仅固定尺寸模式
+  // 持久化尺寸（去抖）——固定尺寸模式（含 autoSize 被用户拖过的情况）
   useEffect(() => {
-    if (autoSize) return;
+    if (!fixedMode) return;
     const t = setTimeout(() => {
       try {
-        localStorage.setItem(storageKey, JSON.stringify(size));
+        const geom: StoredGeom = autoSize ? { ...size, user: true } : size;
+        localStorage.setItem(storageKey, JSON.stringify(geom));
       } catch {
         /* 配额超限：忽略 */
       }
     }, 200);
     return () => clearTimeout(t);
-  }, [size, storageKey, autoSize]);
+  }, [size, storageKey, fixedMode, autoSize]);
 
-  // 首次打开（无保存几何）→ 用「画布 3/4」作默认尺寸（仅固定尺寸模式）
+  // 首次打开（无保存几何）→ 用「画布 3/4」作默认尺寸（仅纯固定尺寸面板）
   const didInitSize = useRef(false);
   useLayoutEffect(() => {
     if (autoSize || didInitSize.current) return;
     didInitSize.current = true;
-    if (loadSize(storageKey) === null) {
+    if (loadGeom(storageKey) === null) {
       const { w, h } = paneSize();
       setSize(clampSize(defaultSize(w, h), w, h));
     }
@@ -119,8 +131,10 @@ export function ResizablePanelWrapper({
     const { w: paneW, h: paneH } = paneSize();
     let ww: number;
     let hh: number;
-    if (autoSize) {
+    if (!fixedRef.current) {
       // 宽高随内容：只夹上限，让浏览器按 max-content 量出真实尺寸再定位
+      el.style.width = '';
+      el.style.height = '';
       el.style.maxWidth = `${Math.round(paneW - 16)}px`;
       el.style.maxHeight = `${Math.round(paneH - 16)}px`;
       ww = el.offsetWidth;
@@ -128,6 +142,8 @@ export function ResizablePanelWrapper({
     } else {
       ww = Math.max(MIN_W, Math.min(sizeRef.current.w, Math.round(paneW - 16)));
       hh = Math.max(MIN_H, Math.min(sizeRef.current.h, Math.round(paneH - 16)));
+      el.style.maxWidth = '';
+      el.style.maxHeight = '';
       el.style.width = `${ww}px`;
       el.style.height = `${hh}px`;
     }
@@ -150,7 +166,7 @@ export function ResizablePanelWrapper({
     }
     el.style.left = `${left}px`;
     el.style.top = `${top}px`;
-  }, [storeApi, paneSize, autoSize]);
+  }, [storeApi, paneSize]);
 
   // 跟随平移/缩放（订阅 RF store）+ 窗口尺寸变化
   useEffect(() => {
@@ -171,39 +187,61 @@ export function ResizablePanelWrapper({
     };
   }, [storeApi, reposition]);
 
-  // 节点切换 / 尺寸变化 / 内容变化 → 立即重定位（before paint，无闪烁）
+  // 节点切换 / 尺寸变化 / 内容变化 / 模式切换 → 立即重定位（before paint，无闪烁）
   useLayoutEffect(() => {
     reposition();
-  }, [anchor, size, reposition, children]);
+  }, [anchor, size, fixedMode, reposition, children]);
 
-  // autoSize：内容高度可能随交互变化（展开/收起 tab），用 ResizeObserver 跟随重定位
+  // 自适应态：内容高度可能随交互变化（展开/收起 tab），用 ResizeObserver 跟随重定位
   useEffect(() => {
-    if (!autoSize) return;
+    if (fixedMode) return;
     const el = winRef.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
     const ro = new ResizeObserver(() => reposition());
     ro.observe(el);
     return () => ro.disconnect();
-  }, [autoSize, reposition]);
+  }, [fixedMode, reposition]);
 
-  // 外部「重置为默认尺寸」事件（标题栏 ⤢ 触发，按 storageKey 匹配）——仅固定尺寸模式
+  /** 恢复默认尺寸：autoSize 面板回自适应并删档；固定面板回「画布 3/4」。 */
+  const resetGeom = useCallback(() => {
+    try {
+      localStorage.removeItem(storageKey);
+    } catch {
+      /* ignore */
+    }
+    if (autoSize) {
+      setUserSized(false);
+    } else {
+      const { w, h } = paneSize();
+      setSize(clampSize(defaultSize(w, h), w, h));
+    }
+  }, [storageKey, autoSize, paneSize]);
+
+  // 外部「重置为默认尺寸」事件（标题栏 ⤢ 触发，按 storageKey 匹配）
   useEffect(() => {
-    if (autoSize) return;
     const onReset = (e: Event): void => {
       const k = (e as CustomEvent<string>).detail;
       if (k && k !== storageKey) return;
-      const { w, h } = paneSize();
-      setSize(clampSize(defaultSize(w, h), w, h));
+      resetGeom();
     };
     window.addEventListener('mb-np-reset-geom', onReset as EventListener);
     return () => window.removeEventListener('mb-np-reset-geom', onReset as EventListener);
-  }, [storageKey, autoSize, paneSize]);
+  }, [storageKey, resetGeom]);
 
   const onResizeStart = useCallback(
     (e: React.MouseEvent) => {
       e.preventDefault();
       e.stopPropagation();
-      const start = { mx: e.clientX, my: e.clientY, w: sizeRef.current.w, h: sizeRef.current.h };
+      // autoSize 面板首次拖动：以当前自适应实际尺寸为起点，转为用户固定尺寸（开始记忆）
+      let startW = sizeRef.current.w;
+      let startH = sizeRef.current.h;
+      if (!fixedRef.current && winRef.current) {
+        startW = winRef.current.offsetWidth;
+        startH = winRef.current.offsetHeight;
+        setSize({ w: startW, h: startH });
+        setUserSized(true);
+      }
+      const start = { mx: e.clientX, my: e.clientY, w: startW, h: startH };
       const move = (ev: MouseEvent): void => {
         const { w, h } = paneSize();
         setSize(clampSize({ w: start.w + (ev.clientX - start.mx), h: start.h + (ev.clientY - start.my) }, w, h));
@@ -221,9 +259,14 @@ export function ResizablePanelWrapper({
   // 渲染在 .mb-sc-canvas 内（CanvasWorkspace 已把本组件放进去），absolute 定位。
   // left/top（及固定模式的 width/height）由 reposition 在 layout 阶段 imperative 写入。
   return (
-    <div ref={winRef} className={`mb-np-window mb-card ${autoSize ? 'is-autosize' : ''} ${className ?? ''}`}>
+    <div ref={winRef} className={`mb-np-window mb-card ${fixedMode ? '' : 'is-autosize'} ${className ?? ''}`}>
       {children}
-      {!autoSize && <div className="mb-np-resize" title="拖拽调整窗口大小" onMouseDown={onResizeStart} />}
+      {autoSize && userSized && (
+        <button type="button" className="mb-np-resize-reset" title="恢复默认大小（自适应）" onClick={resetGeom}>
+          ⟲
+        </button>
+      )}
+      <div className="mb-np-resize" title="拖拽调整窗口大小（调整后自动记忆）" onMouseDown={onResizeStart} />
     </div>
   );
 }

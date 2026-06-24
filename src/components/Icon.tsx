@@ -35,7 +35,7 @@ export const SparkleIcon = (p: IconProps) => (
   </Base>
 );
 
-// 图库：带书签的笔记本 + 三行文字（一眼看出"提示词卡片库 / 收藏"）
+// 资产库：带书签的笔记本 + 三行文字（一眼看出"提示词卡片库 / 收藏"）
 export const GalleryIcon = (p: IconProps) => (
   <Base {...p}>
     {/* 笔记本外框（左侧装订） */}

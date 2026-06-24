@@ -1,0 +1,273 @@
+/**
+ * 侧栏快捷方式「分组 + 网址链接」附加样式（feature: 拖拽分组 + 超链接快捷方式）。
+ * 仅作用于本特性新增元素，复用 Sidebar.css 既有 .mb-sidebar-* 视觉语言与 var(--mb-*) token。
+ */
+
+/* ── 分组按钮：在 inner 上叠一层「多张卡片」徽标，暗示这是个组 ── */
+.mb-sidebar-group .mb-sidebar-item-inner {
+  background: rgba(255, 255, 255, 0.05);
+}
+[data-atmosphere='warm-jade'] .mb-sidebar-group .mb-sidebar-item-inner {
+  background: rgba(74, 60, 36, 0.07);
+}
+/* 右下角「成员数」徽章 */
+.mb-sidebar-group-badge {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  z-index: 3;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--mb-accent);
+  color: var(--mb-text-on-accent);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+/* 分组图标：四宫格小方块（无成员图标时的通用组标） */
+.mb-sidebar-group-glyph {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 2px;
+  width: 22px;
+  height: 22px;
+}
+.mb-sidebar-group-glyph i {
+  border-radius: 3px;
+  background: currentColor;
+  opacity: 0.85;
+}
+/* 成组拖拽悬停态：目标项放大 + accent 实心光圈（区别于「重排落点」的内描边） */
+.mb-sidebar-shortcut.is-sc-grouptarget .mb-sidebar-item-inner,
+.mb-sidebar-group.is-sc-grouptarget .mb-sidebar-item-inner {
+  border-color: var(--mb-accent);
+  box-shadow: 0 0 0 2px var(--mb-accent), 0 0 14px var(--mb-accent);
+  transform: scale(1.12);
+}
+
+/* ── 网址链接：地球图标（白回退由 currentColor 自动跟随主题） ── */
+.mb-sidebar-shortcut-link {
+  position: relative;
+  z-index: 1;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.3));
+}
+
+/* ── 分组浮窗（点击分组按钮弹出，锚定在按钮右侧） ── */
+.mb-sidebar-grouppop {
+  position: fixed;
+  z-index: 9000;
+  min-width: 188px;
+  max-width: 260px;
+  padding: 8px;
+  border-radius: var(--mb-radius-card, 16px);
+  background: var(--mb-surface, rgba(24, 26, 36, 0.96));
+  border: 1px solid var(--mb-border);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  animation: mb-grouppop-in 130ms var(--mb-ease, ease) both;
+}
+html[data-perf='low'] .mb-sidebar-grouppop {
+  animation: none;
+}
+@keyframes mb-grouppop-in {
+  from {
+    opacity: 0;
+    transform: translateX(-6px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.mb-sidebar-grouppop-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px 8px;
+  border-bottom: 1px solid var(--mb-border-soft);
+  margin-bottom: 6px;
+}
+.mb-sidebar-grouppop-name {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--mb-text-primary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 2px 4px;
+  border-radius: 6px;
+}
+.mb-sidebar-grouppop-name:hover,
+.mb-sidebar-grouppop-name:focus {
+  background: rgba(255, 255, 255, 0.06);
+}
+[data-atmosphere='warm-jade'] .mb-sidebar-grouppop-name:hover,
+[data-atmosphere='warm-jade'] .mb-sidebar-grouppop-name:focus {
+  background: rgba(74, 60, 36, 0.08);
+}
+.mb-sidebar-grouppop-ungroup {
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid var(--mb-border);
+  border-radius: 8px;
+  color: var(--mb-text-muted);
+  font-size: 11px;
+  padding: 3px 7px;
+  cursor: pointer;
+  transition: all var(--mb-duration-fast, 120ms) var(--mb-ease, ease);
+}
+.mb-sidebar-grouppop-ungroup:hover {
+  color: var(--mb-text-primary);
+  border-color: var(--mb-accent);
+}
+
+.mb-sidebar-grouppop-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.mb-sidebar-grouppop-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px;
+  border-radius: 10px;
+  cursor: pointer;
+  color: var(--mb-text-secondary);
+  transition: background var(--mb-duration-fast, 120ms) var(--mb-ease, ease);
+}
+.mb-sidebar-grouppop-row:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--mb-text-primary);
+}
+[data-atmosphere='warm-jade'] .mb-sidebar-grouppop-row:hover {
+  background: rgba(74, 60, 36, 0.08);
+}
+.mb-sidebar-grouppop-icon {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.mb-sidebar-grouppop-icon img {
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
+  border-radius: 7px;
+}
+.mb-sidebar-grouppop-icon .mb-sidebar-shortcut-initial {
+  width: 24px;
+  height: 24px;
+  font-size: 12px;
+}
+.mb-sidebar-grouppop-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mb-sidebar-grouppop-x {
+  flex-shrink: 0;
+  opacity: 0;
+  background: transparent;
+  border: none;
+  color: var(--mb-text-muted);
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px 4px;
+  cursor: pointer;
+  border-radius: 6px;
+}
+.mb-sidebar-grouppop-row:hover .mb-sidebar-grouppop-x {
+  opacity: 1;
+}
+.mb-sidebar-grouppop-x:hover {
+  color: var(--mb-danger, #ef4444);
+  background: rgba(239, 68, 68, 0.12);
+}
+
+/* ── 「添加网址链接」表单（小弹层，复用浮窗骨架） ── */
+.mb-sidebar-linkform {
+  position: fixed;
+  z-index: 9000;
+  width: 280px;
+  padding: 12px;
+  border-radius: var(--mb-radius-card, 16px);
+  background: var(--mb-surface, rgba(24, 26, 36, 0.96));
+  border: 1px solid var(--mb-border);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mb-sidebar-linkform-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--mb-text-primary);
+  margin-bottom: 2px;
+}
+.mb-sidebar-linkform input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border-radius: var(--mb-radius-input, 10px);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--mb-border);
+  color: var(--mb-text-primary);
+  font-size: 13px;
+  outline: none;
+}
+[data-atmosphere='warm-jade'] .mb-sidebar-linkform input {
+  background: rgba(74, 60, 36, 0.05);
+}
+.mb-sidebar-linkform input:focus {
+  border-color: var(--mb-accent);
+}
+.mb-sidebar-linkform-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 2px;
+}
+.mb-sidebar-linkform-actions button {
+  padding: 6px 14px;
+  border-radius: var(--mb-radius-button, 12px);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--mb-border);
+  background: transparent;
+  color: var(--mb-text-secondary);
+}
+.mb-sidebar-linkform-actions .is-primary {
+  background: var(--mb-accent-gradient, var(--mb-accent));
+  border-color: transparent;
+  color: var(--mb-text-on-accent);
+}
+.mb-sidebar-linkform-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

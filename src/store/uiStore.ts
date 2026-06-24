@@ -10,16 +10,19 @@ import { persist, createJSONStorage } from 'zustand/middleware';
  */
 
 export type ManagerMode = 'gallery' | 'prompt';
+/** 资产库类型分拣：全部 / 图片 / 视频 / 其它（SVG/PSD/PDF/Office 等文档类） */
+export type KindFilter = 'all' | 'image' | 'video' | 'other';
 export type DateFilter = 'all' | 'today' | 'week' | 'month';
 export type SortMode = 'newest' | 'oldest';
 export type ChatPanelMode = 'chat' | 'image';
-export type SettingsTab = 'plans' | 'appearance' | 'storage' | 'tools' | 'about';
+export type SettingsTab = 'plans' | 'intelligent' | 'appearance' | 'storage' | 'tools' | 'about';
 
 interface UIState {
-  // 图库页面
+  // 资产库页面
   managerMode: ManagerMode;
   managerSlug: string;
   managerSearch: string;
+  managerKindFilter: KindFilter;
   managerDateFilter: DateFilter;
   managerModelFilter: string;
   managerAspectFilter: string;
@@ -56,6 +59,7 @@ interface UIState {
   setManagerMode: (m: ManagerMode) => void;
   setManagerSlug: (s: string) => void;
   setManagerSearch: (s: string) => void;
+  setManagerKindFilter: (s: KindFilter) => void;
   setManagerDateFilter: (s: DateFilter) => void;
   setManagerModelFilter: (s: string) => void;
   setManagerAspectFilter: (s: string) => void;
@@ -74,6 +78,7 @@ export const useUIStore = create<UIState>()(
       managerMode: 'gallery',
       managerSlug: 'all',
       managerSearch: '',
+      managerKindFilter: 'all',
       managerDateFilter: 'all',
       managerModelFilter: 'all',
       managerAspectFilter: 'all',
@@ -115,6 +120,7 @@ export const useUIStore = create<UIState>()(
       setManagerMode: (m) => set({ managerMode: m }),
       setManagerSlug: (s) => set({ managerSlug: s }),
       setManagerSearch: (s) => set({ managerSearch: s }),
+      setManagerKindFilter: (s) => set({ managerKindFilter: s }),
       setManagerDateFilter: (s) => set({ managerDateFilter: s }),
       setManagerModelFilter: (s) => set({ managerModelFilter: s }),
       setManagerAspectFilter: (s) => set({ managerAspectFilter: s }),

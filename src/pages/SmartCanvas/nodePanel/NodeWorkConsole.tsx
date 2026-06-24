@@ -2,10 +2,10 @@ import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useSmartCanvasStore, useSmartResultStore, useSmartPreviewStore, absPosition } from '@/store/smartCanvasStore';
 import { useSettingsStore } from '@/store/settingsStore';
-import { useSmartViewStore } from '@/store/smartViewStore';
-import { runWithUpstream, cancelWork } from '@/lib/smartCanvasRunner';
+import { runWithUpstream, cancelWork, computeUpstream } from '@/lib/smartCanvasRunner';
 import { toast } from '@/store/toastStore';
 import { detectFamily } from '@shared/imageModelFamilies';
+import { modelRefValue, resolveModelRef, parseModelRef } from '@/lib/modelMapping';
 import {
   WORK_TYPE_LABELS,
   RUN_MODE_LABELS,
@@ -20,7 +20,9 @@ import {
 } from '@shared/smartCanvas';
 import { ImageNodeIcon } from '../icons';
 import { ResizablePanelWrapper } from './ResizablePanelWrapper';
-import { SegmentedControl, StepperInput, SearchableModelSelect, type SegOption } from './consoleControls';
+import { SegmentedControl, StepperInput, ModelDropdownButton, ClampNumberInput, type SegOption } from './consoleControls';
+import { AspectGlyph } from '../nodeControls';
+import { CustomSelect } from '@/components/CustomSelect';
 import './nodePanel.css';
 
 const STORAGE_KEY = 'mengbi.smartCanvas.workConsole.geom.v3';
@@ -74,39 +76,45 @@ function WorkConsoleInner({ id }: { id: string }): JSX.Element | null {
   const beginEdit = useSmartCanvasStore((s) => s.beginEdit);
   const commitEdit = useSmartCanvasStore((s) => s.commitEdit);
   const deselectAll = useSmartCanvasStore((s) => s.deselectAll);
-  const toggleFloat = useSmartViewStore((s) => s.toggleInspectorFloat);
   const configs = useSettingsStore((s) => s.configs);
+  const nodes = useSmartCanvasStore((s) => s.nodes);
+  const edges = useSmartCanvasStore((s) => s.edges);
   const reloadSettings = useSettingsStore((s) => s.load);
   const navigate = useNavigate();
 
   const [moreParams, setMoreParams] = useState(false);
 
   const imageModels = useMemo(() => {
-    const out: string[] = [];
+    const out: { name: string; provider: string; ref: string }[] = [];
     const seen = new Set<string>();
     for (const c of configs) {
       if (c.type !== 'image' || c.image_kind === 'comfyui') continue;
+      const prov = (c.provider_name ?? '').trim();
       for (const [name, actualId] of Object.entries(c.model_mapping ?? {})) {
-        if (seen.has(name) || !(actualId && actualId.trim())) continue;
-        seen.add(name);
-        out.push(name);
+        if (!(actualId && actualId.trim())) continue;
+        const ref = modelRefValue(prov, name);
+        if (seen.has(ref)) continue;
+        seen.add(ref);
+        out.push({ name, provider: prov, ref });
       }
     }
     return out;
   }, [configs]);
 
+  const up = useMemo(() => computeUpstream(nodes, edges, id), [nodes, edges, id]);
+
   if (!node) return null;
   const d = node.data as unknown as WorkNodeData;
+  const upSize = up.sizes[0];
+  const upEmit = upSize?.emit ?? 'both';
+  const aspectFed = !!upSize && upEmit !== 'resolution';
+  const tierFed = !!upSize && upEmit !== 'aspect';
   const setF: SetF = (patch) => update(id, patch as Partial<SmartNodeData>);
   const editProps: EditProps = { onFocus: beginEdit, onBlur: commitEdit };
 
-  const realModelId = (displayName: string): string => {
-    for (const c of configs) {
-      const v = c.model_mapping?.[displayName];
-      if (c.type === 'image' && v) return v;
-    }
-    return displayName;
-  };
+  // 复合标识（中转站 / 名）或旧裸名 → 真实模型 ID（detectFamily 判系列；查不到回退 name 段）
+  const realModelId = (ref: string): string =>
+    resolveModelRef(configs, 'image', ref)?.actualId ?? parseModelRef(ref).name;
   const family = detectFamily(realModelId(d.modelId || ''));
   const typeLabel = WORK_TYPE_LABELS[d.workType];
   const real = d.provider === 'mengbi' && REAL_WORK_TYPES.has(d.workType);
@@ -118,7 +126,7 @@ function WorkConsoleInner({ id }: { id: string }): JSX.Element | null {
   const aspectIsCustom = !!d.aspect && !aspectPresets.includes(d.aspect);
   const aspectOpts: SegOption<string>[] = [
     { value: '', label: '自动' },
-    ...aspectPresets.map((a) => ({ value: a, label: a })),
+    ...aspectPresets.map((a) => ({ value: a, label: a, icon: <AspectGlyph ratio={a} size={14} /> })),
     { value: '__custom__', label: '自定义' }
   ];
   const aspectCur = !d.aspect ? '' : aspectPresets.includes(d.aspect) ? d.aspect : '__custom__';
@@ -147,33 +155,34 @@ function WorkConsoleInner({ id }: { id: string }): JSX.Element | null {
 
   return (
     <div className="mb-np-root">
-      <NodeHeaderBar d={d} setF={setF} editProps={editProps} typeLabel={typeLabel} onPin={toggleFloat} onClose={deselectAll} />
+      <NodeHeaderBar d={d} setF={setF} editProps={editProps} typeLabel={typeLabel} onClose={deselectAll} />
 
       <div className="mb-np-bar">
         <BarField label="绘画模型" className="mb-np-bf-model">
           {d.provider === 'mengbi' ? (
-            <SearchableModelSelect
-              value={d.modelId}
-              options={imageModels}
-              badge={d.modelId ? family.label : undefined}
-              onChange={(v) => setF({ modelId: v })}
-              onManage={() => navigate('/settings')}
-              onRefresh={() => void reloadSettings()}
-            />
+            <>
+              <ModelDropdownButton value={d.modelId} options={imageModels} onChange={(v) => setF({ modelId: v })} />
+              <div className="mb-np-modelgrid-foot">
+                {d.modelId ? <span className="mb-np-modelgrid-fam">{family.label}</span> : null}
+                <button type="button" className="mb-np-modelgrid-link" onClick={() => navigate('/settings')}>
+                  模型管理
+                </button>
+                <button type="button" className="mb-np-modelgrid-link" onClick={() => void reloadSettings()}>
+                  刷新
+                </button>
+              </div>
+            </>
           ) : (
             <div className="mb-np-note">Local Mock：占位结果</div>
           )}
         </BarField>
 
         <BarField label="生成类型">
-          <select className="mb-select" value={d.workType} onChange={(e) => setF({ workType: e.target.value as WorkType })}>
-            {WORK_TYPES.map((w) => (
-              <option key={w} value={w}>
-                {WORK_TYPE_LABELS[w]}
-                {REAL_WORK_TYPES.has(w) ? '' : '（模拟）'}
-              </option>
-            ))}
-          </select>
+          <CustomSelect<WorkType>
+            value={d.workType}
+            options={WORK_TYPES.map((w) => ({ value: w, label: `${WORK_TYPE_LABELS[w]}${REAL_WORK_TYPES.has(w) ? '' : '（模拟）'}` }))}
+            onChange={(v) => setF({ workType: v })}
+          />
         </BarField>
 
         <BarField label="运行方式">
@@ -186,54 +195,62 @@ function WorkConsoleInner({ id }: { id: string }): JSX.Element | null {
         </BarField>
 
         <BarField label="执行后端">
-          <select className="mb-select" value={d.provider} onChange={(e) => setF({ provider: e.target.value as WorkProvider })}>
-            {PROVIDERS.map((p) => (
-              <option key={p} value={p}>
-                {PROVIDER_LABELS[p]}
-              </option>
-            ))}
-          </select>
+          <CustomSelect<WorkProvider>
+            value={d.provider}
+            options={PROVIDERS.map((p) => ({ value: p, label: PROVIDER_LABELS[p] }))}
+            onChange={(v) => setF({ provider: v })}
+          />
         </BarField>
 
         {real ? (
           <>
             <div className="mb-np-bar-sep" />
-            <BarField label={`比例（${family.label}）`}>
-              <SegmentedControl
-                value={aspectCur}
-                size="sm"
-                options={aspectOpts}
-                onChange={(v) => {
-                  if (v === '__custom__') {
-                    if (!aspectIsCustom) setF({ aspect: '16:10' });
-                  } else setF({ aspect: v });
-                }}
-              />
-              {aspectIsCustom ? (
-                <input className="mb-input mb-np-custom" value={d.aspect ?? ''} placeholder="如 16:10" onChange={(e) => setF({ aspect: e.target.value })} />
-              ) : null}
-            </BarField>
-            <BarField label="分辨率">
-              {tierPresets.length > 0 ? (
-                <>
-                  <SegmentedControl
-                    value={tierCur}
-                    size="sm"
-                    options={tierOpts}
-                    onChange={(v) => {
-                      if (v === '__custom__') {
-                        if (!tierIsCustom) setF({ imageSize: '3K' });
-                      } else setF({ imageSize: v });
-                    }}
-                  />
-                  {tierIsCustom ? (
-                    <input className="mb-input mb-np-custom" value={d.imageSize ?? ''} placeholder="如 3K" onChange={(e) => setF({ imageSize: e.target.value })} />
-                  ) : null}
-                </>
-              ) : (
-                <div className="mb-np-note">由 size 决定</div>
-              )}
-            </BarField>
+            {aspectFed ? (
+              <BarField label={`比例（${family.label}）`}>
+                <div className="mb-sc-fromup is-fed">由上游尺寸来源输入（{upSize?.aspect}）</div>
+              </BarField>
+            ) : (
+              <BarField label={`比例（${family.label}）`}>
+                <SegmentedControl
+                  value={aspectCur}
+                  size="sm"
+                  options={aspectOpts}
+                  onChange={(v) => {
+                    if (v === '__custom__') {
+                      if (!aspectIsCustom) setF({ aspect: '16:10' });
+                    } else setF({ aspect: v });
+                  }}
+                />
+                {aspectIsCustom ? (
+                  <input className="mb-input mb-np-custom" value={d.aspect ?? ''} placeholder="如 16:10" onChange={(e) => setF({ aspect: e.target.value })} />
+                ) : null}
+              </BarField>
+            )}
+            {tierFed ? (
+              <BarField label="分辨率">
+                <div className="mb-sc-fromup is-fed">由上游尺寸来源输入（{upSize?.width}×{upSize?.height}）</div>
+              </BarField>
+            ) : (
+              <BarField label="分辨率">
+                {tierPresets.length > 0 ? (
+                  <>
+                    <SegmentedControl
+                      value={tierCur}
+                      size="sm"
+                      options={tierOpts}
+                      onChange={(v) => {
+                        if (v === '__custom__') {
+                          if (!tierIsCustom) setF({ imageSize: '3K' });
+                        } else setF({ imageSize: v });
+                      }}
+                    />
+                    {tierIsCustom ? (
+                      <input className="mb-input mb-np-custom" value={d.imageSize ?? ''} placeholder="如 3K" onChange={(e) => setF({ imageSize: e.target.value })} />
+                    ) : null}
+                  </>
+                ) : null}
+              </BarField>
+            )}
             {family.supportsQuality ? (
               <BarField label="质量">
                 <SegmentedControl
@@ -260,6 +277,7 @@ function WorkConsoleInner({ id }: { id: string }): JSX.Element | null {
               type="number"
               value={d.seed ?? ''}
               placeholder="随机"
+              onFocus={(e) => e.currentTarget.select()}
               onChange={(e) => {
                 const v = e.target.value.trim();
                 const num = Number(v);
@@ -279,13 +297,43 @@ function WorkConsoleInner({ id }: { id: string }): JSX.Element | null {
           <StepperInput value={d.n} min={1} max={4} onChange={(v) => setF({ n: v })} />
         </BarField>
 
-        <BarField label="输出格式">
-          <select className="mb-select" value={d.outputFormat ?? ''} onChange={(e) => setF({ outputFormat: e.target.value })}>
-            <option value="">默认</option>
-            <option value="png">PNG</option>
-            <option value="jpeg">JPEG</option>
-            <option value="webp">WebP</option>
-          </select>
+        <BarField label="多条提示词">
+          <SegmentedControl
+            value={d.promptConcurrency ? 'parallel' : 'serial'}
+            size="sm"
+            options={[
+              { value: 'serial', label: '顺序', title: '多条上游提示词按连入顺序逐条生图（中转站不支持并发时用）' },
+              { value: 'parallel', label: '并发', title: '多条上游提示词同时提交（中转站支持并发时更快，结果仍按顺序排列）' }
+            ]}
+            onChange={(v) => setF({ promptConcurrency: v === 'parallel' })}
+          />
+        </BarField>
+
+        {d.workType !== 'image-generation' && (
+          <BarField label="多张输入图">
+            <SegmentedControl
+              value={d.imageEach ? 'each' : 'merge'}
+              size="sm"
+              options={[
+                { value: 'merge', label: '合并参考', title: '多张上游图作为一组参考图，喂给一次生成（多图融合/参考）' },
+                { value: 'each', label: '逐张各跑', title: '每张上游图各跑一次生成（N 张 = N 次结果，批量改图常用）。词数==图数时按序配对。' }
+              ]}
+              onChange={(v) => setF({ imageEach: v === 'each' })}
+            />
+          </BarField>
+        )}
+
+        <BarField label="输出格式（暂未生效）">
+          <CustomSelect
+            value={d.outputFormat ?? ''}
+            options={[
+              { value: '', label: '默认' },
+              { value: 'png', label: 'PNG' },
+              { value: 'jpeg', label: 'JPEG' },
+              { value: 'webp', label: 'WebP' }
+            ]}
+            onChange={(v) => setF({ outputFormat: v })}
+          />
         </BarField>
 
         {hasAdv ? (
@@ -334,14 +382,12 @@ function NodeHeaderBar({
   setF,
   editProps,
   typeLabel,
-  onPin,
   onClose
 }: {
   d: WorkNodeData;
   setF: SetF;
   editProps: EditProps;
   typeLabel: string;
-  onPin: () => void;
   onClose: () => void;
 }): JSX.Element {
   return (
@@ -350,7 +396,9 @@ function NodeHeaderBar({
         <span className="mb-np-header-ico">
           <ImageNodeIcon size={16} />
         </span>
-        <span className="mb-np-header-title">{typeLabel}节点</span>
+        <span className="mb-np-header-title">生图节点</span>
+        <span className="mb-np-header-dot">·</span>
+        <span className="mb-np-header-sub">{typeLabel}</span>
         <span className="mb-np-header-dot">·</span>
         <input
           className="mb-np-header-name"
@@ -362,9 +410,6 @@ function NodeHeaderBar({
         />
       </div>
       <div className="mb-np-header-right">
-        <button className="mb-np-hbtn mb-np-hbtn-ico" title="固定到右侧（纵向属性面板）" onClick={onPin}>
-          📌
-        </button>
         <button className="mb-np-hbtn mb-np-hbtn-ico" title="关闭（取消选中）" onClick={onClose}>
           ✕
         </button>
@@ -387,11 +432,11 @@ function AdvParams({ d, setF }: { d: WorkNodeData; setF: SetF }): JSX.Element {
         <>
           <div className="mb-np-field">
             <label className="mb-np-flabel">随机延迟下限 ms</label>
-            <input className="mb-input" type="number" min={0} value={d.mockDelayMin ?? 200} onChange={(e) => setF({ mockDelayMin: Math.max(0, Number(e.target.value) || 0) })} />
+            <ClampNumberInput min={0} max={600000} value={d.mockDelayMin ?? 200} onCommit={(v) => setF({ mockDelayMin: v })} />
           </div>
           <div className="mb-np-field">
             <label className="mb-np-flabel">随机延迟上限 ms</label>
-            <input className="mb-input" type="number" min={0} value={d.mockDelayMax ?? 800} onChange={(e) => setF({ mockDelayMax: Math.max(0, Number(e.target.value) || 0) })} />
+            <ClampNumberInput min={0} max={600000} value={d.mockDelayMax ?? 800} onCommit={(v) => setF({ mockDelayMax: v })} />
           </div>
           <div className="mb-np-field mb-np-field-full">
             <label className="mb-np-flabel">随机失败概率 {Math.round((d.mockErrorRate ?? 0) * 100)}%</label>

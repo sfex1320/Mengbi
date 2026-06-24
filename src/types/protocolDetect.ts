@@ -43,6 +43,12 @@ const MATCHERS: Match[] = [
     label: 'GRSAI（绘画用自有协议）'
   },
   {
+    test: (h) => h.includes('apimart'),
+    kind: 'openai-compat', // apimart 的对话是 OpenAI 兼容；绘画/视频走它自有协议
+    imageKind: 'apimart',
+    label: 'APImart（绘画/视频自有协议）'
+  },
+  {
     // 本地 Ollama / vLLM / LM Studio 等
     test: (h) =>
       h === 'localhost' ||

@@ -6,9 +6,8 @@ import { persist, createJSONStorage } from 'zustand/middleware';
  *
  * - activeTab：当前激活的子工具（**持久化**）
  *   * 'upscale'   = Real-ESRGAN ncnn Vulkan（保真放大模式，默认）
- *   * 'hypir'     = HYPIR（AI 高质量修复放大，需 Python+CUDA 环境，独立后端）
  *   * 'vectorize' = 图像转矢量(VTracer / Potrace)
- *   * SUPIR 已于 2026-05-29 整体砍除(显存需求过大)
+ *   * SUPIR 已于 2026-05-29、HYPIR 已于 2026-06-18 整体砍除
  * - pendingImport：跨页面跳转过来时把要处理的图带过来（生图右键 → 工具箱）
  * - inputDataUri：当前已加载的输入图（不持久化——重启丢失符合预期）
  * - batchInputs：批量输入文件路径数组（不持久化）
@@ -19,7 +18,7 @@ import { persist, createJSONStorage } from 'zustand/middleware';
  *   用户若想长久留存，请显式调"保存"按钮。
  */
 
-export type ToolsTab = 'upscale' | 'hypir' | 'vectorize';
+export type ToolsTab = 'upscale' | 'vectorize';
 
 export interface UpscaleResultSnapshot {
   /** 输出 dataUri（前端预览 + 右键复制/另存为/入库用） */
@@ -85,7 +84,13 @@ export const useToolsStore = create<ToolsState>()(
       storage: createJSONStorage(() => localStorage),
       partialize: (state) => ({
         activeTab: state.activeTab
-      })
+      }),
+      // 旧库可能持久化了已下线的 'hypir' 标签，回退到默认放大页
+      onRehydrateStorage: () => (state) => {
+        if (state && state.activeTab !== 'upscale' && state.activeTab !== 'vectorize') {
+          state.activeTab = 'upscale';
+        }
+      }
     }
   )
 );

@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import { Lightbox } from '@/components/Lightbox';
+import { Lightbox, type PreviewItem } from '@/components/Lightbox';
 import { openContextMenu } from '@/components/ContextMenu';
 import { toast } from '@/store/toastStore';
 import { localPathToImageUrl, thumbUrlFromOriginalPath } from '@/lib/imageUrl';
+import { buildShortcutSendMenuItems } from '@/lib/mediaActions';
 import type { OutputFile } from '@shared/comfyui';
 
 function blobToDataUri(b: Blob): Promise<string> {
@@ -27,10 +28,22 @@ async function saveAs(path: string): Promise<void> {
 
 /** 第一阶段输出展示：图片缩略图（点开 Lightbox，右键菜单）+ 视频 + 文本。 */
 export function ImageOutput({ outputs }: { outputs: OutputFile[] }): JSX.Element {
-  const [lightbox, setLightbox] = useState<string | null>(null);
+  const [preview, setPreview] = useState<{ items: PreviewItem[]; index: number } | null>(null);
 
   if (outputs.length === 0) {
     return <div className="mb-cfy-output-empty">运行后结果会显示在这里</div>;
+  }
+
+  /** 统一预览：本次输出的全部图片/视频组成列表（←→ 切换），从点击的那个开始。 */
+  function openPreviewAt(path: string): void {
+    const media = outputs.filter((o) => (o.kind === 'image' || o.kind === 'video') && o.path);
+    const items: PreviewItem[] = media.map((o) => ({
+      src: localPathToImageUrl(o.path as string),
+      type: o.kind === 'video' ? 'video' : 'image',
+      meta: { filePath: o.path as string }
+    }));
+    const idx = media.findIndex((o) => o.path === path);
+    if (items.length) setPreview({ items, index: Math.max(0, idx) });
   }
 
   function imageMenu(e: React.MouseEvent, path: string): void {
@@ -39,9 +52,10 @@ export function ImageOutput({ outputs }: { outputs: OutputFile[] }): JSX.Element
       x: e.clientX,
       y: e.clientY,
       items: [
-        { label: '放大查看', onClick: () => setLightbox(localPathToImageUrl(path)) },
+        { label: '放大查看', onClick: () => openPreviewAt(path) },
         { label: '另存为…', onClick: () => void saveAs(path) },
-        { label: '打开所在文件夹', onClick: () => void window.electronAPI.storage.showInFolder(path) }
+        { label: '打开所在文件夹', onClick: () => void window.electronAPI.storage.showInFolder(path) },
+        ...buildShortcutSendMenuItems({ kind: 'image', src: path })
       ]
     });
   }
@@ -66,7 +80,8 @@ export function ImageOutput({ outputs }: { outputs: OutputFile[] }): JSX.Element
                         void navigator.clipboard.writeText(o.text ?? '');
                         toast.success('已复制');
                       }
-                    }
+                    },
+                    ...buildShortcutSendMenuItems({ kind: 'text', text: o.text ?? '' })
                   ]
                 });
               }}
@@ -91,7 +106,8 @@ export function ImageOutput({ outputs }: { outputs: OutputFile[] }): JSX.Element
                   y: e.clientY,
                   items: [
                     { label: '另存为…', onClick: () => void saveAs(p) },
-                    { label: '打开所在文件夹', onClick: () => void window.electronAPI.storage.showInFolder(p) }
+                    { label: '打开所在文件夹', onClick: () => void window.electronAPI.storage.showInFolder(p) },
+                    ...buildShortcutSendMenuItems({ kind: 'video', src: p })
                   ]
                 });
               }}
@@ -124,7 +140,7 @@ export function ImageOutput({ outputs }: { outputs: OutputFile[] }): JSX.Element
             key={i}
             type="button"
             className="mb-cfy-output-tile"
-            onClick={() => setLightbox(localPathToImageUrl(p))}
+            onClick={() => openPreviewAt(p)}
             onContextMenu={(e) => imageMenu(e, p)}
             title={p}
           >
@@ -144,7 +160,7 @@ export function ImageOutput({ outputs }: { outputs: OutputFile[] }): JSX.Element
           </button>
         );
       })}
-      <Lightbox open={!!lightbox} src={lightbox ?? ''} onClose={() => setLightbox(null)} />
+      <Lightbox open={preview !== null} items={preview?.items} index={preview?.index} onClose={() => setPreview(null)} />
     </div>
   );
 }

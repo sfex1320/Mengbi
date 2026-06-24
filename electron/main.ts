@@ -7,11 +7,10 @@ import {
   session,
   shell,
   protocol,
-  net
+  screen
 } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
-import { pathToFileURL } from 'node:url';
 import { logger } from './services/logger';
 import { initDb, closeDb } from './services/db';
 import { registerAllIpcHandlers } from './ipc';
@@ -24,10 +23,111 @@ protocol.registerSchemesAsPrivileged([
       standard: true,
       secure: true,
       supportFetchAPI: true,
+      // <video>/<audio> 媒体元素只能从带 stream 特权的自定义协议加载（<img> 不需要）；
+      // 漏了它本地视频全链路（节点播放/Lightbox 放大）都会被 Chromium 静默拒载
+      stream: true,
       bypassCSP: false
     }
   }
 ]);
+
+/** 按扩展名给出 Content-Type。<video>/<audio> 必须拿到正确的媒体 MIME 才会解码播放；
+ *  图片用 image/* 也更稳妥（避免被当 octet-stream）。未知类型回退到 octet-stream（浏览器仍会嗅探）。 */
+const MENGBI_IMAGE_MIME: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.bmp': 'image/bmp',
+  '.svg': 'image/svg+xml',
+  '.avif': 'image/avif',
+  '.mp4': 'video/mp4',
+  '.m4v': 'video/mp4',
+  '.mov': 'video/quicktime',
+  '.webm': 'video/webm',
+  '.mkv': 'video/x-matroska',
+  '.avi': 'video/x-msvideo',
+  '.m4a': 'audio/mp4',
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
+  '.ogg': 'audio/ogg'
+};
+function mimeForFile(p: string): string {
+  return MENGBI_IMAGE_MIME[path.extname(p).toLowerCase()] || 'application/octet-stream';
+}
+
+/** 把本地文件（可选字节区间 [start,end]）包成流式 Response。带区间 → 206 + Content-Range；
+ *  否则 → 200 全量。两种都带 Accept-Ranges 告知浏览器可范围请求（<video> seek 必需）。 */
+function fileStreamResponse(
+  filePath: string,
+  mime: string,
+  size: number,
+  start?: number,
+  end?: number
+): Response {
+  const hasRange = typeof start === 'number' && typeof end === 'number';
+  const nodeStream = hasRange
+    ? fs.createReadStream(filePath, { start, end })
+    : fs.createReadStream(filePath);
+  // 手动构造 web ReadableStream（不用 Readable.toWeb）：消费端（<video>/<img>）中途取消时，
+  // toWeb 的内部 close 句柄会在「控制器已关闭」时再次 close 抛 ERR_INVALID_STATE → 主进程未捕获崩溃。
+  // 这里所有 controller 操作都 try/catch + closed 守卫，cancel 时销毁读流，杜绝该崩溃（铁律23⑥）。
+  let closed = false;
+  const finish = (fn: () => void): void => {
+    if (closed) return;
+    closed = true;
+    try {
+      fn();
+    } catch {
+      /* 控制器已关闭，忽略 */
+    }
+  };
+  const web = new ReadableStream({
+    start(controller) {
+      nodeStream.on('data', (chunk: string | Buffer) => {
+        if (closed) return;
+        const buf = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+        try {
+          controller.enqueue(buf);
+        } catch {
+          // 控制器已关闭（消费端取消）→ 停止读流
+          closed = true;
+          nodeStream.destroy();
+          return;
+        }
+        if (controller.desiredSize != null && controller.desiredSize <= 0) nodeStream.pause();
+      });
+      nodeStream.on('end', () => finish(() => controller.close()));
+      nodeStream.on('close', () => finish(() => controller.close()));
+      nodeStream.on('error', (e) => {
+        logger.warn('mengbi-image stream error', (e as Error).message);
+        finish(() => controller.error(e));
+      });
+    },
+    pull() {
+      nodeStream.resume();
+    },
+    cancel() {
+      closed = true;
+      nodeStream.destroy();
+    }
+  });
+  const headers: Record<string, string> = {
+    'Content-Type': mime,
+    'Accept-Ranges': 'bytes'
+  };
+  if (hasRange) {
+    headers['Content-Length'] = String(end! - start! + 1);
+    headers['Content-Range'] = `bytes ${start}-${end}/${size}`;
+  } else {
+    headers['Content-Length'] = String(size);
+  }
+  return new Response(web as unknown as BodyInit, {
+    status: hasRange ? 206 : 200,
+    headers
+  });
+}
 
 /**
  * 主进程入口。
@@ -231,15 +331,86 @@ function createTray(): void {
   }
 }
 
+// ── 窗口大小/位置记忆 ──
+// 关窗时把 normal bounds（非最大化时的真实尺寸）+ 是否最大化 存到 userData/window-state.json，
+// 下次启动恢复。位置只在落在某个可见显示器内才恢复，避免显示器拔掉后窗口跑到屏幕外不可见。
+const WIN_DEFAULT = { width: 1280, height: 820 };
+const WIN_MIN = { width: 1024, height: 680 };
+const windowStatePath = (): string => path.join(app.getPath('userData'), 'window-state.json');
+
+interface WindowState {
+  width: number;
+  height: number;
+  x?: number;
+  y?: number;
+  maximized?: boolean;
+}
+
+function loadWindowState(): WindowState {
+  try {
+    const raw = JSON.parse(fs.readFileSync(windowStatePath(), 'utf-8')) as Partial<WindowState>;
+    const width = Math.max(WIN_MIN.width, Math.round(Number(raw.width) || WIN_DEFAULT.width));
+    const height = Math.max(WIN_MIN.height, Math.round(Number(raw.height) || WIN_DEFAULT.height));
+    const state: WindowState = { width, height, maximized: raw.maximized === true };
+    // 仅当 (x,y) 有限且窗口与某个显示器有重叠时才恢复位置
+    if (Number.isFinite(raw.x) && Number.isFinite(raw.y)) {
+      const x = Math.round(raw.x as number);
+      const y = Math.round(raw.y as number);
+      const visible = screen.getAllDisplays().some((d) => {
+        const a = d.workArea;
+        return x < a.x + a.width && x + width > a.x && y < a.y + a.height && y + height > a.y;
+      });
+      if (visible) {
+        state.x = x;
+        state.y = y;
+      }
+    }
+    return state;
+  } catch {
+    return { ...WIN_DEFAULT };
+  }
+}
+
+let saveWindowTimer: NodeJS.Timeout | null = null;
+function persistWindowState(immediate = false): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const write = (): void => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    // getNormalBounds：最大化/全屏时仍返回还原后的真实尺寸，正是我们要记的
+    const b = mainWindow.getNormalBounds();
+    const state: WindowState = {
+      width: b.width,
+      height: b.height,
+      x: b.x,
+      y: b.y,
+      maximized: mainWindow.isMaximized()
+    };
+    try {
+      fs.writeFileSync(windowStatePath(), JSON.stringify(state), 'utf-8');
+    } catch (e) {
+      logger.warn('window-state 写入失败', e instanceof Error ? e.message : String(e));
+    }
+  };
+  if (saveWindowTimer) {
+    clearTimeout(saveWindowTimer);
+    saveWindowTimer = null;
+  }
+  if (immediate) write();
+  else saveWindowTimer = setTimeout(write, 400);
+}
+
 function createWindow(): void {
   const preloadPath = path.join(__dirname, '../preload/preload.js');
   logger.info('preload path:', preloadPath, 'exists:', fs.existsSync(preloadPath));
 
+  const winState = loadWindowState();
+
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 820,
-    minWidth: 1024,
-    minHeight: 680,
+    width: winState.width,
+    height: winState.height,
+    ...(winState.x !== undefined && winState.y !== undefined ? { x: winState.x, y: winState.y } : {}),
+    minWidth: WIN_MIN.width,
+    minHeight: WIN_MIN.height,
     icon: loadAppIcon(),
     show: false,
     autoHideMenuBar: true,
@@ -274,6 +445,7 @@ function createWindow(): void {
 
   mainWindow.on('ready-to-show', () => {
     closeSplash();
+    if (winState.maximized) mainWindow?.maximize();
     mainWindow?.show();
     // 不再在 dev 自动弹 DevTools —— 分离的 DevTools 会持续给渲染端打点（Elements/Paint/DOM 变更序列化），
     // 帧率大幅下降，是「从终端跑 npm run dev 测试时巨卡」的头号原因。需要时按 F12 / Ctrl+Shift+I，
@@ -315,6 +487,16 @@ p{color:rgba(245,245,247,.7);max-width:560px;line-height:1.6;font-size:13px}
     mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
   }
 
+  // 窗口尺寸/位置/最大化变化 → 去抖落盘；关窗前立即落盘
+  mainWindow.on('resize', () => persistWindowState());
+  mainWindow.on('move', () => persistWindowState());
+  mainWindow.on('maximize', () => persistWindowState());
+  mainWindow.on('unmaximize', () => persistWindowState());
+  mainWindow.on('close', () => persistWindowState(true));
+
+  // 任务完成时 flashFrame 让任务栏图标闪烁/标黄提醒（见 api:window:flash）；窗口获得焦点即清除。
+  mainWindow.on('focus', () => mainWindow?.flashFrame(false));
+
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
@@ -330,6 +512,8 @@ function applySecurityHeaders(): void {
         'Content-Security-Policy': [
           "default-src 'self'; " +
             "img-src 'self' data: blob: https: mengbi-image:; " +
+            // media-src 不写会回退 default-src 'self'，打包后本地/公网视频都被拦
+            "media-src 'self' data: blob: https: mengbi-image:; " +
             "style-src 'self' 'unsafe-inline'; " +
             "script-src 'self' 'wasm-unsafe-eval'; " +
             "worker-src 'self' blob:; " +
@@ -350,7 +534,32 @@ app.commandLine.appendSwitch('enable-unsafe-webgpu');
 // （将来若渲染端真要 WebGPU 且某 GPU 必须 Vulkan，请按机器实测后再 gated 加回 enable-features=Vulkan，别全局强开。）
 app.commandLine.appendSwitch('use-angle', 'd3d11');
 
+// 「GPU 加速」开关（设置 → 存储与系统）：必须在 app ready 之前调用 disableHardwareAcceleration()，
+// 而那时 DB 尚未初始化 → 读旁路文件 userData/boot-flags.json（settings.ts 保存设置时同步写）。
+// 默认开（无文件 / 无字段 = 不禁用）；用户开启后兼容性出问题可关掉再重启。
+try {
+  const bootFlagsPath = path.join(app.getPath('userData'), 'boot-flags.json');
+  const bootFlags = JSON.parse(fs.readFileSync(bootFlagsPath, 'utf-8')) as Record<string, string>;
+  if (bootFlags.disableGpu === '1') {
+    app.disableHardwareAcceleration();
+    logger.info('boot: GPU 加速已按用户设置禁用（boot-flags.json）');
+  }
+} catch {
+  /* 文件不存在 = 默认开启 GPU 加速 */
+}
+
 app.whenReady().then(async () => {
+  // 构建标识打日志（修「打包后新功能没进去」排查）：用户/我们看 logs 即可确认
+  // 正在运行的包是哪次源码构建的——哈希/时间对不上 = out/ 没重建就打了包。
+  try {
+    logger.info(
+      `boot: mengbi build v${typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '?'} · ` +
+        `${typeof __GIT_HASH__ === 'string' ? __GIT_HASH__ : 'dev'} · ` +
+        `${typeof __BUILD_TIME__ === 'string' ? __BUILD_TIME__ : 'dev'}`
+    );
+  } catch {
+    /* define 未注入（极少）时忽略 */
+  }
   // 立刻弹启动画面：DB 初始化 / 渲染端解析期间不再黑屏，用户一眼能看到「已经在启动」
   createSplash();
 
@@ -379,12 +588,43 @@ app.whenReady().then(async () => {
       const encoded = decodeURIComponent(url.pathname.replace(/^\//, ''));
       const padded = encoded.replace(/-/g, '+').replace(/_/g, '/');
       const filePath = Buffer.from(padded, 'base64').toString('utf8');
-      logger.info('mengbi-image resolve', { encoded: encoded.slice(0, 32), filePath });
       if (!filePath || !fs.existsSync(filePath)) {
         logger.warn('mengbi-image: file missing', filePath);
         return new Response('Not found', { status: 404 });
       }
-      return net.fetch(pathToFileURL(filePath).toString());
+      const size = fs.statSync(filePath).size;
+      const mime = mimeForFile(filePath);
+
+      // <video>/<audio> 起播会发 `Range: bytes=0-`，并在 seek / 读 MP4 尾部 moov（非 faststart 文件）时
+      // 反复发 Range。旧实现用 net.fetch(file://) 新建请求、**不转发** Range 头 → 永远整文件 200 返回，
+      // 既不告知 Accept-Ranges 也无 Content-Range → 浏览器判定「不可 seek」，moov-at-end 的 mp4 还会
+      // 起播失败/卡死（ffmpeg 产物全是 moov-at-end）。这里自己解析 Range、返回 206 切片流，彻底修好。
+      const rangeHeader = request.headers.get('Range');
+      if (rangeHeader) {
+        const m = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim());
+        if (m) {
+          let start: number;
+          let end: number;
+          if (m[1] === '' && m[2] !== '') {
+            // 尾部 N 字节（bytes=-N）
+            const suffix = Math.min(parseInt(m[2], 10), size);
+            start = Math.max(0, size - suffix);
+            end = size - 1;
+          } else {
+            start = m[1] === '' ? 0 : parseInt(m[1], 10);
+            end = m[2] === '' ? size - 1 : Math.min(parseInt(m[2], 10), size - 1);
+          }
+          if (Number.isNaN(start) || Number.isNaN(end) || start > end || start >= size) {
+            return new Response('Range Not Satisfiable', {
+              status: 416,
+              headers: { 'Content-Range': `bytes */${size}` }
+            });
+          }
+          return fileStreamResponse(filePath, mime, size, start, end);
+        }
+      }
+      // 无 Range：返回全量，但用 Accept-Ranges 告知支持范围请求（让浏览器后续能 seek）
+      return fileStreamResponse(filePath, mime, size);
     } catch (e) {
       logger.warn('mengbi-image protocol error', e);
       return new Response('Bad request', { status: 400 });
@@ -401,21 +641,6 @@ app.whenReady().then(async () => {
   // —— 非阻塞后台任务（不挡窗口显示）——
   // 上一轮异常退出留下的临时引用图：超过 24h 的清掉
   cleanupTempRefs().catch((e) => logger.warn('cleanupTempRefs failed', e));
-  // 孤儿 Python sidecar 清扫（探测端口可能慢）：后台跑；必须在 registerAllIpcHandlers() 之后
-  // （FeatureRegistry 已注册）、在用户能 spawn 新 sidecar 之前完成。
-  void (async () => {
-    try {
-      const { sweepOrphanSidecars } = await import('./services/ai-platform');
-      const r = await sweepOrphanSidecars();
-      if (r.swept.length > 0) {
-        logger.info(
-          `[main] startup sweep cleaned ${r.swept.length} orphan sidecar(s): ${r.swept.join(', ')}`
-        );
-      }
-    } catch (e) {
-      logger.warn(`[main] startup orphan sweep failed: ${(e as Error).message}`);
-    }
-  })();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -434,21 +659,6 @@ app.on('before-quit', () => {
   void import('./services/localLlmServer').then(({ localLlmServer }) =>
     localLlmServer.stop()
   );
-  // AI sidecar 优雅停 fire-and-forget(graceful HTTP 路径,Python 端 atexit 可以正常跑)
-  void import('./services/ai-platform').then(({ getSidecarManager }) =>
-    getSidecarManager().stopAllOnQuit()
-  );
-  // 同步兜底:before-quit 没有 await,如果 mengbi 在 graceful 完成前就退出,
-  // 上面的 async chain 会被 OS 直接砍掉,Python 孙子留下当孤儿。
-  // 这里同步 spawn taskkill /F /T /PID,1.5s 内完成,确保 GPU 被释放。
-  try {
-    // require() 在 before-quit 里是同步的;import() 才是 async
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const aiPlatform = require('./services/ai-platform') as typeof import('./services/ai-platform');
-    aiPlatform.getSidecarManager().killAllSidecarsSync();
-  } catch {
-    /* 即便 require 失败也别拖垮退出 */
-  }
 });
 
 app.on('second-instance', () => {

@@ -10,10 +10,12 @@ import { useSmartInboxStore } from '@/store/smartInboxStore';
 import { toast } from '@/store/toastStore';
 import { SendIcon, PlusIcon, XIcon, SparkleIcon, CheckIcon, TrashIcon } from './Icon';
 import { openContextMenu } from './ContextMenu';
-import { Lightbox } from './Lightbox';
+import { Lightbox, type PreviewItem } from './Lightbox';
+import { beginLocalLlmBusy } from '@/lib/localLlmBusy';
 import { confirmDialog } from './ConfirmDialog';
 import { CustomSelect, type SelectOption } from './CustomSelect';
-import { listMappedModels } from '@/lib/modelMapping';
+import { listMappedModels, resolveModelRef } from '@/lib/modelMapping';
+import { buildShortcutSendMenuItems } from '@/lib/mediaActions';
 import './ChatPanel.css';
 
 type Mode = 'chat' | 'image';
@@ -53,7 +55,11 @@ export function ChatPanel(): JSX.Element {
   const setMode = (m: Mode): void => ui.setChatMode(m);
   const [pendingMessageId, setPendingMessageId] = useState<string | null>(null);
   const [imageBusy, setImageBusy] = useState(false);
-  const [previewImageSrc, setPreviewImageSrc] = useState<string | null>(null);
+  const [preview, setPreview] = useState<{ items: PreviewItem[]; index: number } | null>(null);
+  /** 兼容旧单图调用：包装成单元素列表（多图场景由调用处传整组获得 ←→ 切换）。 */
+  const setPreviewImageSrc = (src: string | null): void => {
+    setPreview(src ? { items: [{ src }], index: 0 } : null);
+  };
   const [moreOpen, setMoreOpen] = useState(false);
   /**
    * 🌐 联网搜索 toggle —— 用户勾上后,本会话内每条消息都会带 forceWebSearch=true,
@@ -94,10 +100,10 @@ export function ChatPanel(): JSX.Element {
 
   // 当前 plan 下「对话/多模态」模型（含不可用项；不可用=实际ID为空，下拉里标灰禁选）
   const textMapped = listMappedModels(configs, activePlanId, 'text');
-  // 可用名单：用于默认选择 / 判断是否有可用对话模型
-  const textModels = textMapped.filter((m) => m.usable).map((m) => m.name);
+  // 可用名单（复合标识）：用于默认选择 / 判断是否有可用对话模型
+  const textModels = textMapped.filter((m) => m.usable).map((m) => m.ref);
 
-  /** 下拉选项：不可用项 disabled + 标注「（实际ID未填）」；能力徽标只给可用项 */
+  /** 下拉选项：不可用项 disabled + 标注「（实际ID未填）」；能力徽标只给可用项。value=复合标识。 */
   const textModelOptions: SelectOption<string>[] = textMapped.map((m) => {
     const cfg = configs.find(
       (c) =>
@@ -106,8 +112,9 @@ export function ChatPanel(): JSX.Element {
         (c.model_mapping ?? {})[m.name] !== undefined
     );
     return {
-      value: m.name,
-      label: m.usable ? m.name : `${m.name}（实际ID未填）`,
+      value: m.ref,
+      // 显示「中转站 / 模型名」区分同名模型在不同接口源下的配置
+      label: m.usable ? m.label : `${m.label}（实际ID未填）`,
       disabled: !m.usable,
       meta:
         cfg && m.usable
@@ -122,27 +129,24 @@ export function ChatPanel(): JSX.Element {
     };
   });
 
-  // 当前 plan 下绘画模型显示名（ComfyUI 在「本地大模型」页独立管理，此处剔除；并跳过实际ID为空的）
+  // 当前 plan 下绘画模型复合标识（ComfyUI 在「本地大模型」页独立管理，此处剔除；并跳过实际ID为空的）
   const imageModels = configs
     .filter(
       (c) =>
         c.plan_id === activePlanId && c.type === 'image' && c.image_kind !== 'comfyui'
     )
-    .flatMap((c) =>
-      Object.entries(c.model_mapping ?? {})
+    .flatMap((c) => {
+      const prov = (c.provider_name ?? '').trim();
+      return Object.entries(c.model_mapping ?? {})
         .filter(([, v]) => v && v.trim())
-        .map(([k]) => k)
-    );
+        .map(([k]) => (prov ? `${prov} / ${k}` : k));
+    });
 
   const modelId = ui.chatModelId;
   const setModelId = (id: string): void => ui.setChatModelId(id);
   // 当前对话模型对应的配置——用于读取 supports_web_search / supports_vision 展示能力徽标
-  const currentTextConfig = configs.find(
-    (c) =>
-      c.plan_id === activePlanId &&
-      c.type === 'text' &&
-      (c.model_mapping ?? {})[modelId] !== undefined
-  );
+  // modelId 为复合标识（中转站 / 名）或旧裸名，统一经 resolveModelRef 解析到具体配置
+  const currentTextConfig = resolveModelRef(configs, 'text', modelId, activePlanId)?.config;
   // 绘图模型从共享 store 取（右侧"绘图参数"面板控制）
   const imageModelId = params.imageModelId;
 
@@ -166,6 +170,8 @@ export function ChatPanel(): JSX.Element {
   // 解决长时间空闲后首条对话「await chat.send 返回前 chunk 已到 → 被 pendingMessageId=null 丢弃」的竞态。
   const pendingAidRef = useRef<string | null>(null);
   const pendingMidRef = useRef<string | null>(null);
+  // 本地大模型推理降效：推理中 data-busy（结束回调，幂等；非本地模型为 no-op）
+  const endLlmBusyRef = useRef<() => void>(() => undefined);
 
   // 监听 chat:chunk / chat:reasoning-chunk / chat:done / chat:sources（只注册一次，靠 ref 路由）
   useEffect(() => {
@@ -222,6 +228,7 @@ export function ChatPanel(): JSX.Element {
       pendingAidRef.current = null;
       pendingMidRef.current = null;
       setPendingMessageId(null);
+      endLlmBusyRef.current(); // 本地推理结束 → 解除 data-busy 降效
     });
     const offSources = window.electronAPI.on('chat:sources', (payload) => {
       const p = payload as {
@@ -251,6 +258,7 @@ export function ChatPanel(): JSX.Element {
       }
       chunkBufferRef.current = '';
       reasoningBufferRef.current = '';
+      endLlmBusyRef.current(); // 组件卸载也解除本地推理降效（防 data-busy 残留）
     };
   }, [appendDelta, appendReasoning, markDone, setSources]);
 
@@ -310,7 +318,7 @@ export function ChatPanel(): JSX.Element {
     const ok = await confirmDialog({
       title: '清空全部对话',
       message: '确认清空全部对话？',
-      detail: '所有历史消息会被永久删除（图库中的图不受影响）。',
+      detail: '所有历史消息会被永久删除（资产库中的图不受影响）。',
       okText: '清空',
       danger: true
     });
@@ -407,6 +415,9 @@ export function ChatPanel(): JSX.Element {
     const aid = appendAssistantPlaceholder();
     pendingAidRef.current = aid; // 在 await 之前就位：早到的 chunk/sources 能被认领，不再被丢弃
     pendingMidRef.current = null;
+    // 本地大模型推理中 → html data-busy：停装饰动画把 GPU 让给推理（chat:done 解除）
+    endLlmBusyRef.current();
+    endLlmBusyRef.current = beginLocalLlmBusy(modelId);
     requestAnimationFrame(() => scrollToBottom());
     const r = await window.electronAPI.chat.send({
       conversationId: activeId,
@@ -419,6 +430,7 @@ export function ChatPanel(): JSX.Element {
       markDone(aid);
       pendingAidRef.current = null;
       pendingMidRef.current = null; // 失败也清掉在途 messageId，避免下一轮认领/取消错乱
+      endLlmBusyRef.current();
       return;
     }
     // 首个事件若已认领同一 messageId，这里值相同；否则在此就位
@@ -565,10 +577,6 @@ export function ChatPanel(): JSX.Element {
             {
               label: '保真放大（Real-ESRGAN）',
               onClick: () => void sendBubbleImgToTool(src, 'upscale')
-            },
-            {
-              label: 'AI 修复放大 · HYPIR',
-              onClick: () => void sendBubbleImgToTool(src, 'hypir')
             }
           ]
         },
@@ -581,7 +589,8 @@ export function ChatPanel(): JSX.Element {
             navigate('/smart-canvas');
             toast.success('已发送到智能画布');
           }
-        }
+        },
+        ...buildShortcutSendMenuItems({ kind: 'image', src })
       ]
     });
   }
@@ -589,7 +598,7 @@ export function ChatPanel(): JSX.Element {
   /** 把对话气泡里的图片送到工具箱（指定 tab） */
   async function sendBubbleImgToTool(
     src: string,
-    target: 'upscale' | 'hypir'
+    target: 'upscale'
   ): Promise<void> {
     try {
       const r = await fetch(src);
@@ -816,7 +825,8 @@ export function ChatPanel(): JSX.Element {
             navigate('/smart-canvas');
             toast.success('已发送提示词到智能画布');
           }
-        }
+        },
+        ...(targetForPrompt.trim() ? buildShortcutSendMenuItems({ kind: 'text', text: targetForPrompt }) : [])
       ]
     });
   }
@@ -959,7 +969,14 @@ export function ChatPanel(): JSX.Element {
               message={m}
               onCopy={(t, fn) => copyText(t, fn)}
               onUseAsPrompt={(t) => applyAsPrompt(t)}
-              onPreviewImage={(src) => setPreviewImageSrc(src)}
+              onPreviewImage={(src) => {
+                // 整条气泡的全部附图作为列表 → 预览里 ←→ 可切换
+                const atts = m.attachments ?? [];
+                setPreview({
+                  items: (atts.length ? atts : [src]).map((s) => ({ src: s })),
+                  index: Math.max(0, atts.indexOf(src))
+                });
+              }}
               onImageContextMenu={(e, src) => showBubbleImageMenu(e, src)}
               onContextMenu={(e) =>
                 showCtx(e, { fullText: m.content, canPaste: false })
@@ -988,7 +1005,9 @@ export function ChatPanel(): JSX.Element {
               className="mb-chat-attach-thumb"
               style={disabled ? { opacity: 0.4 } : undefined}
               onContextMenu={(e) => showAttachMenu(e, i)}
-              onClick={() => setPreviewImageSrc(a.dataUri)}
+              onClick={() =>
+                setPreview({ items: attachedImages.map((x) => ({ src: x.dataUri })), index: i })
+              }
               title="点击放大 · 右键：类型 / 权重 / 启用 / 画板编辑 / 另存 / 移除"
             >
               <img src={a.dataUri} alt={`图片 ${i + 1}`} draggable={false} />
@@ -1158,8 +1177,9 @@ export function ChatPanel(): JSX.Element {
       </div>
 
       <Lightbox
-        open={previewImageSrc !== null}
-        src={previewImageSrc ?? ''}
+        open={preview !== null}
+        items={preview?.items}
+        index={preview?.index}
         onClose={() => setPreviewImageSrc(null)}
       />
     </div>

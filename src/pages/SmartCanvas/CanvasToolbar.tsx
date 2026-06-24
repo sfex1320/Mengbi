@@ -7,6 +7,7 @@ import { backToLauncher } from '@/lib/smartDocStorage';
 import { runAllNodes, abortRunAll } from '@/lib/smartCanvasRunner';
 import { toast } from '@/store/toastStore';
 import { confirmDialog } from '@/components/ConfirmDialog';
+import { useSmartGalleryPanelStore } from './SmartGalleryPanel';
 import {
   OpenIcon,
   SaveIcon,
@@ -21,7 +22,8 @@ import {
   SearchIcon,
   KeyboardIcon,
   ZoomInIcon,
-  ZoomOutIcon
+  ZoomOutIcon,
+  ImageNodeIcon
 } from './icons';
 
 /** 顶部工具条：左=画布菜单 + 标题；右=视图/文件/面板/运行 的图标工具条（图标统一、悬停出名）。 */
@@ -36,6 +38,8 @@ export function CanvasToolbar(): JSX.Element {
   const runTotal = useSmartRunStore((s) => s.total);
   const panel = useSmartCanvasUiStore((s) => s.panel);
   const togglePanel = useSmartCanvasUiStore((s) => s.togglePanel);
+  const galleryOpen = useSmartGalleryPanelStore((s) => s.open);
+  const toggleGallery = useSmartGalleryPanelStore((s) => s.toggle);
   const { fitView, setViewport, zoomIn, zoomOut, zoomTo } = useReactFlow();
   const zoom = useStore((s) => s.transform[2]);
   const openRef = useRef<HTMLInputElement>(null);
@@ -147,6 +151,14 @@ export function CanvasToolbar(): JSX.Element {
         </button>
 
         <span className="mb-sc-ubar-sep" aria-hidden />
+        <button
+          className={`mb-sc-glbtn ${galleryOpen ? 'is-on' : ''}`}
+          title="便携资产库：浏览 / 搜索 / 按相册筛选，把图拖进画布或其他软件直接用"
+          onClick={toggleGallery}
+        >
+          <ImageNodeIcon size={15} />
+          资产库
+        </button>
         {running ? (
           <button className="mb-sc-runbtn is-stop" onClick={abortRunAll} title="停止并立即取消正在运行的节点">
             <StopIcon size={15} />

@@ -30,6 +30,12 @@ function sanitize(doc: SmartCanvasDoc): SmartCanvasDoc {
     ...doc,
     nodes: doc.nodes.map((n) => {
       const d = n.data as unknown as Record<string, unknown>;
+      // 旧「角色设计」节点（character，已于提示词商城上线时下线）→ 迁移成提示词节点，
+      // 保留最后生成的角色资产 / 形式提示词 / 描述文本，不丢用户既有成果。
+      if ((n.type as string) === 'character') {
+        const text = String(d.charPrompt || d.sheetPrompt || d.desc || '').trim();
+        return { ...n, type: 'prompt', data: { text } as unknown as SmartNodeData };
+      }
       if ((n.type === 'work' || n.type === 'llm' || n.type === 'comfy') && d.status === 'running') {
         return {
           ...n,
@@ -44,9 +50,133 @@ function sanitize(doc: SmartCanvasDoc): SmartCanvasDoc {
       if (n.type === 'scale' && d.outputImage) {
         return { ...n, data: { ...d, outputImage: undefined } as unknown as SmartNodeData };
       }
+      // 循环节点：running/paused 归 idle（重载无运行控制器，否则成「运行中」幽灵）；
+      // 清当前项输出（outPrompt/outSize/outImages 是逐项瞬态，重载不该泄漏给下游 + 省配额）；
+      // 保留 currentIndex/totalItems/计数供「从此项继续」。
+      if (n.type === 'loop') {
+        const status = d.status === 'running' || d.status === 'paused' ? 'idle' : d.status;
+        return {
+          ...n,
+          data: { ...d, status, outPrompt: undefined, outSize: undefined, outImage: undefined, outImages: undefined } as unknown as SmartNodeData
+        };
+      }
+      // 图片列表自驱：runStatus 归 idle + 清「当前批」outBatch（防重载残留「运行中」/把旧批喂下游）。
+      if (n.type === 'image' && (d.runStatus === 'running' || d.runStatus === 'paused' || (Array.isArray(d.outBatch) && d.outBatch.length))) {
+        return {
+          ...n,
+          data: { ...d, runStatus: 'idle', batchIndex: undefined, totalBatches: undefined, doneCount: 0, failCount: 0, runLogs: [], runError: null, outBatch: undefined } as unknown as SmartNodeData
+        };
+      }
       return n;
     })
   };
+}
+
+/**
+ * 把 image 节点的大 base64 src 落盘换成磁盘路径（持久化前调，防 localStorage 配额爆掉丢改动）。
+ * 非 data:URI / 落盘失败的跳过；成功后用 updateNodeData 写回 store（同时改内存与后续持久化）。
+ * 仅处理 image 节点 src（最常见的大图来源：拖入 / 上传 / 粘贴的参考图）。其它节点内嵌图后续再扩。
+ */
+export async function externalizeImageNodes(): Promise<void> {
+  const isBig = (s: unknown): s is string => typeof s === 'string' && s.startsWith('data:');
+  const targets = useSmartCanvasStore.getState().nodes.filter((n) => {
+    if (n.type !== 'image') return false;
+    const d = n.data as unknown as { src?: unknown; srcs?: unknown; inpaintMaskSrc?: unknown; maskOverlaySrc?: unknown; originalSrc?: unknown };
+    return isBig(d.src) || (Array.isArray(d.srcs) && d.srcs.some(isBig)) || isBig(d.inpaintMaskSrc) || isBig(d.maskOverlaySrc) || isBig(d.originalSrc);
+  });
+  for (const n of targets) {
+    const d = n.data as unknown as { src?: string; srcs?: string[]; inpaintMaskSrc?: string; maskOverlaySrc?: string; originalSrc?: string };
+    // 单图 src
+    if (isBig(d.src)) {
+      const src = d.src;
+      try {
+        const r = await window.electronAPI.storage.saveCanvasAsset({ dataUri: src });
+        if (r.ok && r.data.filePath) {
+          // 仅当该节点 src 仍是这张 base64 时才覆盖（避免覆盖期间用户的新改动）
+          const cur = useSmartCanvasStore.getState().nodes.find((x) => x.id === n.id);
+          if (cur && (cur.data as unknown as { src?: string }).src === src) {
+            useSmartCanvasStore.getState().updateNodeData(n.id, { src: r.data.filePath } as unknown as Partial<SmartNodeData>);
+          }
+        }
+      } catch {
+        /* 落盘失败：保留 base64，下次自动保存再试 */
+      }
+    }
+    // 局部重绘遮罩：与 src 同样落盘换路径（运行前 runWorkNode 用 sendableUrl 转回 dataURI）
+    if (isBig(d.inpaintMaskSrc)) {
+      const mask = d.inpaintMaskSrc;
+      try {
+        const r = await window.electronAPI.storage.saveCanvasAsset({ dataUri: mask });
+        if (r.ok && r.data.filePath) {
+          const cur = useSmartCanvasStore.getState().nodes.find((x) => x.id === n.id);
+          if (cur && (cur.data as unknown as { inpaintMaskSrc?: string }).inpaintMaskSrc === mask) {
+            useSmartCanvasStore.getState().updateNodeData(n.id, { inpaintMaskSrc: r.data.filePath } as unknown as Partial<SmartNodeData>);
+          }
+        }
+      } catch {
+        /* 落盘失败：保留 base64 */
+      }
+    }
+    // 红色可视标注层：与遮罩同样落盘换路径（纯展示，节点 <img> 支持磁盘路径）
+    if (isBig(d.maskOverlaySrc)) {
+      const ov = d.maskOverlaySrc;
+      try {
+        const r = await window.electronAPI.storage.saveCanvasAsset({ dataUri: ov });
+        if (r.ok && r.data.filePath) {
+          const cur = useSmartCanvasStore.getState().nodes.find((x) => x.id === n.id);
+          if (cur && (cur.data as unknown as { maskOverlaySrc?: string }).maskOverlaySrc === ov) {
+            useSmartCanvasStore.getState().updateNodeData(n.id, { maskOverlaySrc: r.data.filePath } as unknown as Partial<SmartNodeData>);
+          }
+        }
+      } catch {
+        /* 落盘失败：保留 base64 */
+      }
+    }
+    // 最初始图：与 src 同样落盘换路径（编辑器「重置」时 loadImageCors 支持磁盘路径）
+    if (isBig(d.originalSrc)) {
+      const orig = d.originalSrc;
+      try {
+        const r = await window.electronAPI.storage.saveCanvasAsset({ dataUri: orig });
+        if (r.ok && r.data.filePath) {
+          const cur = useSmartCanvasStore.getState().nodes.find((x) => x.id === n.id);
+          if (cur && (cur.data as unknown as { originalSrc?: string }).originalSrc === orig) {
+            useSmartCanvasStore.getState().updateNodeData(n.id, { originalSrc: r.data.filePath } as unknown as Partial<SmartNodeData>);
+          }
+        }
+      } catch {
+        /* 落盘失败：保留 base64 */
+      }
+    }
+    // 列表 srcs[]：逐张把 base64 落盘换路径（列表模式批量大图最易爆配额）
+    if (Array.isArray(d.srcs) && d.srcs.some(isBig)) {
+      const orig = d.srcs.slice();
+      const next: string[] = [];
+      let changed = false;
+      for (const s of orig) {
+        if (isBig(s)) {
+          try {
+            const r = await window.electronAPI.storage.saveCanvasAsset({ dataUri: s });
+            if (r.ok && r.data.filePath) {
+              next.push(r.data.filePath);
+              changed = true;
+              continue;
+            }
+          } catch {
+            /* keep base64 */
+          }
+        }
+        next.push(s);
+      }
+      if (changed) {
+        const cur = useSmartCanvasStore.getState().nodes.find((x) => x.id === n.id);
+        // 仅当 srcs 未被用户改动时才写回
+        const curSrcs = (cur?.data as unknown as { srcs?: string[] } | undefined)?.srcs ?? [];
+        if (cur && JSON.stringify(curSrcs) === JSON.stringify(orig)) {
+          useSmartCanvasStore.getState().updateNodeData(n.id, { srcs: next } as unknown as Partial<SmartNodeData>);
+        }
+      }
+    }
+  }
 }
 
 /** 把当前画布内容写入某文档（同步）。配额超限时提示用户（每会话一次）。 */

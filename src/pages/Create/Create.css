@@ -478,7 +478,11 @@ select.mb-size-calc-input {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
+  justify-content: center;
+  /* 统一按钮高度 → 比例图标大小不一也不会一个高一个矮 */
+  min-height: 50px;
+  gap: 4px;
+  min-width: 0;
 }
 
 .mb-gen-aspect:hover {
@@ -494,10 +498,17 @@ select.mb-size-calc-input {
 .mb-gen-aspect-label {
   font-family: var(--mb-font-mono);
 }
+/* 绘图参数头部的可搜索模型选择器（替代原 ugly 原生下拉） */
+.mb-gen-header-model {
+  margin-left: auto;
+  width: min(300px, 56%);
+}
 
 .mb-gen-row {
   display: flex;
   gap: 10px;
+  /* 不等高的参数（张数 / 分辨率档 / 质量）一律顶部对齐，标签成一条直线，美观 */
+  align-items: flex-start;
 }
 
 /* 参数行（张数 / 分辨率档位 / 质量）的 label：
@@ -901,5 +912,13 @@ select.mb-size-calc-input {
   background: transparent;
   color: var(--mb-text-muted);
   border: 1px dashed var(--mb-border-soft);
+}
+
+/* GPT Image 2 选 1K/2K 时的实际生成尺寸提示（比例被吸附时说明吸附结果） */
+.mb-gen-tier-hint {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--mb-text-muted);
 }
 

@@ -6,7 +6,7 @@ import type { AlbumInput, SmartAlbumRules } from '@/types/domain';
 /**
  * 相册新建 / 编辑弹窗。
  * - 手动相册：只填名字；图片靠右键「加入相册」逐张归入（写 images.album_ids）。
- * - 智能相册：填规则（评分 / 标签 / 模型 / 日期），图库按规则实时匹配，不存成员。
+ * - 智能相册：填规则（评分 / 标签 / 模型 / 日期），资产库按规则实时匹配，不存成员。
  */
 export function AlbumEditModal({
   value,
@@ -141,7 +141,7 @@ export function AlbumEditModal({
             <div className="mb-album-field">
               <span>模型（任选其一命中）</span>
               {availableModels.length === 0 ? (
-                <div className="mb-album-models-empty">图库里还没有模型记录</div>
+                <div className="mb-album-models-empty">资产库里还没有模型记录</div>
               ) : (
                 <div className="mb-album-models">
                   {availableModels.map((m) => (

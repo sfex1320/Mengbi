@@ -140,6 +140,13 @@ export function computeScaleTarget(p: ScaleParams, w: number, h: number): { w: n
     tw *= s;
     th *= s;
   }
+  // 等比 clamp：任一边超出上限时，整体按同一比例缩进上限内（不能两边各自独立 clamp，
+  // 否则大倍数时长边先触顶、短边没动 → 宽高比失真，倍数越大越歪）。
+  if (tw > MAX_EDGE || th > MAX_EDGE) {
+    const s = MAX_EDGE / Math.max(tw, th);
+    tw *= s;
+    th *= s;
+  }
   tw = clamp(Math.round(tw), 1, MAX_EDGE);
   th = clamp(Math.round(th), 1, MAX_EDGE);
   return { w: tw, h: th };

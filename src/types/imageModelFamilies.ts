@@ -102,11 +102,156 @@ const COMMON_ASPECTS = [
   '21:9'
 ];
 
-const TIER_PIXEL_BUDGET: Record<ImageSizeTier, number> = {
+export const TIER_PIXEL_BUDGET: Record<ImageSizeTier, number> = {
   '1K': 1_048_576,
   '2K': 4_194_304,
   '4K': 8_294_400
 };
+
+// ────────────────────────────────────────────────────
+// GPT Image 2 官方尺寸约束 —— 单一真相
+// 依据 image2-supported-sizes-and-limits.md：宽高均 16 的倍数，比例在 1:3~3:1，
+// 任一边 ≤ 3840px，总像素在 [655360, 8294400]。所有 gpt-image-2 的尺寸规整都过这里。
+// ────────────────────────────────────────────────────
+export const IMAGE2_LIMITS = {
+  /** 任一边像素上限（"4096×2160 不被接受"） */
+  MAX_SIDE: 3840,
+  /** 总像素下限（512×512=262144 会被拒） */
+  MIN_PX: 655_360,
+  /** 总像素上限（4K 级，3840×2160=8294400 即为上限） */
+  MAX_PX: 8_294_400,
+  /** 长短比上限（max/min ≤ 3，即 1:3 ~ 3:1） */
+  MAX_RATIO: 3
+} as const;
+
+/**
+ * 一个 W×H 是否是 gpt-image-2 可接受的尺寸（文档 §3 伪代码的直译，纯判定不修正）。
+ * 供 UI 提示 / 单测对照官方规则用。
+ */
+export function isValidImage2Size(width: number, height: number): boolean {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return false;
+  const px = width * height;
+  const ratio = Math.max(width, height) / Math.min(width, height);
+  return (
+    width % 16 === 0 &&
+    height % 16 === 0 &&
+    Math.max(width, height) <= IMAGE2_LIMITS.MAX_SIDE &&
+    ratio <= IMAGE2_LIMITS.MAX_RATIO &&
+    px >= IMAGE2_LIMITS.MIN_PX &&
+    px <= IMAGE2_LIMITS.MAX_PX
+  );
+}
+
+/**
+ * 把任意 W×H 规整成最接近的「合法 gpt-image-2 尺寸」。
+ * 顺序：比例钳到 ≤3:1（缩长边）→ 单边等比缩到 ≤3840 → 总像素等比缩到 ≤8.3MP →
+ * 过小则等比放到 ≥655360 → snap16 + 夹 [256,3840] → 收尾保证 4 条硬约束全满足。
+ * 用于「自定义宽高 / 原尺寸来源 / 图生图 size」等绕过档位的路径，避免给 gpt-image-2
+ * 发出会被上游 400 的尺寸（如 6000×4000 / 512×512 / 3840×1080 超 3:1）。
+ */
+export function clampToImage2Size(width: number, height: number): { w: number; h: number } {
+  let w = Number.isFinite(width) && width > 0 ? width : 1024;
+  let h = Number.isFinite(height) && height > 0 ? height : 1024;
+  // 1) 比例钳到 ≤3:1（把长边缩到 3×短边）
+  if (Math.max(w, h) / Math.min(w, h) > IMAGE2_LIMITS.MAX_RATIO) {
+    if (w >= h) w = h * IMAGE2_LIMITS.MAX_RATIO;
+    else h = w * IMAGE2_LIMITS.MAX_RATIO;
+  }
+  // 2) 单边 ≤ 3840（等比缩）
+  const longest = Math.max(w, h);
+  if (longest > IMAGE2_LIMITS.MAX_SIDE) {
+    const s = IMAGE2_LIMITS.MAX_SIDE / longest;
+    w *= s;
+    h *= s;
+  }
+  // 3) 总像素 ≤ 8.3MP（等比缩）
+  if (w * h > IMAGE2_LIMITS.MAX_PX) {
+    const s = Math.sqrt(IMAGE2_LIMITS.MAX_PX / (w * h));
+    w *= s;
+    h *= s;
+  }
+  // 4) 总像素 ≥ 655360（等比放；放大不会破坏单边上限——同像素下方框更小）
+  if (w * h < IMAGE2_LIMITS.MIN_PX) {
+    const s = Math.sqrt(IMAGE2_LIMITS.MIN_PX / (w * h));
+    w *= s;
+    h *= s;
+  }
+  // 5) snap16 + 夹 [256, 3840]
+  let W = clamp256ToMaxSide(Math.round(w / 16) * 16);
+  let H = clamp256ToMaxSide(Math.round(h / 16) * 16);
+  // 6a) 预算上限兜底（snap 向上取整可能略超）
+  while (W * H > IMAGE2_LIMITS.MAX_PX && (W > 256 || H > 256)) {
+    if (W >= H && W > 256) W -= 16;
+    else if (H > 256) H -= 16;
+    else break;
+  }
+  // 6b) 比例兜底（snap 把短边取小可能让 max/min 略超 3:1）
+  const maxLong = Math.floor((Math.min(W, H) * IMAGE2_LIMITS.MAX_RATIO) / 16) * 16;
+  if (Math.max(W, H) > maxLong && maxLong >= 256) {
+    if (W >= H) W = maxLong;
+    else H = maxLong;
+  }
+  // 6c) 像素下限兜底（极小尺寸放大；增短边只会拉低比例，安全）
+  while (W * H < IMAGE2_LIMITS.MIN_PX && W < IMAGE2_LIMITS.MAX_SIDE && H < IMAGE2_LIMITS.MAX_SIDE) {
+    if (W <= H) W += 16;
+    else H += 16;
+  }
+  return { w: W, h: H };
+}
+
+function clamp256ToMaxSide(v: number): number {
+  return Math.max(256, Math.min(IMAGE2_LIMITS.MAX_SIDE, v));
+}
+
+// ────────────────────────────────────────────────────
+// GPT Image 2 的 1K/2K 枚举尺寸映射
+// 历史 bug：1K/2K 档原按「像素预算 × aspect」反推任意 WxH（如 1248×832），
+// 不少中转站/官方实现只接受规整枚举尺寸 → 直接报错。4K 的预算反推可用，保持不动。
+// ────────────────────────────────────────────────────
+
+/** 1K/2K 各档的安全枚举尺寸候选（官方 gpt-image 系列枚举 + 规整 2 次幂系）。 */
+const GPT_TIER_CANDIDATES: Record<'1K' | '2K', Array<[number, number]>> = {
+  '1K': [
+    [1024, 1024],
+    [1536, 1024],
+    [1024, 1536]
+  ],
+  '2K': [
+    [2048, 2048],
+    [2048, 1536],
+    [1536, 2048],
+    [2048, 1152],
+    [1152, 2048]
+  ]
+};
+
+export interface GptTierSize {
+  w: number;
+  h: number;
+  /** false = 所选比例被吸附到最近的枚举比例（前端据此提示实际生成尺寸） */
+  exact: boolean;
+}
+
+/**
+ * GPT Image 2 选 1K/2K 档时把 (档位, 比例) 映射到最近的安全枚举尺寸。
+ * 4K / 非法档位返回 null（调用方走原预算反推路径）。aspect 缺省按 1:1。
+ */
+export function mapGptTierSize(tier: string | undefined, aspect: string | undefined): GptTierSize | null {
+  if (tier !== '1K' && tier !== '2K') return null;
+  const m = /^(\d+)\s*:\s*(\d+)$/.exec(aspect ?? '');
+  const target = m && Number(m[2]) > 0 ? Number(m[1]) / Number(m[2]) : 1;
+  let best = GPT_TIER_CANDIDATES[tier][0];
+  let bestDiff = Infinity;
+  for (const c of GPT_TIER_CANDIDATES[tier]) {
+    const diff = Math.abs(Math.log(c[0] / c[1] / target));
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      best = c;
+    }
+  }
+  const exact = Math.abs(best[0] / best[1] - target) / target < 0.02;
+  return { w: best[0], h: best[1], exact };
+}
 
 // ────────────────────────────────────────────────────
 // 5 个 manifest（按 detectFamily 优先级倒排：pro/flash/2 优先匹配，default 兜底）
@@ -116,22 +261,29 @@ const GPT_IMAGE_2: FamilyManifest = {
   id: 'gpt-image-2',
   label: 'GPT Image 2',
   description:
-    'OpenAI /v1/images/generations。用 size="WxH"（snap 到 16，硬上限 4096，像素预算 8.3MP 封顶）。' +
-    '档位 1K/2K/4K 用作"目标像素预算"——按所选档位的预算 × aspect 反推 W×H。' +
+    'OpenAI /v1/images/generations。用 size="WxH"。1K/2K 档映射到安全枚举尺寸' +
+    '（1024/1536 系、2048 系——任意 WxH 在不少中转站会被拒）；4K 档按像素预算 × aspect 反推（snap 16，8.3MP 封顶）。' +
     '不发 image_size / aspect_ratio——避免与 size 冲突。',
   supportedTiers: ['1K', '2K', '4K'],
-  supportedAspects: [...COMMON_ASPECTS, '1:3', '3:1'],
+  supportedAspects: [...COMMON_ASPECTS, '2:1', '1:2', '9:21', '1:3', '3:1'],
   supportsQuality: true,
   supportsNegativePrompt: false,
   maxN: 4,
   pixelBudget: 8_294_400,
+  // 走 SSE 流式：4K/高质量出图常 60–120s，而不少中转站（Now Coding 等）的边缘代理按
+  // 「连接静默」60s 硬超时切连接（net::ERR_CONNECTION_CLOSED）。partial_image 心跳每来一次
+  // 就清零静默计时，让长耗时也能跑通。runOpenAIImage 见此字段即走 runOpenAIImageStreaming；
+  // 中转站不支持 SSE（直接回普通 JSON）时该函数会兜底按普通响应抢救出图，不二次扣费。
+  streaming: { partialImages: 2 },
   matches: (id) => /gpt[\s\-_]*image[\s\-_]*2|gptimage2/i.test(id),
   buildBody: (input) => {
     const tier = input.params.image_size as ImageSizeTier | undefined;
-    // GI2 上限 8.3MP；1K/2K 是用户主动选小，用来在弱中转站避开 60s 硬超时
+    // 1K/2K → 枚举尺寸映射（除非用户/尺寸节点给了精确宽高，精确值优先）；4K → 预算反推
+    const mapped =
+      !input.params.width && !input.params.height ? mapGptTierSize(tier, input.params.aspect) : null;
     const budget =
       tier && TIER_PIXEL_BUDGET[tier] ? TIER_PIXEL_BUDGET[tier] : 8_294_400;
-    const size = computeSize(input.params, budget);
+    const size = mapped ? `${mapped.w}x${mapped.h}` : computeSize(input.params, budget);
     const body: Record<string, unknown> = {
       model: input.modelId,
       prompt: input.prompt,
@@ -139,8 +291,19 @@ const GPT_IMAGE_2: FamilyManifest = {
       n: clampN(input.params.n, 4),
       response_format: 'b64_json'
     };
-    const q = input.params.quality;
-    if (q === 'standard' || q === 'high' || q === 'low' || q === 'medium') {
+    // gpt-image 系列 quality 官方枚举 = auto|low|medium|high。
+    // UI 的「标准」(standard) 是 DALL·E 3 词表——严格校验的中转站会 400
+    //（"Invalid option: expected one of auto|low|medium|high"，且失败也可能被计费）→ 映射到 medium。
+    let q = input.params.quality === 'standard' ? 'medium' : input.params.quality;
+    // 「默认」(空) = 自动按分辨率智能选 quality，且**绝不再发"空 quality"**：
+    //   有些中转站（如 Now Coding）把「分辨率」实际挂在 quality 上——不带 quality 字段会降级到
+    //   ~1K 并无视 size（连 aspect 都丢），只有带 quality 才按 size 出全分辨率。故：
+    //     4K→high / 2K→medium / 1K→low / 未选档位→auto（交给模型）。
+    //   用户显式选了 quality（标准/高）则一律以用户为准。
+    if (!q) {
+      q = tier === '4K' ? 'high' : tier === '2K' ? 'medium' : tier === '1K' ? 'low' : 'auto';
+    }
+    if (q === 'auto' || q === 'low' || q === 'medium' || q === 'high') {
       body.quality = q;
     }
     return body;
@@ -294,14 +457,15 @@ function buildNanoBananaBody(input: BodyBuilderInput): Record<string, unknown> {
 }
 
 /**
- * GPT Image 2 / default 用：
- *   - 自定义 W×H 优先（snap 16，clamp 256–4096）
+ * GPT Image 2 用（computeSize 只被 GPT_IMAGE_2.buildBody 调用）：
+ *   - 自定义 W×H 优先 —— 规整到合法 gpt-image-2 尺寸（16 倍数 / 单边≤3840 / 比例≤3:1 / 655360..8.3MP）
  *   - 否则按 aspect + 像素预算反推 W×H
  *   - 否则回退 1024x1024
  */
 function computeSize(params: BodyBuilderInput['params'], budget: number): string {
   if (params.width && params.height) {
-    return `${snap16(params.width)}x${snap16(params.height)}`;
+    const c = clampToImage2Size(params.width, params.height);
+    return `${c.w}x${c.h}`;
   }
   if (params.aspect && params.aspect !== 'auto') {
     const r = sizeFromAspectAndBudget(params.aspect, budget);
@@ -310,7 +474,7 @@ function computeSize(params: BodyBuilderInput['params'], budget: number): string
   return '1024x1024';
 }
 
-function sizeFromAspectAndBudget(
+export function sizeFromAspectAndBudget(
   aspect: string,
   budget: number
 ): { w: number; h: number } | null {
@@ -319,8 +483,25 @@ function sizeFromAspectAndBudget(
   const aw = Number(m[1]);
   const ah = Number(m[2]);
   if (!Number.isFinite(aw) || !Number.isFinite(ah) || aw <= 0 || ah <= 0) return null;
-  const hExact = Math.sqrt((budget * ah) / aw);
-  const wExact = (hExact * aw) / ah;
+  // gpt-image-2 官方约束：单边 ≤ 3840px（"4096×2160 不被接受"），长短比 ≤ 3:1，
+  // 双边 16 的倍数，总像素 ≤ 8.3MP。早先用 4096 会让极端比例（2:1/21:9/3:1/9:21…）
+  // 算出 4096 边而被中转/模型 400「Invalid image size」——与图生图路径(imageBody.snapToGrid)
+  // 早已用的 3840 对齐到此。
+  const MAX = 3840;
+  let hExact = Math.sqrt((budget * ah) / aw);
+  let wExact = (hExact * aw) / ah;
+  // 极端比例下「长边按预算反推会超过单边上限 3840」：原先各自独立 clamp 会把长边砍到上限、
+  // 短边不变 → 实际比例失真（如 3:1 出成 ~2.46:1）。改为：钉长边到上限后按目标比例回算短边，
+  // 保持比例忠实（宁可面积少于预算，也不让比例跑偏）。1:1/16:9 等非极端比例不触发此分支，行为不变。
+  if (wExact > MAX || hExact > MAX) {
+    if (wExact >= hExact) {
+      wExact = MAX;
+      hExact = (MAX * ah) / aw;
+    } else {
+      hExact = MAX;
+      wExact = (MAX * aw) / ah;
+    }
+  }
   let w = clamp256_4096(snap16(wExact));
   let h = clamp256_4096(snap16(hExact));
   // 二次 dec：snap 后可能略超预算，按短边收一格
@@ -332,12 +513,12 @@ function sizeFromAspectAndBudget(
   return { w, h };
 }
 
-function snap16(v: number): number {
+export function snap16(v: number): number {
   if (!Number.isFinite(v) || v <= 0) return 256;
   return Math.max(256, Math.floor(v / 16) * 16);
 }
 
-function clamp256_4096(v: number): number {
+export function clamp256_4096(v: number): number {
   return Math.max(256, Math.min(4096, v));
 }
 

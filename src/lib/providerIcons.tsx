@@ -136,9 +136,38 @@ export function guessProviderIcon(opts: { providerName?: string; baseUrl?: strin
   return null;
 }
 
+/**
+ * 从名称生成「首字图标」文字（无 preset / 自定义图时的回退）：
+ *   - 英文开头 → 取第一个单词的首字母（大写）
+ *   - 数字开头 → 取首位数字
+ *   - 中文 / 其它（emoji…） → 取第一个字符
+ * 空名 → '?'。
+ */
+export function providerInitial(name: string | undefined | null): string {
+  const s = (name ?? '').trim();
+  if (!s) return '?';
+  const first = Array.from(s)[0] ?? '?';
+  if (/[A-Za-z]/.test(first)) {
+    const word = s.match(/[A-Za-z][A-Za-z0-9]*/);
+    return (word ? word[0][0] : first).toUpperCase();
+  }
+  if (/[0-9]/.test(first)) return first;
+  return first;
+}
+
+/** 名称 → 稳定底色（同名恒同色，用于首字图标的背景）。 */
+export function providerInitialColor(name: string | undefined | null): string {
+  const s = (name ?? '').trim() || '?';
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return `hsl(${h % 360}, 46%, 45%)`;
+}
+
 interface ProviderIconProps {
-  /** 取 lobehub slug（PROVIDER_PRESETS 里的 id）或 data:image/... 自定义 dataURI；null/undefined 显示问号 */
+  /** 取 lobehub slug（PROVIDER_PRESETS 里的 id）或 data:image/... 自定义 dataURI；null/undefined 走名称首字回退 */
   value: string | null | undefined;
+  /** 无 preset/自定义图时，按名称生成首字图标（英文首字母 / 中文首字 + 稳定底色）；缺省才显示「?」 */
+  name?: string;
   /** 像素尺寸，默认 32 */
   size?: number;
   /** 圆角，默认 8 */
@@ -150,12 +179,13 @@ interface ProviderIconProps {
 }
 
 /**
- * 统一渲染厂商图标。三种来源：
+ * 统一渲染厂商图标。来源优先级：
  *   - data:image/...  → 自定义上传的图片
  *   - 内置 preset id → 字母徽章 + 品牌色
- *   - null / 未知 → 灰色「?」回退徽章
+ *   - 否则若给了 name → 名称首字徽章（英文首字母 / 中文首字 + 名称 hash 底色）
+ *   - 都没有 → 灰色「?」回退徽章
  */
-export function ProviderIcon({ value, size = 32, radius = 8, className, title }: ProviderIconProps): JSX.Element {
+export function ProviderIcon({ value, name, size = 32, radius = 8, className, title }: ProviderIconProps): JSX.Element {
   const baseStyle: CSSProperties = {
     width: size,
     height: size,
@@ -187,13 +217,16 @@ export function ProviderIcon({ value, size = 32, radius = 8, className, title }:
 
   const preset = value ? PROVIDER_BY_ID[value] : null;
   if (!preset) {
+    // 无 preset/自定义图：给了名称就用「首字 + 名称底色」自动生成图标，否则才显示「?」
+    const initial = name ? providerInitial(name) : '?';
+    const bg = name && initial !== '?' ? providerInitialColor(name) : 'rgba(120,120,130,0.5)';
     return (
       <span
         className={className}
-        style={{ ...baseStyle, background: 'rgba(120,120,130,0.5)' }}
-        title={title ?? '未指定厂商'}
+        style={{ ...baseStyle, background: bg }}
+        title={title ?? name ?? '未指定厂商'}
       >
-        ?
+        {initial}
       </span>
     );
   }

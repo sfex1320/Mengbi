@@ -2,7 +2,7 @@
  * Collapsible —— 通用折叠区(全项目共享)。
  *
  * 历史:原在 src/pages/Tools/Vec/components/,2026-05-28 提升到 src/components/
- * 让 Real-ESRGAN / HYPIR 等面板也能复用同款折叠。
+ * 让 Real-ESRGAN 等面板也能复用同款折叠。
  *
  * 受控:open + onOpenChange。
  * 展开/收起用 framer-motion 的 height:auto 动画(测量目标高度,平滑不抖)。

@@ -6,7 +6,7 @@
  * - GitHub release 直链 + 国内镜像（gh-proxy）双源；用户可选 auto / github / mirror
  * - 解压用 yauzl（已在 electron-builder 依赖里），避免再引一个 zip 库 —— 实际上 Electron 自带 require('original-fs')，
  *   我们用纯 Node 'node:fs' + 'node:zlib' 通过 yauzl 或简单实现。为了零新依赖，这里走系统 PowerShell `Expand-Archive`（Windows）/ `unzip`（macOS+Linux）解压。
- * - 仅"放大"用途；不混入 HYPIR 路径
+ * - 仅"放大"用途
  */
 
 import { app, net } from 'electron';

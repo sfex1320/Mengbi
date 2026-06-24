@@ -23,6 +23,7 @@ import type {
   LoopConfig,
   UiLayout
 } from './comfyui';
+import type { VideoGenerationRequest, VideoTaskStatusState } from './video';
 
 /** preload 暴露给渲染进程的入口 */
 export interface ElectronAPI {
@@ -30,14 +31,20 @@ export interface ElectronAPI {
   plan: PlanAPI;
   chat: ChatAPI;
   image: ImageAPI;
-  /** AI 视频生成（异步：提交→轮询→下载 mp4 落盘+入图库） */
+  /** AI 视频生成（异步：提交→轮询→下载 mp4 落盘+入资产库） */
   video: VideoAPI;
+  /** 视频插帧（本地 RIFE ncnn Vulkan：拆帧→AI 插帧→合帧） */
+  interp: InterpAPI;
   gallery: GalleryAPI;
   prompt: PromptAPI;
   album: AlbumAPI;
   lab: LabAPI;
   theme: ThemeAPI;
   storage: StorageAPI;
+  /** 网页预览抓取（外置提示词库封面自动获取，api:web:*） */
+  web: WebAPI;
+  /** 侧栏外部软件 / 文件夹快捷方式（api:shortcuts:*） */
+  shortcuts: ShortcutsAPI;
   exporter: ExporterAPI;
   window: WindowAPI;
   drag: DragAPI;
@@ -45,11 +52,9 @@ export interface ElectronAPI {
   /** 图像转矢量 v2：VTracer（彩色）/ Potrace（单色）/ OmniSVG（AI）三模式 */
   vec: VecAPI;
   upscale: UpscaleAPI;
-  hypir: HypirAPI;
-  /** 通用 AI 平台底座（HYPIR + 未来功能共用） */
-  aiFeature: AiFeatureAPI;
-  aiModel: AiModelAPI;
   config: ConfigIOAPI;
+  /** 智能画布节点模板（存 userData/node-templates/，api:template:*） */
+  template: NodeTemplateAPI;
   llm: LocalLlmAPI;
   /** 画板 Photoshop 联动桥（api:ps:*） */
   ps: PsAPI;
@@ -94,6 +99,8 @@ export interface ComfyuiAPI {
     controls?: InputControl[];
     bindings?: Binding[];
     outputNodeIds?: string[];
+    /** true=输出图不进资产库（提示词商城缩略图生成用） */
+    skipGallery?: boolean;
   }): Promise<Result<RunSingleResult>>;
   runBatch(input: {
     workflowId?: string;
@@ -188,6 +195,8 @@ export interface ConfigIOSections {
   plans: boolean;
   appearance: boolean;
   prompts: boolean;
+  /** 智能画布节点模板（userData/node-templates/ 下的 .json） */
+  nodeTemplates: boolean;
 }
 
 export interface ConfigIOExportResult {
@@ -208,6 +217,7 @@ export interface ConfigIOPreview {
     prompts: number;
     albums: number;
     settings: number;
+    nodeTemplates: number;
   };
 }
 
@@ -219,6 +229,7 @@ export interface ConfigIOImportStats {
   promptsImported: number;
   albumsImported: number;
   settingsImported: number;
+  nodeTemplatesImported: number;
 }
 
 export interface ConfigIOAPI {
@@ -241,6 +252,33 @@ export interface ConfigIOAPI {
   }): Promise<Result<{ stats: ConfigIOImportStats }>>;
   /** 弹文件选择对话框 */
   pickImportFile(): Promise<Result<{ filePath: string | null }>>;
+  /** 导出资产库图片到文件夹（复制图片 + 写 mengbi-images.json 清单） */
+  exportImages(input: { dir: string }): Promise<Result<{ copied: number; missing: number; dir: string }>>;
+  /** 扫描待导入文件夹（读清单报数量，不写库） */
+  scanImageDir(input: { dir: string }): Promise<Result<{ count: number; exportedAt: string }>>;
+  /** 从文件夹导入图片（恒追加 + 去重） */
+  importImages(input: { dir: string }): Promise<Result<{ imported: number; skipped: number }>>;
+}
+
+// ──────────────────────────────────────────────────────────
+// nodeTemplates.ts —— 智能画布节点模板（文件存储）
+// ──────────────────────────────────────────────────────────
+
+export interface NodeTemplateDTO {
+  id: string;
+  name: string;
+  notes?: string;
+  createdAt: string;
+  count: number;
+  nodes: unknown[];
+  edges: unknown[];
+}
+
+export interface NodeTemplateAPI {
+  list(): Promise<Result<{ templates: NodeTemplateDTO[] }>>;
+  save(input: NodeTemplateDTO): Promise<Result<{ saved: true }>>;
+  remove(input: { id: string }): Promise<Result<{ removed: true }>>;
+  rename(input: { id: string; name: string }): Promise<Result<{ renamed: true }>>;
 }
 
 /** 主进程主动推送的频道（renderer 通过 on 监听） */
@@ -256,8 +294,6 @@ export type PushChannel =
   | 'upscale:done'
   | 'upscale:install-progress'
   | 'upscale:onnx-download-progress'
-  | 'hypir:progress'
-  | 'ai-feature:install-progress'
   | 'vec:progress'
   | 'vec:batch-progress'
   | 'ps:file-changed'
@@ -266,7 +302,10 @@ export type PushChannel =
   | 'comfyui:run-done'
   | 'comfyui:queue'
   | 'video:progress'
-  | 'video:done';
+  | 'video:done'
+  | 'interp:progress'
+  | 'interp:install-progress'
+  | 'gallery:changed';
 
 /**
  * chat:sources 推送 payload —— 代搜（DDG/Tavily/SearXNG）路径下，
@@ -306,6 +345,40 @@ export interface NotificationAppendPayload {
   taskId?: number;
   /** 仅 chat:done 携带，链接 messageId */
   refId?: string;
+  /** 失败可一键修复时携带：前端通知中心据此显示「一键修复」按钮（如给某绘画模型加 {"stream":false}） */
+  remedy?: NotificationRemedy;
+}
+
+/**
+ * 一键修复建议：把某绘画模型配置的「请求体覆盖 / 请求头覆盖」合并补一段，绕过中转站的字段/协议差异。
+ * 由主进程在任务失败时按错误模式生成，前端通知中心一键应用（api:settings:apply-overrides）。
+ */
+export interface NotificationRemedy {
+  /** 按钮文案（如「改用非流式返回」） */
+  label: string;
+  /** 一句话说明这条修复做什么（按钮 title / 说明） */
+  detail?: string;
+  /** 目标绘画模型显示名/复合标识（中转站 / 名） */
+  modelId: string;
+  /** 合并进 body_overrides_json 的片段（值为 null 表示删除该字段） */
+  bodyMerge?: Record<string, unknown>;
+  /** 合并进 header_overrides_json 的片段 */
+  headerMerge?: Record<string, unknown>;
+}
+
+export interface ApplyOverridesInput {
+  modelId: string;
+  bodyMerge?: Record<string, unknown>;
+  headerMerge?: Record<string, unknown>;
+}
+
+export interface ApplyOverridesResult {
+  /** 被改动的配置 id */
+  configId: number;
+  /** 中转站名（提示用） */
+  providerName: string;
+  /** 合并后的 body 覆盖 JSON（回显） */
+  bodyOverrides: string | null;
 }
 
 // ──────────────────────────────────────────────────────────
@@ -316,6 +389,10 @@ export interface SettingsAPI {
   get(): Promise<Result<SettingsBundle>>;
   save(input: SaveSettingsInput): Promise<Result<SettingsBundle>>;
   testConnection(input: TestConnectionInput): Promise<Result<TestConnectionResult>>;
+  /** 真实发一次最小调用，验证「地址 + Key + 协议 + 请求体/请求头」整套是否能跑（捕获 response_format 等字段被拒）。 */
+  testProtocol(input: TestProtocolInput): Promise<Result<TestProtocolResult>>;
+  /** 一键修复：把某绘画模型配置的请求体/请求头覆盖合并补一段（通知中心「一键修复」按钮调用）。 */
+  applyOverrides(input: ApplyOverridesInput): Promise<Result<ApplyOverridesResult>>;
 }
 
 export interface SaveSettingsInput {
@@ -330,6 +407,8 @@ export interface TestConnectionInput {
   type: 'image' | 'text' | 'video';
   /** 用于测试的模型 ID */
   model_id?: string;
+  /** 自定义请求头/鉴权覆盖（非 Bearer 鉴权的中转站，拉取模型列表也要带对头才能读到） */
+  header_overrides_json?: string | null;
 }
 
 export interface TestConnectionResult {
@@ -338,6 +417,35 @@ export interface TestConnectionResult {
   latency_ms: number;
   /** 厂商返回的可见模型列表（如能拿到） */
   models?: string[];
+  /**
+   * 「按模型原生协议路由」的中转（如 openmodel.ai）在 /models 里给每个模型标 supported_protocols。
+   * 这里是「实际模型 ID → 协议数组」映射（仅含声明了协议的模型），用于指派时自动判定对话协议。
+   */
+  model_protocols?: Record<string, string[]>;
+}
+
+export interface TestProtocolInput {
+  base_url: string;
+  api_key_plain: string;
+  type: 'image' | 'text' | 'video';
+  /** 实际模型 ID（模型映射的值） */
+  model_id: string;
+  official_kind?: string | null;
+  image_kind?: string | null;
+  body_overrides_json?: string | null;
+  header_overrides_json?: string | null;
+}
+
+export interface TestProtocolResult {
+  /** 协议是否跑通（真实调用 2xx） */
+  ok: boolean;
+  /** 因费用/协议差异未做真实调用 */
+  skipped?: boolean;
+  status?: number;
+  /** 「做什么 + 怎么办」中文结论 */
+  message: string;
+  /** 上游原始响应片段（失败时） */
+  detail?: string;
 }
 
 // ──────────────────────────────────────────────────────────
@@ -360,6 +468,12 @@ export interface PlanAPI {
 
 export interface ChatAPI {
   send(input: ChatSendInput): Promise<Result<{ messageId: string }>>;
+  /**
+   * 无状态聊天（智能画布 LLM 节点专用）：不落库、不进生图页对话列表，
+   * 每次都带当前 modelId + 完整消息序列，模型永远跟随节点当前选择。
+   * 走与 send 相同的 chat:chunk / chat:done 推送。
+   */
+  sendEphemeral(input: ChatSendEphemeralInput): Promise<Result<{ messageId: string }>>;
   cancel(messageId: string): Promise<Result<true>>;
   create(input: { title: string; planId: number; modelId: string }): Promise<Result<{ id: string }>>;
   list(): Promise<Result<Array<{ id: string; title: string; updated_at: string }>>>;
@@ -386,7 +500,8 @@ export interface ChatAPI {
     userInput: string;
     /** 可选：覆盖默认 system prompt，使用 optimizePresets.ts 里的分类提示 */
     systemPrompt?: string;
-  }): Promise<Result<{ optimized: string; optimizedBy: string | null }>>;
+    /** 返回值 reason：失败回退原文时附带的失败原因（HTTP 错误 / 超时等，便于前端 toast 展示） */
+  }): Promise<Result<{ optimized: string; optimizedBy: string | null; reason?: string }>>;
 }
 
 export interface ChatSendInput {
@@ -395,6 +510,15 @@ export interface ChatSendInput {
   /** 仅本次发送附带的图片（data URI / https URL），后端拼成多模态消息 */
   attachedImages?: string[];
   /** 本轮强制启用代搜(对应聊天框 🌐 toggle);后端忽略 supports_web_search */
+  forceWebSearch?: boolean;
+}
+
+export interface ChatSendEphemeralInput {
+  planId: number;
+  modelId: string;
+  /** 完整消息序列（含本轮新 user 消息，末条应为 user） */
+  messages: Array<{ role: 'user' | 'assistant'; content: string }>;
+  attachedImages?: string[];
   forceWebSearch?: boolean;
 }
 
@@ -415,6 +539,20 @@ export interface VideoGenerateInput {
   prompt: string;
   negativePrompt?: string;
   params: Record<string, unknown>;
+  /**
+   * 统一视频生成请求（adapter 路径，如 seedance/custom）。
+   * 提供时且该模型的 video_kind 走 adapter → 用它；否则回退到 legacy 引擎读 params。
+   */
+  request?: VideoGenerationRequest;
+}
+
+/** 视频素材上传入参（本地文件 → 供应商 uploadEndpoint → 公网 URL）。 */
+export interface VideoUploadAssetInput {
+  modelId: string;
+  filePath?: string;
+  dataUri?: string;
+  filename?: string;
+  kind: 'image' | 'video' | 'audio';
 }
 
 export interface VideoAPI {
@@ -424,6 +562,134 @@ export interface VideoAPI {
   cancel(taskId: string): Promise<Result<true>>;
   /** 写视频封面缩略图（渲染端抓首帧 webp dataURI → 落 .thumbs + 更新 images.thumbnail_path）。 */
   saveThumbnail(input: { imageId: number; dataUri: string }): Promise<Result<{ thumbnail: string }>>;
+  /** 上传本地素材到供应商 uploadEndpoint，返回公网 URL（无端点时报错引导用公网 URL）。 */
+  uploadAsset(input: VideoUploadAssetInput): Promise<Result<{ url: string }>>;
+  /** 缩放视频（主进程 ffmpeg 重编码）→ 返回缩放后本地 mp4 路径（已自动入资产库，imageId 供补封面）。 */
+  scale(input: VideoScaleInput): Promise<Result<{ path: string; imageId?: number }>>;
+  /** 视频编辑（主进程 ffmpeg）：裁切 / 基础调色 / 声音处理 / 合并 → 输出本地 mp4（自动入资产库）。 */
+  edit(input: VideoEditInput): Promise<Result<{ path: string; imageId?: number }>>;
+}
+
+/** 视频剪辑片段（op='clip'，每个 input 对应一个，同序）。 */
+export interface VideoEditClipSegment {
+  src: string;
+  trimStart: number;
+  trimEnd: number;
+  speed: number;
+  volume: number;
+  muted: boolean;
+  fadeIn: number;
+  fadeOut: number;
+  transition: 'none' | 'fade' | 'fadeblack' | 'dissolve' | 'wipeleft' | 'slideright';
+  transitionDur: number;
+}
+export interface VideoEditClipText {
+  text: string;
+  start: number;
+  end: number;
+  x: number;
+  y: number;
+  fontSize: number;
+  color: string;
+}
+
+/** 视频编辑入参：op 决定用哪些字段；inputs = 本地路径 / http(s) URL（merge/clip 多段，其余取首个）。 */
+export interface VideoEditInput {
+  op: 'trim' | 'color' | 'audio' | 'merge' | 'clip';
+  inputs: string[];
+  clientTag?: string;
+  /** trim：起止秒（end 为空 = 到结尾） */
+  start?: number | null;
+  end?: number | null;
+  /** color / clip 整体调色：ffmpeg eq + hue（默认值=不变） */
+  brightness?: number | null;
+  contrast?: number | null;
+  saturation?: number | null;
+  gamma?: number | null;
+  hue?: number | null;
+  /** audio：保留 / 静音 / 音量倍数 / 淡入淡出秒 */
+  audioMode?: 'keep' | 'mute' | 'volume' | 'fade' | null;
+  volume?: number | null;
+  fadeIn?: number | null;
+  fadeOut?: number | null;
+  /** clip（时间轴剪辑）：与 inputs 同序的片段 + 文字叠加 + 成片帧率 */
+  segments?: VideoEditClipSegment[];
+  texts?: VideoEditClipText[];
+  fps?: number | null;
+}
+
+/** 视频缩放/补帧入参（任一宽/高为空 = 按比例自适应，ffmpeg -2 保证偶数边；fps = minterpolate 补帧目标帧率）。 */
+export interface VideoScaleInput {
+  inputPath: string;
+  width?: number | null;
+  height?: number | null;
+  fps?: number | null;
+}
+
+// ── 视频插帧（本地 RIFE ncnn Vulkan）──
+
+export interface InterpEngineStatus {
+  installed: boolean;
+  version: string;
+  execPath: string | null;
+  enginePath: string;
+  models: string[];
+  defaultModel: string | null;
+  platform: 'windows' | 'macos' | 'linux' | 'unsupported';
+}
+
+export interface InterpRunInput {
+  inputPath: string;
+  targetFps: number;
+  model?: string;
+  outputDir?: string;
+  /** 渲染端生成的 uuid，interp:progress 原样回带用于定位节点 */
+  clientTag?: string;
+}
+
+export interface InterpRunResult {
+  taskId: string;
+  outputPath: string;
+  srcFps?: number;
+  srcFrames?: number;
+  outFrames?: number;
+  targetFps: number;
+  elapsedMs?: number;
+  /** 产物已自动入资产库时的 images.id（渲染端抓帧补封面用） */
+  imageId?: number;
+}
+
+/** interp:install-progress 推送 payload（与 upscale:install-progress 同形） */
+export interface InterpInstallProgressPayload {
+  component: string;
+  received: number;
+  total: number;
+}
+
+/** interp:progress 推送 payload */
+export interface InterpProgressPayload {
+  taskId: string;
+  clientTag?: string;
+  stage: 'probe' | 'extract' | 'interp' | 'encode';
+  percent: number;
+  framesDone: number;
+  framesTotal: number;
+  srcFps?: number;
+  phase: string;
+}
+
+export interface InterpAPI {
+  /** 引擎装没装、模型清单、默认模型（rife-v4.6）、平台 */
+  status(): Promise<Result<InterpEngineStatus>>;
+  /** 下载 zip 解压到 userData/engines/rife/；进度推 interp:install-progress */
+  installEngine(input?: { source?: 'auto' | 'github' | 'mirror' }): Promise<
+    Result<{ enginePath: string; usedUrl: string; models: string[] }>
+  >;
+  removeEngine(): Promise<Result<true>>;
+  /** 同步等完成（拆帧→AI 插帧→合帧，分钟级）；进度推 interp:progress */
+  run(input: InterpRunInput): Promise<Result<InterpRunResult>>;
+  /** 按 taskId 取消（空 = 取消所有在跑插帧任务） */
+  cancel(input?: { taskId?: string }): Promise<Result<{ cancelledTaskIds: string[] }>>;
 }
 
 /** video:progress 推送 payload */
@@ -432,6 +698,8 @@ export interface VideoProgressPayload {
   percent?: number;
   /** 阶段中文：提交中 / 排队中 / 生成中 / 下载中 */
   phase?: string;
+  /** 细分任务状态（adapter 路径）：validating/submitted/polling/processing… */
+  state?: VideoTaskStatusState;
 }
 
 /** video:done 推送 payload */
@@ -440,10 +708,14 @@ export interface VideoDonePayload {
   ok: boolean;
   /** 成功时的本地 mp4 绝对路径（渲染端用 localPathToImageUrl 转可播放 URL） */
   filePath?: string;
-  /** 入图库后的 images.id（若入库成功） */
+  /** 入资产库后的 images.id（若入库成功） */
   imageId?: number;
   durationMs?: number;
   error?: string;
+  /** return_last_frame 连续视频用：最后一帧 URL（供下一段作首帧） */
+  lastFrameUrl?: string;
+  /** 远端原始视频 URL（落盘前的下载地址，备查） */
+  remoteUrl?: string;
 }
 
 export interface ImageGenerateInput {
@@ -462,16 +734,27 @@ export interface GalleryAPI {
   list(input?: GalleryListInput): Promise<Result<unknown[]>>;
   detail(id: number): Promise<Result<unknown>>;
   update(input: { id: number; patch: Record<string, unknown> }): Promise<Result<true>>;
-  /** 把 dataUri 字节导入图库：落盘 + INSERT INTO images（task_id=NULL） */
+  /** 把 dataUri 字节导入资产库：落盘 + INSERT INTO images（task_id=NULL） */
   importFromBuffer(
     input: GalleryImportFromBufferInput
   ): Promise<Result<{ id: number; filePath: string }>>;
+  /** 多类型文件收录：图片/视频/SVG/PSD/PDF/Office 按本地路径批量导入资产库（复制进存储根 + INSERT） */
+  importFiles(input: { paths: string[] }): Promise<
+    Result<{
+      imported: Array<{ id: number; filePath: string; kind: string }>;
+      skipped: Array<{ path: string; reason: string }>;
+    }>
+  >;
   /** 批量探测哪些卡片的 file_path 已不在本地(用于"选中无关联文件") */
   probeMissingFiles(input: { ids: number[] }): Promise<Result<{ missing: number[] }>>;
   /** 批量"同时删除本地文件"—— 物理 unlink + 硬删 DB 行 */
   batchDeleteWithFiles(input: { ids: number[] }): Promise<
     Result<{ deletedIds: number[]; fileDeleted: number; fileMissing: number }>
   >;
+  /** 列出所有分组（文件夹）+ 计数 + 封面（首页文件夹卡用） */
+  listGroups(): Promise<Result<Array<{ name: string; count: number; cover: string | null }>>>;
+  /** 把若干图片归入分组 group（null=移出回首页）；物理同步移动源文件到 groups/<名>/ */
+  setGroup(input: { imageIds: number[]; group: string | null }): Promise<Result<{ moved: number; failed: number }>>;
 }
 
 export interface GalleryListInput {
@@ -481,6 +764,14 @@ export interface GalleryListInput {
   include_deleted?: boolean;
   /** 按相册筛选（手动=成员匹配；智能=规则实时匹配） */
   album_id?: number;
+  /** 分组（文件夹）筛选：'__home__'=仅未分组散图 / '__all__'或缺省=不限 / 具名=该分组 */
+  group?: string;
+  /** 无限滚动分页：每页条数（默认 100） */
+  limit?: number;
+  /** 无限滚动分页：偏移量（默认 0） */
+  offset?: number;
+  /** 键集分页游标：只取 id 小于此值的行（抗删行/插行错位，资产库无限滚动用） */
+  before_id?: number;
 }
 
 export interface PromptAPI {
@@ -520,6 +811,15 @@ export interface ThemeAPI {
 // storage / exporter
 // ──────────────────────────────────────────────────────────
 
+export interface ShortcutsAPI {
+  /** 启动外部软件（侧栏快捷方式点击）；路径不存在 / 启动失败时返回 toast 级错误 */
+  launchExe(input: { exePath: string }): Promise<Result<true>>;
+  /** 取某 exe 的系统图标 → dataURI（失败返回 {dataUri:null}，前端回退首字母图标） */
+  getFileIcon(input: { filePath: string }): Promise<Result<{ dataUri: string | null }>>;
+  /** 用指定软件打开一个文件（拖图/文字到软件快捷方式 → 软件里编辑；.lnk 自动解析目标） */
+  openWith(input: { appPath: string; filePath: string }): Promise<Result<true>>;
+}
+
 export interface StorageAPI {
   selectFolder(): Promise<Result<{ path: string } | null>>;
   pickImages(): Promise<Result<{ files: Array<{ path: string; dataUri: string }> }>>;
@@ -541,16 +841,50 @@ export interface StorageAPI {
     dataUri: string;
     suggestedName?: string;
   }): Promise<Result<{ filePath: string }>>;
+  /** 把纯文本写到 userData/temp-refs/，返回真实磁盘路径（文字 → 用软件打开 / 放入文件夹） */
+  saveTempText(input: { text: string; suggestedName?: string }): Promise<Result<{ filePath: string }>>;
+  /** 批量探测路径是否存在 / 是否目录（侧栏拖文件夹自动添加快捷方式用） */
+  pathInfo(input: {
+    paths: string[];
+  }): Promise<Result<{ items: Array<{ path: string; exists: boolean; isDir: boolean }> }>>;
   /** 弹「另存为」对话框 + 写盘。用户取消返回 ok(null)。工具箱右键菜单用。 */
   saveAs(input: {
     dataUri: string;
     defaultName: string;
     filters?: Array<{ name: string; extensions: string[] }>;
   }): Promise<Result<{ filePath: string } | null>>;
+  /** 把智能画布图片节点的大 base64 落盘到 userData/canvas-assets（sha1 去重），返回磁盘路径，
+   *  用于持久化前外置 base64、避免撑爆 localStorage 配额。 */
+  saveCanvasAsset(input: { dataUri: string }): Promise<Result<{ filePath: string }>>;
+  /** 列出文件夹中的图片/视频文件（folder-input 节点扫描；只回元数据不回字节；kinds 缺省=仅图片） */
+  listImages(input: {
+    dir: string;
+    kinds?: Array<'image' | 'video'>;
+  }): Promise<
+    Result<{ files: Array<{ path: string; name: string; size: number; mtime: number; kind?: 'image' | 'video' }> }>
+  >;
+  /** 批量把图片复制/写入到目标文件夹（folder-output 节点落盘；src=本地路径或 dataUri，重名自动 -2/-3） */
+  copyInto(input: {
+    targetDir: string;
+    items: Array<{ src: string; destName: string }>;
+    /** true=同名直接覆盖（缩略图重生成用）；缺省 false=重名自动 -2/-3 */
+    overwrite?: boolean;
+  }): Promise<Result<{ saved: Array<{ src: string; dest: string }>; failed: Array<{ src: string; error: string }> }>>;
   /** 在系统默认浏览器中打开 URL（参考来源 / 模型下载页 / 帮助文档 用） */
   openUrl(url: string): Promise<Result<true>>;
   /** 扫描 lora_folder_path 目录列出 .safetensors / .pt / .ckpt 文件 */
   scanLoras(): Promise<Result<Array<{ name: string; path: string; sizeBytes: number }>>>;
+  /** 打开软件配置文件夹（userData，含数据库 / 节点模板 / 临时文件），返回其绝对路径 */
+  openConfigFolder(): Promise<Result<{ path: string }>>;
+}
+
+// ──────────────────────────────────────────────────────────
+// web —— 网页预览抓取（外置提示词库封面自动获取）
+// ──────────────────────────────────────────────────────────
+
+export interface WebAPI {
+  /** 抓取网页的 og:image 封面 + og:title 标题（主进程抓取避开 CORS；封面压成 512 webp dataURI）。 */
+  pagePreview(input: { url: string }): Promise<Result<{ title?: string; cover?: string }>>;
 }
 
 // ──────────────────────────────────────────────────────────
@@ -758,176 +1092,8 @@ export interface UpscaleInstallProgressPayload {
   total: number;
 }
 
-// ──────────────────────────────────────────────────────────
-// HYPIR（AI 高质量修复放大模式）—— 启动前依赖检查
-// ──────────────────────────────────────────────────────────
-
-export interface HypirDependencyCheck {
-  ready: boolean;
-  python: {
-    found: boolean;
-    path: string | null;
-    version: string | null;
-    versionOk: boolean;
-  };
-  cuda: {
-    nvidiaSmi: boolean;
-    driverVersion: string | null;
-    cudaVersion: string | null;
-  };
-  torch: {
-    installed: boolean;
-    version: string | null;
-    cudaAvailable: boolean;
-  };
-  hypirRepo: { importable: boolean };
-  weights: {
-    hypirPath: string | null;
-    hypirExists: boolean;
-    sd21Path: string | null;
-    sd21Exists: boolean;
-  };
-  guides: {
-    hypirRepo: string;
-    sd21: string;
-    pytorchInstall: string;
-    cuda: string;
-  };
-}
-
-export interface HypirAPI {
-  /** [兼容] 旧的"系统级"依赖探测；UI 在没装 portable 时降级用 */
-  check(input?: {
-    pythonPath?: string;
-    hypirWeightsPath?: string;
-    sd21Path?: string;
-  }): Promise<Result<HypirDependencyCheck>>;
-  /** 探测便携包结构（bat / python / 源码 / 权重 / SD21 是否齐全） */
-  probe(): Promise<Result<HypirPortableProbe>>;
-  /** 改 portable 包路径；空字符串清回默认 */
-  setPortablePath(input: { path: string }): Promise<Result<true>>;
-  /** 把内置脚手架（bat + hypir_server + config + README）展开到 portablePath */
-  bootstrap(): Promise<Result<{ root: string; copied: number; skipped: number }>>;
-  /** spawn start_hypir.bat */
-  startServer(): Promise<Result<{ alreadyRunning: boolean; pid: number | null; port: number }>>;
-  /** graceful shutdown + 兜底强杀 */
-  stopServer(): Promise<Result<{ stopped: boolean }>>;
-  /** ping http://127.0.0.1:port/api/status */
-  serverStatus(): Promise<Result<HypirServerStatus>>;
-  /** 提交放大任务；进度走 'hypir:progress' 推送 */
-  submitTask(input: {
-    inputPath: string;
-    outputPath?: string;
-    scale: number;
-    prompt?: string;
-    negativePrompt?: string;
-    seed?: number;
-    tileSize?: number;
-    device?: 'cuda' | 'cpu';
-    intensity?: 'conservative' | 'standard' | 'strong';
-    highlightProtection?: boolean;
-    disablePostsharpen?: boolean;
-    /** 修复深度 50–400；改值会触发约 30s 的模型重加载 */
-    restorationDepth?: number;
-  }): Promise<Result<{ taskId: string; status: string }>>;
-  taskStatus(input: { taskId: string }): Promise<Result<HypirTaskStatusRaw>>;
-  cancelTask(input: { taskId: string }): Promise<Result<true>>;
-  /** 从显存释放模型；server 进程继续运行，下次任务再按需加载 */
-  unloadModel(): Promise<Result<{ unloaded: boolean; modelLoaded: boolean; vramUsedMb: number | null }>>;
-}
-
-/** 推理结果元数据(HYPIR 用,SUPIR 已砍) */
-export interface UpscaleResultInfo {
-  output_path?: string;
-  duration_seconds?: number;
-  width?: number;
-  height?: number;
-  input_width?: number;
-  input_height?: number;
-  intensity?: string;
-  blend_alpha?: number;
-  highlight_protection?: boolean;
-  num_steps?: number;
-  cfg_scale?: number;
-  restoration_scale?: number;
-  color_fix?: string;
-  model_t?: number;       // HYPIR only
-  coeff_t?: number;       // HYPIR only
-}
-
-export interface HypirPortableProbe {
-  configured: boolean;
-  portablePath: string;
-  exists: boolean;
-  python: { exists: boolean; path: string };
-  hypirSource: { exists: boolean; path: string };
-  hypirWeights: { exists: boolean; path: string; sizeBytes: number };
-  sd21Base: { exists: boolean; path: string };
-  bats: {
-    startExists: boolean;
-    stopExists: boolean;
-    testExists: boolean;
-    installExists: boolean;
-  };
-  configPort: number;
-  serverScaffoldExists: boolean;
-  scaffoldSource: string;
-}
-
-export interface HypirServerStatus {
-  reachable: boolean;
-  port: number;
-  raw?: {
-    server?: string;
-    model_loaded?: boolean;
-    queue_size?: number;
-    active_tasks?: number;
-    probe?: {
-      hypir_source: boolean;
-      hypir_weights: boolean;
-      sd21_base: boolean;
-      torch_installed: boolean;
-      cuda_available: boolean;
-      gpu_name: string | null;
-      vram_total_mb: number | null;
-      vram_used_mb?: number | null;
-      loaded_model_t?: number | null;
-      loaded_coeff_t?: number | null;
-    };
-    version?: string;
-  };
-  error?: string;
-}
-
-export interface HypirTaskStatusRaw {
-  task_id: string;
-  status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
-  progress: number;
-  message: string;
-  output_path: string;
-  error_code: string | null;
-  error_message_zh: string | null;
-  error_hint: string | null;
-  error_detail: string | null;
-  duration_seconds?: number | null;
-  result_info?: UpscaleResultInfo;
-}
-
-export interface HypirProgressPayload {
-  taskId: string;
-  percent: number;
-  message: string;
-  status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
-  outputPath?: string;
-  errorCode?: AppErrorCode | null;
-  rawErrorCode?: string | null;
-  errorMessageZh?: string | null;
-  errorHint?: string | null;
-  durationSeconds?: number | null;
-  resultInfo?: UpscaleResultInfo | null;
-}
-
-// SUPIR Portable 类型已整体砍除(2026-05-29 — 显存需求 25-30 GB 过大)
+// HYPIR（AI 修复放大）/ SUPIR Portable / 通用 AI 平台底座 类型
+// 已整体砍除（SUPIR 2026-05-29、HYPIR + ai-platform 2026-06-18）
 
 // ──────────────────────────────────────────────────────────
 // 图像转矢量（api:vec:*） 最终 2 模式 (2026-05-28)
@@ -972,6 +1138,8 @@ export interface VTracerParams {
   pathPrecision?: number;
   maxPaths?: number;
   colorMergeDelta?: number;
+  /** 路径拟合模式: 'spline'(默认/最平滑) | 'polygon'(硬边) | 'none'(不简化) */
+  pathMode?: 'none' | 'polygon' | 'spline';
 }
 
 export interface PotraceParams {
@@ -980,7 +1148,11 @@ export interface PotraceParams {
   turdSize?: number;
   alphaMax?: number;
   optCurve?: boolean;
-  optTolerance?: boolean | number;
+  optTolerance?: number;
+  /** 描线填充色: 'auto'(默认) 或 '#rrggbb' */
+  color?: string;
+  /** 背景色: 'transparent'(默认) 或 '#rrggbb' */
+  background?: string;
 }
 
 export type VecParams = VTracerParams | PotraceParams;
@@ -1174,127 +1346,12 @@ export interface VecAPI {
   debugOpen(input: { reportDir?: string }): Promise<Result<{ ok: boolean }>>;
 }
 
-// ──────────────────────────────────────────────────────────
-// 通用 AI 平台底座（api:ai-feature:* + api:ai-model:*）
-// ──────────────────────────────────────────────────────────
-
-export type AiFeatureCategory =
-  | 'image-restore'
-  | 'image-to-svg'
-  | 'image-gen'
-  | 'image-segment'
-  | 'image-caption'
-  | 'other';
-
-export interface AiModelSpec {
-  id: string;
-  displayName: string;
-  licenseNote: string;
-  relPath: string;
-  isDirectory: boolean;
-  expectedBytes: number;
-  sources: Array<{ name: string; url: string; mirror?: boolean }>;
-  usedBy: string[];
-}
-
-export interface AiModelProbe {
-  id: string;
-  exists: boolean;
-  path: string;
-  sizeBytes: number;
-  sizeMismatch?: boolean;
-}
-
-export interface AiFeatureSpec {
-  id: string;
-  displayName: string;
-  description: string;
-  category: AiFeatureCategory;
-  port: number;
-  startBat: string;
-  stopBat: string;
-  installBats: string[];
-  serverScaffoldRelPath: string;
-  requiredModelIds: string[];
-  experimental?: boolean;
-}
-
-export interface AiFeatureProbe {
-  id: string;
-  portablePath: string;
-  portableExists: boolean;
-  pythonExists: boolean;
-  pythonPath: string;
-  startBatExists: boolean;
-  stopBatExists: boolean;
-  installBatsExist: Record<string, boolean>;
-  serverScaffoldExists: boolean;
-  port: number;
-  models: Record<string, AiModelProbe>;
-  scaffoldSource: string;
-}
-
-export interface AiFeatureStatus {
-  id: string;
-  displayName: string;
-  category: AiFeatureCategory;
-  experimental: boolean;
-  installed: boolean;
-  serverRunning: boolean;
-  missingModelIds: string[];
-  missingSystem: string[];
-  summary: string;
-  probe: AiFeatureProbe;
-}
-
-export interface AiFeatureInstallProgress {
-  jobId: string;
-  featureId: string;
-  stage: string;
-  message: string;
-  percent?: number;
-}
-
-export interface AiFeatureAPI {
-  list(): Promise<Result<AiFeatureStatus[]>>;
-  status(input: { featureId: string }): Promise<Result<AiFeatureStatus>>;
-  probe(input: { featureId: string }): Promise<Result<AiFeatureProbe>>;
-  start(input: { featureId: string }): Promise<Result<{ alreadyRunning: boolean; pid: number | null; port: number }>>;
-  stop(input: { featureId: string }): Promise<Result<{ stopped: boolean }>>;
-  serverStatus(input: { featureId: string }): Promise<Result<{ reachable: boolean; port: number; raw?: Record<string, unknown>; error?: string }>>;
-  unloadModel(input: { featureId: string }): Promise<Result<Record<string, unknown>>>;
-  bootstrap(): Promise<Result<{ root: string; copied: number; skipped: number }>>;
-  setPortablePath(input: { path: string }): Promise<Result<{ saved: boolean }>>;
-  install(input: { featureId: string; jobId: string }): Promise<Result<{ featureId: string; steps: number }>>;
-  cancelInstall(input: { featureId: string }): Promise<Result<{ cancelled: boolean }>>;
-  /** 一键清理:所有 sidecar 走 /api/cleanup;unloadModels=true 时同时卸载模型 */
-  cleanupAll(input: { unloadModels: boolean }): Promise<Result<AiCleanupResult>>;
-}
-
-export interface AiCleanupResult {
-  results: Array<{
-    featureId: string;
-    reachable: boolean;
-    vramBeforeMb: number | null;
-    vramAfterMb: number | null;
-    vramFreedMb: number | null;
-    modelLoaded: boolean;
-    unloaded: boolean;
-  }>;
-  totalFreedMb: number;
-  unloadedCount: number;
-  reachableCount: number;
-}
-
-export interface AiModelAPI {
-  list(): Promise<Result<Array<{ spec: AiModelSpec; probe: AiModelProbe }>>>;
-  get(input: { modelId: string }): Promise<Result<{ spec: AiModelSpec; probe: AiModelProbe }>>;
-  listForFeature(input: { featureId: string }): Promise<Result<Array<{ spec: AiModelSpec; probe: AiModelProbe }>>>;
-}
+// 通用 AI 平台底座（api:ai-feature:* + api:ai-model:*）类型
+// 已随 HYPIR 整体砍除（2026-06-18）
 
 // VectorizeConfig 已随矢量化功能整体移除。
 
-/** 工具箱图库导入入口（虽然定义在 gallery 命名下，但只工具箱用） */
+/** 工具箱资产库导入入口（虽然定义在 gallery 命名下，但只工具箱用） */
 export interface GalleryImportFromBufferInput {
   dataUri: string;
   kind: 'upscale' | 'vectorize' | 'imported';
@@ -1312,6 +1369,8 @@ export interface WindowAPI {
   maximizeToggle(): Promise<Result<{ maximized: boolean }>>;
   close(): Promise<Result<true>>;
   state(): Promise<Result<{ maximized: boolean }>>;
+  /** 任务完成时让任务栏图标闪烁/标黄提醒（仅窗口未聚焦时生效，聚焦即自动清除） */
+  flash(): Promise<Result<true>>;
   /** 整窗界面缩放（renderer 本地 webFrame，同步）。1=100%；setZoom 返回 clamp 后实际系数。 */
   getZoom(): number;
   setZoom(factor: number): number;

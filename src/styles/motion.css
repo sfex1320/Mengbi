@@ -1,0 +1,148 @@
+/**
+ * 全局微交互动效（2026-06-22）——风格「克制·快」：120–180ms、scale 1.01–1.02、淡入 + 轻微位移，无明显回弹。
+ *
+ * 覆盖（用户选定）：① 按钮/卡片 微交互 ② 弹窗/面板 开合 ③ 列表/网格 进出 ④ 页面切换 + Toast（页面切换在 App.tsx，Toast 本就有 spring）。
+ *
+ * 性能闸门（用户决策：低配完全关闭新动效）：
+ *  - 所有规则前缀 `html:not([data-perf='low'])` —— 性能模式=低配（html data-perf="low"）时整段不生效（无过渡、无入场动画）。
+ *    注意必须「不应用」而非「animation-play-state:paused」：后者会把入场动画停在第 0 帧（opacity:0）导致元素隐身。
+ *  - `@media (prefers-reduced-motion: reduce)` 同样整段关闭（无障碍/省电）。
+ *
+ * 定位安全：中心悬浮窗（.mb-sc-glp/.mb-sc-tplp）靠 transform: translate(-50%,-50%) 居中，
+ * 入场关键帧必须保留该位移（mb-pop-center），不能用普通 translateY 关键帧（会冲掉居中 → 弹窗错位）。
+ */
+
+@keyframes mb-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes mb-pop-center {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+@keyframes mb-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes mb-rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ── ① 按钮微交互：hover 轻抬升、按下回弹 ── */
+html:not([data-perf='low']) .mb-btn {
+  transition:
+    transform 130ms var(--mb-ease),
+    box-shadow 130ms var(--mb-ease),
+    background-color 130ms var(--mb-ease),
+    border-color 130ms var(--mb-ease),
+    color 130ms var(--mb-ease),
+    opacity 130ms var(--mb-ease);
+}
+html:not([data-perf='low']) .mb-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+html:not([data-perf='low']) .mb-btn:active:not(:disabled) {
+  transform: translateY(0) scale(0.97);
+  transition-duration: 60ms;
+}
+
+/* ── ① 可点击卡片：hover 抬升 + 阴影，按下回弹 ── */
+html:not([data-perf='low']) .mb-gallery-card,
+html:not([data-perf='low']) .mb-prompt-card,
+html:not([data-perf='low']) .mb-sc-tplp-card,
+html:not([data-perf='low']) .mb-sc-ppick-item,
+html:not([data-perf='low']) .mb-sc-gpick-item,
+html:not([data-perf='low']) .mb-sc-rcard,
+html:not([data-perf='low']) .mb-provider-card {
+  transition:
+    transform 150ms var(--mb-ease),
+    box-shadow 150ms var(--mb-ease),
+    border-color 150ms var(--mb-ease),
+    background-color 150ms var(--mb-ease);
+}
+html:not([data-perf='low']) .mb-gallery-card:hover,
+html:not([data-perf='low']) .mb-prompt-card:hover,
+html:not([data-perf='low']) .mb-sc-tplp-card:hover,
+html:not([data-perf='low']) .mb-sc-ppick-item:hover,
+html:not([data-perf='low']) .mb-sc-gpick-item:hover,
+html:not([data-perf='low']) .mb-sc-rcard:hover,
+html:not([data-perf='low']) .mb-provider-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+}
+html:not([data-perf='low']) .mb-gallery-card:active,
+html:not([data-perf='low']) .mb-prompt-card:active,
+html:not([data-perf='low']) .mb-sc-tplp-card:active,
+html:not([data-perf='low']) .mb-sc-ppick-item:active,
+html:not([data-perf='low']) .mb-sc-gpick-item:active,
+html:not([data-perf='low']) .mb-provider-card:active {
+  transform: translateY(0) scale(0.985);
+  transition-duration: 70ms;
+}
+
+/* ── ② 弹窗 / 面板 开合（入场）── */
+/* flex 居中的模态（.mb-modal：所有 Modal + 提示词库/选图弹窗/设置模态/图片编辑器都套它或自带）*/
+html:not([data-perf='low']) .mb-modal,
+html:not([data-perf='low']) .mb-sc-imgedit {
+  animation: mb-pop-in 165ms var(--mb-ease);
+}
+html:not([data-perf='low']) .mb-modal-backdrop {
+  animation: mb-fade-in 150ms ease;
+}
+/* transform 居中的中心悬浮窗（保留 translate(-50%,-50%)）*/
+html:not([data-perf='low']) .mb-sc-glp.mb-card,
+html:not([data-perf='low']) .mb-sc-tplp.mb-card,
+html:not([data-perf='low']) .mb-sc-textviewer.mb-card {
+  animation: mb-pop-center 165ms var(--mb-ease);
+}
+
+/* ── ③ 列表/网格 进出：给容器一个轻量入场（面板里的网格随面板出现时再轻轻上浮一档）── */
+html:not([data-perf='low']) .mb-anim-rise {
+  animation: mb-rise-in 200ms var(--mb-ease);
+}
+
+/* 无障碍 / 省电：系统开了「减少动态效果」整段关闭本文件的新动效。 */
+@media (prefers-reduced-motion: reduce) {
+  .mb-btn,
+  .mb-gallery-card,
+  .mb-prompt-card,
+  .mb-sc-tplp-card,
+  .mb-sc-ppick-item,
+  .mb-sc-gpick-item,
+  .mb-sc-rcard,
+  .mb-provider-card {
+    transition: none !important;
+  }
+  .mb-modal,
+  .mb-sc-imgedit,
+  .mb-modal-backdrop,
+  .mb-sc-glp.mb-card,
+  .mb-sc-tplp.mb-card,
+  .mb-sc-textviewer.mb-card,
+  .mb-anim-rise {
+    animation: none !important;
+  }
+}

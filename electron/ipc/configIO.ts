@@ -30,6 +30,12 @@ import { getDb } from '../services/db';
 import { encryptString, decryptString } from '../services/safeStorage';
 import { logger } from '../services/logger';
 import { makeError } from '@shared/error';
+import { normalizeVideoKind } from '@shared/domain';
+import {
+  listNodeTemplates,
+  importNodeTemplates,
+  type StoredTemplate
+} from '../services/nodeTemplateStore';
 
 const gzip = promisify(zlib.gzip);
 const gunzip = promisify(zlib.gunzip);
@@ -47,6 +53,7 @@ interface SectionsFlag {
   plans: boolean;
   appearance: boolean;
   prompts: boolean;
+  nodeTemplates: boolean;
 }
 
 interface InnerBundle {
@@ -57,6 +64,7 @@ interface InnerBundle {
   promptCategories?: Array<Record<string, unknown>>;
   prompts?: Array<Record<string, unknown>>;
   albums?: Array<Record<string, unknown>>;
+  nodeTemplates?: StoredTemplate[];
 }
 
 function deriveKey(password: string, salt: Buffer): Buffer {
@@ -67,7 +75,7 @@ function deriveKey(password: string, salt: Buffer): Buffer {
   });
 }
 
-function buildExportBundle(sections: SectionsFlag): InnerBundle {
+async function buildExportBundle(sections: SectionsFlag): Promise<InnerBundle> {
   const db = getDb();
   const bundle: InnerBundle = {};
 
@@ -82,6 +90,7 @@ function buildExportBundle(sections: SectionsFlag): InnerBundle {
                 api_key_encrypted, model_mapping, is_official,
                 supports_web_search, supports_vision,
                 official_kind, image_kind, video_kind, body_overrides_json,
+                header_overrides_json,
                 comfyui_workflow_json, local_model_path,
                 supports_thinking, thinking_effort,
                 icon, proxy_timeout_seconds, created_at
@@ -147,6 +156,11 @@ function buildExportBundle(sections: SectionsFlag): InnerBundle {
       .all() as Array<Record<string, unknown>>;
   }
 
+  // 节点模板：读 userData/node-templates/ 下的 .json（与 DB 无关）
+  if (sections.nodeTemplates) {
+    bundle.nodeTemplates = await listNodeTemplates();
+  }
+
   return bundle;
 }
 
@@ -158,6 +172,7 @@ interface ImportStats {
   promptsImported: number;
   albumsImported: number;
   settingsImported: number;
+  nodeTemplatesImported: number;
 }
 
 function applyImport(
@@ -173,7 +188,8 @@ function applyImport(
     promptCategoriesImported: 0,
     promptsImported: 0,
     albumsImported: 0,
-    settingsImported: 0
+    settingsImported: 0,
+    nodeTemplatesImported: 0
   };
 
   db.transaction(() => {
@@ -218,10 +234,10 @@ function applyImport(
           `INSERT INTO api_configs(
              plan_id, type, provider_name, base_url, api_key_encrypted,
              model_mapping, is_official, supports_web_search, supports_vision,
-             official_kind, image_kind, video_kind, body_overrides_json, comfyui_workflow_json,
+             official_kind, image_kind, video_kind, body_overrides_json, header_overrides_json, comfyui_workflow_json,
              local_model_path, supports_thinking, thinking_effort,
              icon, proxy_timeout_seconds, created_at
-           ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         );
         const findConfig = db.prepare(
           `SELECT id FROM api_configs
@@ -252,10 +268,9 @@ function applyImport(
             Number(c.supports_vision ?? 0),
             (c.official_kind as string) ?? null,
             (c.image_kind as string) ?? null,
-            c.video_kind === 'kling' || c.video_kind === 'sora' || c.video_kind === 'unified'
-              ? c.video_kind
-              : null,
+            normalizeVideoKind(c.video_kind),
             (c.body_overrides_json as string) ?? null,
+            (c.header_overrides_json as string) ?? null,
             (c.comfyui_workflow_json as string) ?? null,
             (c.local_model_path as string) ?? null,
             Number(c.supports_thinking ?? 0),
@@ -418,12 +433,13 @@ export function registerConfigIOHandlers(): void {
       sections: z.object({
         plans: z.boolean(),
         appearance: z.boolean(),
-        prompts: z.boolean()
+        prompts: z.boolean(),
+        nodeTemplates: z.boolean()
       })
     }),
     async (input) => {
       try {
-        const bundle = buildExportBundle(input.sections);
+        const bundle = await buildExportBundle(input.sections);
         const json = JSON.stringify(bundle);
         const compressed = await gzip(Buffer.from(json, 'utf-8'));
 
@@ -543,7 +559,8 @@ export function registerConfigIOHandlers(): void {
             promptCategories: bundle.promptCategories?.length ?? 0,
             prompts: bundle.prompts?.length ?? 0,
             albums: bundle.albums?.length ?? 0,
-            settings: bundle.settings ? Object.keys(bundle.settings).length : 0
+            settings: bundle.settings ? Object.keys(bundle.settings).length : 0,
+            nodeTemplates: bundle.nodeTemplates?.length ?? 0
           }
         });
       } catch (e) {
@@ -567,7 +584,8 @@ export function registerConfigIOHandlers(): void {
       sections: z.object({
         plans: z.boolean(),
         appearance: z.boolean(),
-        prompts: z.boolean()
+        prompts: z.boolean(),
+        nodeTemplates: z.boolean()
       })
     }),
     async (input) => {
@@ -608,6 +626,18 @@ export function registerConfigIOHandlers(): void {
         const bundle = JSON.parse(decompressed.toString('utf-8')) as InnerBundle;
 
         const stats = applyImport(bundle, input.mergeStrategy, input.sections);
+
+        // 节点模板写文件（在 DB 事务之外，因为是异步 fs 写）
+        if (input.sections.nodeTemplates && bundle.nodeTemplates?.length) {
+          try {
+            stats.nodeTemplatesImported = await importNodeTemplates(
+              bundle.nodeTemplates,
+              input.mergeStrategy
+            );
+          } catch (e) {
+            logger.warn(`[configIO] node template import failed: ${(e as Error).message}`);
+          }
+        }
         return ok({ stats });
       } catch (e) {
         logger.error('config import failed', e);

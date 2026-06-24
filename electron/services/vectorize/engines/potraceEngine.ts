@@ -52,8 +52,8 @@ export class PotraceEngine implements EngineRunner {
         alphaMax: params.alphaMax ?? 1.0,
         optCurve: params.optCurve ?? true,
         optTolerance: params.optTolerance ?? 0.2,
-        color: 'auto',
-        background: 'transparent'
+        color: params.color ?? 'auto',
+        background: params.background ?? 'transparent'
       };
 
       const svg: string = await new Promise((resolve, reject) => {

@@ -1,11 +1,11 @@
 /**
- * 图库缩略图生成 / 路径解析。
+ * 资产库缩略图生成 / 路径解析。
  *
  * 设计：
  *   原图：    {root}/{date:YYYY-MM-DD}/{base}.{ext}
  *   缩略图：  {root}/{date:YYYY-MM-DD}/.thumbs/{base}.webp
  *
- * - 基础名相同（taskId-seq / hypir-xxx / upscale-yyy 都按原图基础名走）
+ * - 基础名相同（taskId-seq / upscale-yyy 都按原图基础名走）
  * - 缩略图统一 WebP（最长边 512px，质量 80，progressive）
  * - 缩略图体积通常 ~5-40KB，60 张图加载从 ~300MB 降到 ~3MB
  * - `.thumbs/` 用 dot 开头：Mac Finder / Linux 文件管理器默认隐藏，不打扰用户
@@ -58,7 +58,11 @@ export async function generateThumbnail(originalPath: string): Promise<string | 
 
     await fs.mkdir(path.dirname(out), { recursive: true });
 
-    await sharp(originalPath, { failOn: 'none' })
+    // limitInputPixels:false —— 解除 sharp 默认 ~268MP（16383²）像素上限，
+    //   否则用户生成/放大出的「几万×几万」超大图会直接抛错 → 无缩略图 → 各处封面回退渲染原图 → 卡死。
+    // sequentialRead:true —— 让 libvips 按扫描线流式缩放，峰值内存只占几行而非整张光栅，
+    //   30000² 这种巨图也不会把整张读进内存导致 OOM。
+    await sharp(originalPath, { failOn: 'none', limitInputPixels: false, sequentialRead: true })
       .rotate() // 应用 EXIF 旋转
       .resize({
         width: THUMB_MAX_EDGE,
@@ -86,7 +90,7 @@ export async function ensureThumbnail(originalPath: string): Promise<string | nu
   return generateThumbnail(originalPath);
 }
 
-// ── lazy backfill：图库 list 时发现 thumbnail_path 缺失就排队补 ──
+// ── lazy backfill：资产库 list 时发现 thumbnail_path 缺失就排队补 ──
 
 type BackfillJob = {
   imageId: number;

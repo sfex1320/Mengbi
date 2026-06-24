@@ -15,6 +15,7 @@ import type {
   VecMode
 } from '../types';
 import { logger } from '../../logger';
+import { resolvePathSimplifyMode } from './pathSimplifyMode';
 
 const ID: VecMode = 'vtracer';
 
@@ -49,7 +50,7 @@ export class VTracerEngine implements EngineRunner {
       const config: Record<string, unknown> = {
         colorMode: params.colorMode === 'binary' ? mod.ColorMode.Binary : mod.ColorMode.Color,
         hierarchical: params.hierarchical === 'cutout' ? mod.Hierarchical.Cutout : mod.Hierarchical.Stacked,
-        mode: mod.PathSimplifyMode.Spline,
+        mode: resolvePathSimplifyMode(params.pathMode, mod.PathSimplifyMode),
         filterSpeckle: params.filterSpeckle ?? 4,
         colorPrecision: params.colorPrecision ?? 8,
         layerDifference: params.layerDifference ?? 16,

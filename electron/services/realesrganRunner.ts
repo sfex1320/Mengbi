@@ -365,8 +365,34 @@ function runOneImage(
     });
     state.proc = proc;
 
+    // 看门狗：超过 IDLE_KILL_MS 完全没有 stderr 输出（进度/诊断）即视为挂死
+    // （Vulkan 驱动死锁 / GPU hang 时外部 exe 既不退出也不报错也不输出）——杀掉并报错，
+    // 否则会永久阻塞主进程里的串行放大队列。正常运行时 ncnn 持续打印 'XX.XX%'，每条都重置计时。
+    const IDLE_KILL_MS = 300_000;
+    let watchdog: ReturnType<typeof setTimeout> | null = null;
+    let timedOut = false;
+    const bumpWatchdog = (): void => {
+      if (watchdog) clearTimeout(watchdog);
+      watchdog = setTimeout(() => {
+        timedOut = true;
+        try {
+          proc.kill();
+        } catch {
+          /* 进程可能已退出 */
+        }
+      }, IDLE_KILL_MS);
+    };
+    const clearWatchdog = (): void => {
+      if (watchdog) {
+        clearTimeout(watchdog);
+        watchdog = null;
+      }
+    };
+    bumpWatchdog();
+
     let stderrBuf = '';
     proc.stderr.on('data', (b: Buffer) => {
+      bumpWatchdog();
       const s = b.toString();
       stderrBuf += s;
       // 每一行可能是 'XX.XX%' 或诊断消息；批量推到 progress
@@ -385,11 +411,18 @@ function runOneImage(
       }
     });
     proc.on('error', (e) => {
+      clearWatchdog();
       state.proc = null;
       reject(new Error(`spawn 失败：${e.message}`));
     });
     proc.on('close', (code, signal) => {
+      clearWatchdog();
       state.proc = null;
+      if (timedOut) {
+        fs.unlink(outputPath).catch(() => undefined);
+        reject(new Error('放大超时（5 分钟无进度，疑似引擎/显卡挂起，已自动终止）— 可尝试调小 tile 或检查 Vulkan 驱动'));
+        return;
+      }
       if (state.cancelled) {
         // 清掉可能的半截输出
         fs.unlink(outputPath).catch(() => undefined);

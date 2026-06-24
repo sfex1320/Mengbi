@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { useThemeStore } from '@/store/themeStore';
 import {
@@ -15,13 +15,27 @@ import { Modal } from '@/components/Modal';
 import { openContextMenu } from '@/components/ContextMenu';
 import { AboutSection } from './AboutSection';
 import { OnnxModelsField } from './OnnxModelsField';
+import { VideoProvidersCenter } from './VideoProvidersCenter';
 // VecModelManager 已随矢量化功能整体移除，待重做
 import {
   ProviderIcon,
   PROVIDER_PRESETS,
   guessProviderIcon
 } from '@/lib/providerIcons';
+import { parsePlanIcons, planIconOf } from '@/lib/planIcon';
+import {
+  voiceNotifyEnabled,
+  parsePhrases,
+  defaultPhrase,
+  speakText,
+  VOICE_TASK_NAMES,
+  type VoiceTaskKey,
+  type VoicePhrase
+} from '@/lib/voiceNotify';
 import { detectModelCapabilities, summarizeCapabilities } from '@/lib/modelCapabilities';
+import { protocolToOfficialKind } from '@/lib/relayProtocol';
+import { ConfigAgentPanel } from './ConfigAgentPanel';
+import { listMappedModels } from '@/lib/modelMapping';
 import { confirmDialog } from '@/components/ConfirmDialog';
 import {
   PlusIcon,
@@ -33,7 +47,8 @@ import {
   ZapIcon,
   EyeIcon,
   EyeOffIcon,
-  CopyIconShape
+  CopyIconShape,
+  SettingsIcon
 } from '@/components/Icon';
 import {
   ATMOSPHERES,
@@ -44,6 +59,7 @@ import {
   type Palette
 } from '@shared/theme';
 import type { ApiConfig, ApiConfigInput, ImageKind, OfficialKind, VideoKind } from '@shared/domain';
+import { suggestVideoKind } from '@shared/domain';
 import { detectProtocolFromUrl } from '@shared/protocolDetect';
 import { parseSdkSnippet } from '@/lib/sdkSnippetParser';
 import { getUpscaleModelMeta, groupModelsByCategory } from '@/lib/upscaleModelMeta';
@@ -61,34 +77,34 @@ import {
 } from '@shared/filenameTemplate';
 import './Settings.css';
 
+// 对话协议（按「绝大多数选第一个」排序，名字尽量直白）。值不变（向后兼容已存配置），仅重命名/收拢展示。
 const OFFICIAL_KINDS: Array<{ value: OfficialKind; label: string; hint: string }> = [
-  { value: null, label: '未指定（按 OpenAI 默认）', hint: '基本等同 openai-compat。' },
   {
-    value: 'openai',
-    label: 'OpenAI API（事实标准）',
-    hint: 'POST /v1/chat/completions · Authorization: Bearer ...'
+    value: 'openai-compat',
+    label: '通用（默认 · 绝大多数都选这个）',
+    hint: '各类中转站 + Kimi / DeepSeek / 智谱 / MiniMax / 通义 等都用它。POST /v1/chat/completions'
   },
   {
     value: 'anthropic',
-    label: 'Anthropic API（Claude messages）',
-    hint: 'POST /v1/messages · x-api-key + anthropic-version: 2023-06-01'
+    label: 'Claude（Anthropic 协议）',
+    hint: '仅 Claude 的 messages 协议用它。POST /v1/messages（x-api-key + anthropic-version）'
   },
   {
     value: 'gemini',
-    label: 'Google Gemini API',
-    hint: '走 /v1beta/openai/chat/completions 的 OpenAI 兼容入口（key 直接当 Bearer）'
-  },
-  {
-    value: 'openai-compat',
-    label: 'OpenAI 兼容（vLLM / Ollama / 中转站）',
-    hint: '路径同 OpenAI 标准；Kimi / DeepSeek / 智谱 / MiniMax 都归到这一类'
+    label: 'Gemini（Google）',
+    hint: '走 Gemini 的 OpenAI 兼容入口（/v1beta/openai/...，key 当 Bearer）'
   },
   {
     value: 'local',
-    label: '本地（llama.cpp / Ollama / LM Studio）',
-    hint:
-      '选一个 .gguf 文件由梦笔内嵌 llama-cpp 启动；或填外部已运行服务 URL 直接连。'
-  }
+    label: '本地模型（离线 · 无需联网）',
+    hint: '选一个 .gguf 由梦笔内嵌运行；或填本地已起服务地址（Ollama / LM Studio）'
+  },
+  {
+    value: 'openai',
+    label: 'OpenAI 官方（仅 o1 / o3 思考模型需要）',
+    hint: '只有 OpenAI 官方的 o1 / o3 等思考模型选它；其它一律用「通用」'
+  },
+  { value: null, label: '自动（= 通用）', hint: '不确定就用「通用」即可' }
 ];
 
 /** 视频协议变种下拉（仅 type='video' 用）。视频几乎全异步：提交→轮询→取 mp4→下载。 */
@@ -107,6 +123,31 @@ const VIDEO_KINDS: Array<{ value: VideoKind; label: string; hint: string }> = [
     value: 'unified',
     label: '聚合站统一端点',
     hint: 'POST {base}/video/generations（model 区分各家）→ 轮询 → video.url / data[0].url。各站字段差异用「请求体覆盖」兜底。'
+  },
+  {
+    value: 'seedance',
+    label: 'APIMart Seedance 2.0（富能力适配器）',
+    hint: '统一请求 → 适配器映射 7 模式（文/图/首尾帧/参考图·视频·音频/有声/连续）。端点 + 模型能力/限制在下方「视频模型配置中心」配置，可恢复内置 Seedance 模板。模型映射填真实 id 如 doubao-seedance-2.0-fast。'
+  },
+  {
+    value: 'veo',
+    label: 'Google Veo（中转 OpenAI 兼容，适配器）',
+    hint: 'POST /v1/videos/generations（model/prompt/aspect_ratio/duration/generate_audio/first_frame/last_frame/reference_images）→ 轮询 /{id} → video.url。原生有声。模型映射填 veo-3.1 等。Google 官方直连协议不同，可在配置中心改端点或走中转。'
+  },
+  {
+    value: 'runway',
+    label: 'Runway Gen-4/Gen-3（官方/透传，适配器）',
+    hint: 'POST /runwayml/v1/{text_to_video|image_to_video}（camelCase；ratio 用分辨率串；必带 X-Runway-Version 头）→ 轮询 /runwayml/v1/tasks/{id} → output[0]。官方端点用 /v1（去掉 /runwayml 前缀）。模型映射填 gen4_turbo 等。'
+  },
+  {
+    value: 'fal',
+    label: 'fal.ai 队列（适配器）',
+    hint: 'POST queue.fal.run/{model_id}（鉴权 Authorization: Key；model_id 即路径，t2v/i2v 由 slug 区分）→ 轮询 status → 取结果 video.url。base_url 填 https://queue.fal.run，模型映射填完整 slug 如 fal-ai/kling-video/v2.1/master/text-to-video。'
+  },
+  {
+    value: 'custom',
+    label: '自定义中转站（适配器，基础预留）',
+    hint: '通用 body（model/prompt + 各类素材），端点 + 字段在「视频模型配置中心」配置，请求体覆盖兜底。'
   }
 ];
 
@@ -169,6 +210,83 @@ const PALETTE_PREVIEW: Record<Palette, string> = {
   cyan: 'linear-gradient(135deg, #67e8f9, #0e7490)'
 };
 
+/** 模型类型的展示元数据（中转站分组卡片用）。 */
+const CONFIG_TYPE_META: Record<'text' | 'image' | 'video', { icon: string; label: string }> = {
+  text: { icon: '💬', label: '对话' },
+  image: { icon: '🎨', label: '绘画' },
+  video: { icon: '🎬', label: '视频' }
+};
+
+/** 一个「中转站」= 共享同一 base_url 的若干配置（对话/绘画/视频各一条或多条）。 */
+interface ProviderGroup {
+  key: string;
+  name: string;
+  icon: string | null;
+  baseUrl: string;
+  /** 解密后的明文 Key（取组内第一条）；补能力时自动带入，免重输 */
+  apiKey: string;
+  /** 已按 对话→绘画→视频 排序 */
+  configs: ApiConfig[];
+}
+
+/** base_url 归一化：去首尾空格 + 去尾部斜杠 + 转小写（判定是否同一中转站）。 */
+function normalizeBaseUrl(u: string): string {
+  return (u || '').trim().replace(/\/+$/, '').toLowerCase();
+}
+
+/** 把配置按「中转站」（同 base_url）聚合。空地址（本地模型）各自独立成站。 */
+function groupConfigsByProvider(configs: ApiConfig[]): ProviderGroup[] {
+  const order: Record<string, number> = { text: 0, image: 1, video: 2 };
+  const map = new Map<string, ApiConfig[]>();
+  for (const c of configs) {
+    const nb = normalizeBaseUrl(c.base_url);
+    const key = nb ? `url:${nb}` : `local:${c.id}`;
+    const arr = map.get(key) ?? [];
+    arr.push(c);
+    map.set(key, arr);
+  }
+  const groups: ProviderGroup[] = [];
+  for (const [key, arr] of map) {
+    const sorted = arr.slice().sort((a, b) => (order[a.type] ?? 9) - (order[b.type] ?? 9));
+    const head = sorted[0];
+    groups.push({
+      key,
+      name: head.provider_name || '(未命名)',
+      icon: head.icon ?? guessProviderIcon({ providerName: head.provider_name, baseUrl: head.base_url }),
+      baseUrl: head.base_url,
+      apiKey: head.api_key_plain ?? '',
+      configs: sorted
+    });
+  }
+  return groups;
+}
+
+/** ApiConfig → ApiConfigInput（编辑预填 / 同步共享信息复用）。 */
+function configToInput(cfg: ApiConfig): ApiConfigInput {
+  return {
+    id: cfg.id,
+    plan_id: cfg.plan_id,
+    type: cfg.type,
+    provider_name: cfg.provider_name,
+    base_url: cfg.base_url,
+    api_key_plain: cfg.api_key_plain ?? '',
+    model_mapping: cfg.model_mapping ?? {},
+    is_official: cfg.is_official,
+    supports_web_search: cfg.supports_web_search,
+    supports_vision: cfg.supports_vision,
+    official_kind: cfg.official_kind,
+    image_kind: cfg.image_kind ?? null,
+    video_kind: cfg.video_kind ?? null,
+    body_overrides_json: cfg.body_overrides_json ?? null,
+    header_overrides_json: cfg.header_overrides_json ?? null,
+    comfyui_workflow_json: cfg.comfyui_workflow_json ?? null,
+    local_model_path: cfg.local_model_path ?? null,
+    supports_thinking: cfg.supports_thinking ?? false,
+    thinking_effort: cfg.thinking_effort ?? null,
+    icon: cfg.icon ?? null
+  };
+}
+
 export default function SettingsPage(): JSX.Element {
   const ui = useUIStore();
   const tab = ui.settingsTab;
@@ -184,6 +302,11 @@ export default function SettingsPage(): JSX.Element {
       <aside className="mb-settings-sidebar mb-card mb-marquee-glow">
         <h2 className="mb-settings-title">设置</h2>
         <SidebarItem label="模型方案" active={tab === 'plans'} onClick={() => setTab('plans')} />
+        <SidebarItem
+          label="智能化方案"
+          active={tab === 'intelligent'}
+          onClick={() => setTab('intelligent')}
+        />
         <SidebarItem
           label="外观"
           active={tab === 'appearance'}
@@ -208,6 +331,7 @@ export default function SettingsPage(): JSX.Element {
 
       <section className="mb-settings-content mb-card mb-marquee-glow">
         {tab === 'plans' && <PlansTab />}
+        {tab === 'intelligent' && <IntelligentTab />}
         {tab === 'appearance' && <AppearanceTab />}
         {tab === 'storage' && <StorageTab />}
         {tab === 'tools' && <ToolsTab />}
@@ -241,62 +365,82 @@ function SidebarItem({
 // ─────────────────────────────────────────────────────
 
 function PlansTab(): JSX.Element {
-  const { plans, configs, activePlanId, setActivePlanId, load } = useSettingsStore();
+  const { plans, configs, prefs, activePlanId, setActivePlanId, load } = useSettingsStore();
   const [planNameDraft, setPlanNameDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [editingDraft, setEditingDraft] = useState<ApiConfigInput | null>(null);
   const [editingExisting, setEditingExisting] = useState(false);
+  // 「三合一」统一编辑器：null=关闭；existing=该中转站名下全部配置，focus=进入时默认启用的块，
+  // officialDefault=新建时的分类默认（官方直连 true / 第三方 false）
+  const [providerEditing, setProviderEditing] = useState<{
+    existing: ApiConfig[];
+    focus?: 'image' | 'text' | 'video';
+    officialDefault?: boolean;
+  } | null>(null);
+  // 顶部「保存」按钮：命令式调用 ProviderEditor.save() + 跟随其 busy 禁用
+  const providerEditorRef = useRef<ProviderEditorHandle>(null);
+  const [providerBusy, setProviderBusy] = useState(false);
+  // 方案图标编辑：null=关闭；{planId,name}=打开编辑器
+  const [iconEditing, setIconEditing] = useState<{ planId: number; name: string } | null>(null);
+  const planIcons = parsePlanIcons(prefs.plan_icons_json);
 
   const activeConfigs = configs.filter((c) => c.plan_id === activePlanId);
 
-  function openEdit(cfg: ApiConfig): void {
-    setEditingExisting(true);
-    setEditingDraft({
-      id: cfg.id,
-      plan_id: cfg.plan_id,
-      type: cfg.type,
-      provider_name: cfg.provider_name,
-      base_url: cfg.base_url,
-      api_key_plain: cfg.api_key_plain ?? '', // 解密后的明文 Key 预填
-      model_mapping: cfg.model_mapping ?? {},
-      is_official: cfg.is_official,
-      supports_web_search: cfg.supports_web_search,
-      supports_vision: cfg.supports_vision,
-      official_kind: cfg.official_kind,
-      image_kind: cfg.image_kind ?? null,
-      video_kind: cfg.video_kind ?? null,
-      body_overrides_json: cfg.body_overrides_json ?? null,
-      comfyui_workflow_json: cfg.comfyui_workflow_json ?? null,
-      local_model_path: cfg.local_model_path ?? null,
-      supports_thinking: cfg.supports_thinking ?? false,
-      thinking_effort: cfg.thinking_effort ?? null,
-      icon: cfg.icon ?? null
-    });
+  /** 保存某方案的自定义图标（空串=恢复自动首字图标）。存 prefs.plan_icons_json，零迁移。 */
+  async function savePlanIcon(planId: number, value: string): Promise<void> {
+    const next = { ...planIcons };
+    if (value) next[String(planId)] = value;
+    else delete next[String(planId)];
+    const r = await window.electronAPI.settings.save({ prefs: { plan_icons_json: JSON.stringify(next) } });
+    if (r.ok) {
+      await load();
+      toast.success('方案图标已更新');
+    } else {
+      toast.error('保存失败', r.error.message);
+    }
   }
 
-  function openNew(type: 'image' | 'text' | 'video'): void {
+  function openEdit(cfg: ApiConfig): void {
+    setEditingExisting(true);
+    setEditingDraft(configToInput(cfg)); // 解密后的明文 Key 已含在 cfg.api_key_plain
+  }
+
+  /**
+   * 打开「三合一」统一编辑器：对整个中转站（同地址的全部配置）一次编辑
+   * 对话/绘画/视频三块。focus 用于从「+ 补能力」进入时默认启用并定位该块。
+   * existingConfigs 为空数组 = 新建中转站。
+   */
+  function openProviderEditor(
+    existingConfigs: ApiConfig[],
+    focus?: 'image' | 'text' | 'video',
+    officialDefault?: boolean
+  ): void {
     if (activePlanId === null) return;
-    setEditingExisting(false);
-    setEditingDraft({
-      plan_id: activePlanId,
-      type,
-      provider_name: '',
-      base_url: '',
-      api_key_plain: '',
-      model_mapping: {},
-      is_official: false,
-      supports_web_search: false,
-      supports_vision: false,
-      official_kind: null,
-      image_kind: null,
-      video_kind: type === 'video' ? 'kling' : null,
-      body_overrides_json: null,
-      comfyui_workflow_json: null,
-      local_model_path: null,
-      supports_thinking: false,
-      thinking_effort: null,
-      icon: null
+    setProviderEditing({ existing: existingConfigs, focus, officialDefault });
+  }
+
+  /** 删除整个中转站（其名下所有配置一并删）。 */
+  async function deleteProvider(groupConfigs: ApiConfig[]): Promise<void> {
+    if (groupConfigs.length === 0) return;
+    const name = groupConfigs[0].provider_name || '(未命名)';
+    const ok = await confirmDialog({
+      title: '删除整个中转站',
+      message: `确认删除中转站「${name}」？`,
+      detail: `该站名下 ${groupConfigs.length} 个模型配置（对话/绘画/视频）都会一并删除。`,
+      okText: '全部删除',
+      danger: true
     });
+    if (!ok) return;
+    for (const c of groupConfigs) {
+      const r = await window.electronAPI.plan.configDelete(c.id);
+      if (!r.ok) {
+        toast.error('删除失败', r.error.message);
+        await load();
+        return;
+      }
+    }
+    await load();
+    toast.success('已删除中转站', name);
   }
 
   async function deleteConfig(cfg: ApiConfig): Promise<void> {
@@ -343,6 +487,7 @@ function PlansTab(): JSX.Element {
       image_kind: cfg.image_kind ?? null,
       video_kind: cfg.video_kind ?? null,
       body_overrides_json: cfg.body_overrides_json ?? null,
+      header_overrides_json: cfg.header_overrides_json ?? null,
       comfyui_workflow_json: cfg.comfyui_workflow_json ?? null,
       local_model_path: cfg.local_model_path ?? null,
       supports_thinking: cfg.supports_thinking ?? false,
@@ -398,28 +543,62 @@ function PlansTab(): JSX.Element {
 
   return (
     <div className="mb-settings-pane">
+      {/* 模型配置智能体：右下角悬浮 FAB（仅本 tab）——粘 名称/地址/Key 自动建卡/选协议/测试 */}
+      <ConfigAgentPanel />
       <header className="mb-settings-pane-header">
         <div>
           <h3>模型方案</h3>
-          <p className="mb-settings-pane-desc">
-            一个方案是一组对话与绘画模型的集合。可创建多个，按场景切换。
-          </p>
         </div>
       </header>
 
       <div className="mb-settings-create-row">
-        <input
-          className="mb-input"
-          placeholder="新方案名称（如：工作 / 个人 / 试验组）"
-          value={planNameDraft}
-          onChange={(e) => setPlanNameDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') createPlan();
-          }}
-        />
-        <button className="mb-btn mb-btn-primary" disabled={busy} onClick={createPlan}>
-          <PlusIcon size={16} /> 创建方案
-        </button>
+        <div className="mb-settings-create-input">
+          <input
+            className="mb-input"
+            placeholder="新方案名称"
+            value={planNameDraft}
+            onChange={(e) => setPlanNameDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') createPlan();
+            }}
+          />
+          <button className="mb-btn mb-btn-primary" disabled={busy} onClick={createPlan}>
+            <PlusIcon size={16} /> 创建方案
+          </button>
+        </div>
+        {plans.length > 0 && (
+          <div className="mb-settings-plan-list">
+            {plans.map((p, idx) => (
+              <motion.button
+                key={p.id}
+                onClick={() => setActivePlanId(p.id)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  openContextMenu({
+                    x: e.clientX,
+                    y: e.clientY,
+                    items: [
+                      { label: '设置方案图标…', onClick: () => setIconEditing({ planId: p.id, name: p.name }) },
+                      ...(planIcons[String(p.id)]
+                        ? [{ label: '恢复自动图标（首字）', onClick: () => void savePlanIcon(p.id, '') }]
+                        : [])
+                    ]
+                  });
+                }}
+                className={`mb-plan-pill ${activePlanId === p.id ? 'is-active' : ''}`}
+                title={`${p.name} · 右键设置图标`}
+                initial={{ opacity: 0, scale: 0.92 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ delay: idx * 0.04, type: 'spring', stiffness: 380 }}
+                whileHover={{ scale: 1.04 }}
+                whileTap={{ scale: 0.96 }}
+              >
+                <PlanIconBadge planId={p.id} name={p.name} icons={planIcons} />
+                {p.name}
+              </motion.button>
+            ))}
+          </div>
+        )}
       </div>
 
       {plans.length === 0 ? (
@@ -429,36 +608,19 @@ function PlansTab(): JSX.Element {
           desc="先创建一个方案，再往里面添加对话或绘画模型。"
         />
       ) : (
-        <>
-          <div className="mb-settings-plan-list">
-            {plans.map((p, idx) => (
-              <motion.button
-                key={p.id}
-                onClick={() => setActivePlanId(p.id)}
-                className={`mb-plan-pill ${activePlanId === p.id ? 'is-active' : ''}`}
-                initial={{ opacity: 0, scale: 0.92 }}
-                animate={{ opacity: 1, scale: 1 }}
-                transition={{ delay: idx * 0.04, type: 'spring', stiffness: 380 }}
-                whileHover={{ scale: 1.04 }}
-                whileTap={{ scale: 0.96 }}
-              >
-                {p.name}
-              </motion.button>
-            ))}
-          </div>
-
-          {activePlanId !== null && (
-            <ConfigList
-              planId={activePlanId}
-              configs={activeConfigs}
-              onAdd={openNew}
-              onEdit={openEdit}
-              onDuplicateConfig={duplicateConfig}
-              onDeleteConfig={deleteConfig}
-              onDeletePlan={() => deletePlan(activePlanId)}
-            />
-          )}
-        </>
+        activePlanId !== null && (
+          <ConfigList
+            key={activePlanId}
+            planId={activePlanId}
+            configs={activeConfigs}
+            onEditProvider={openProviderEditor}
+            onEdit={openEdit}
+            onDuplicateConfig={duplicateConfig}
+            onDeleteConfig={deleteConfig}
+            onDeleteProvider={deleteProvider}
+            onDeletePlan={() => deletePlan(activePlanId)}
+          />
+        )
       )}
 
       <Modal
@@ -475,6 +637,16 @@ function PlansTab(): JSX.Element {
           <ConfigForm
             initial={editingDraft}
             isEditing={editingExisting}
+            siblings={
+              editingExisting && editingDraft.id != null && normalizeBaseUrl(editingDraft.base_url)
+                ? configs.filter(
+                    (c) =>
+                      c.id !== editingDraft.id &&
+                      c.plan_id === editingDraft.plan_id &&
+                      normalizeBaseUrl(c.base_url) === normalizeBaseUrl(editingDraft.base_url)
+                  )
+                : []
+            }
             onSaved={async () => {
               setEditingDraft(null);
               await load();
@@ -483,6 +655,162 @@ function PlansTab(): JSX.Element {
           />
         )}
       </Modal>
+
+      <Modal
+        open={providerEditing !== null}
+        onClose={() => setProviderEditing(null)}
+        title={
+          providerEditing && providerEditing.existing.length > 0
+            ? '配置中转站（对话 / 绘画 / 视频 三合一）'
+            : providerEditing?.officialDefault
+              ? '新增官方直连（三合一）'
+              : '新增第三方中转站（三合一）'
+        }
+        width={1080}
+        headerActions={
+          providerEditing ? (
+            <>
+              <button className="mb-btn mb-btn-ghost mb-btn-sm" onClick={() => setProviderEditing(null)} disabled={providerBusy}>
+                取消
+              </button>
+              <button
+                className="mb-btn mb-btn-primary mb-btn-sm"
+                onClick={() => void providerEditorRef.current?.save()}
+                disabled={providerBusy}
+              >
+                {providerBusy ? '保存中…' : '保存'}
+              </button>
+            </>
+          ) : undefined
+        }
+      >
+        {providerEditing && activePlanId !== null && (
+          <ProviderEditor
+            ref={providerEditorRef}
+            planId={activePlanId}
+            existing={providerEditing.existing}
+            focus={providerEditing.focus}
+            officialDefault={providerEditing.officialDefault}
+            onSaved={async () => {
+              setProviderEditing(null);
+              await load();
+            }}
+            onCancel={() => setProviderEditing(null)}
+            onBusyChange={setProviderBusy}
+          />
+        )}
+      </Modal>
+
+      <Modal
+        open={iconEditing !== null}
+        onClose={() => setIconEditing(null)}
+        title={`设置「${iconEditing?.name ?? ''}」的图标`}
+        width={420}
+      >
+        {iconEditing && (
+          <PlanIconEditor
+            planId={iconEditing.planId}
+            name={iconEditing.name}
+            current={planIcons[String(iconEditing.planId)] ?? ''}
+            onSave={async (v) => {
+              await savePlanIcon(iconEditing.planId, v);
+              setIconEditing(null);
+            }}
+            onCancel={() => setIconEditing(null)}
+          />
+        )}
+      </Modal>
+    </div>
+  );
+}
+
+/** 方案图标徽章：自定义图片/emoji/文字 优先，否则名称首字 + 名称 hash 底色。 */
+function PlanIconBadge({ planId, name, icons }: { planId: number; name: string; icons: Record<string, string> }): JSX.Element {
+  const spec = planIconOf(planId, name, icons);
+  if (spec.image) return <img className="mb-plan-icon" src={spec.image} alt="" />;
+  return (
+    <span className="mb-plan-icon" style={{ background: spec.bg }}>
+      {spec.text}
+    </span>
+  );
+}
+
+/** 方案图标编辑器：emoji / 文字（取前 2 字）或上传图片；清空=恢复自动首字图标。 */
+function PlanIconEditor({
+  planId,
+  name,
+  current,
+  onSave,
+  onCancel
+}: {
+  planId: number;
+  name: string;
+  current: string;
+  onSave: (v: string) => Promise<void> | void;
+  onCancel: () => void;
+}): JSX.Element {
+  const [text, setText] = useState(current.startsWith('data:image/') ? '' : current);
+  const [image, setImage] = useState(current.startsWith('data:image/') ? current : '');
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const preview: Record<string, string> = image ? { [String(planId)]: image } : text ? { [String(planId)]: text } : {};
+
+  function loadFile(file?: File | null): void {
+    if (!file || !file.type.startsWith('image/')) return;
+    if (file.size > 512 * 1024) {
+      toast.error('图片太大', '请选 512KB 以内的小图标（会存进设置）');
+      return;
+    }
+    const r = new FileReader();
+    r.onload = () => {
+      setImage(String(r.result));
+      setText('');
+    };
+    r.readAsDataURL(file);
+  }
+
+  return (
+    <div className="mb-plan-icon-editor">
+      <div className="mb-plan-icon-preview">
+        <PlanIconBadge planId={planId} name={name} icons={preview} />
+        <span className="mb-field-hint">{image ? '自定义图片' : text ? '自定义文字 / emoji' : '自动：名称首字 + 按名称生成的底色'}</span>
+      </div>
+      <Field label="文字 / Emoji 图标（最多 2 个字符）">
+        <input
+          className="mb-input"
+          value={text}
+          maxLength={4}
+          placeholder={`留空=自动用「${(name || '?').charAt(0)}」`}
+          onChange={(e) => {
+            setText(e.target.value);
+            if (e.target.value) setImage('');
+          }}
+        />
+      </Field>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <button className="mb-btn mb-btn-sm mb-btn-secondary" onClick={() => fileRef.current?.click()}>
+          选择图片…
+        </button>
+        {(image || text) && (
+          <button
+            className="mb-btn mb-btn-sm mb-btn-ghost"
+            onClick={() => {
+              setImage('');
+              setText('');
+            }}
+          >
+            恢复自动图标
+          </button>
+        )}
+      </div>
+      <div className="mb-settings-form-actions">
+        <button className="mb-btn mb-btn-ghost" onClick={onCancel}>
+          取消
+        </button>
+        <button className="mb-btn mb-btn-primary" onClick={() => void onSave(image || text.trim())}>
+          保存
+        </button>
+      </div>
+      <input ref={fileRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { loadFile(e.target.files?.[0]); e.target.value = ''; }} />
     </div>
   );
 }
@@ -490,40 +818,56 @@ function PlansTab(): JSX.Element {
 function ConfigList({
   planId: _planId,
   configs,
-  onAdd,
+  onEditProvider,
   onEdit,
   onDuplicateConfig,
   onDeleteConfig,
+  onDeleteProvider,
   onDeletePlan
 }: {
   planId: number;
   configs: ApiConfig[];
-  onAdd: (type: 'image' | 'text' | 'video') => void;
+  onEditProvider: (
+    existingConfigs: ApiConfig[],
+    focus?: 'image' | 'text' | 'video',
+    officialDefault?: boolean
+  ) => void;
   onEdit: (cfg: ApiConfig) => void;
   onDuplicateConfig: (cfg: ApiConfig) => void;
   onDeleteConfig: (cfg: ApiConfig) => void;
+  onDeleteProvider: (groupConfigs: ApiConfig[]) => void;
   onDeletePlan: () => void;
 }): JSX.Element {
-  const textConfigs = configs.filter((c) => c.type === 'text');
   // ComfyUI（image_kind='comfyui'）为旧配置，已由 /comfyui 工作流编排器取代，这里过滤掉不再管理
-  const imageConfigs = configs.filter(
-    (c) => c.type === 'image' && c.image_kind !== 'comfyui'
-  );
-  const videoConfigs = configs.filter((c) => c.type === 'video');
+  const visible = configs.filter((c) => !(c.type === 'image' && c.image_kind === 'comfyui'));
+  const providers = groupConfigsByProvider(visible);
+  // 按「官方直连 / 第三方中转站 / 本地」分区——同一套配置模型，仅展示分组不同
+  const kindOf = (p: ProviderGroup): 'official' | 'relay' | 'local' =>
+    providerKind(p.baseUrl, p.configs.some((c) => c.is_official));
+  const PROVIDER_SECTIONS: Array<{ kind: 'official' | 'relay' | 'local'; label: string; desc: string }> = [
+    { kind: 'official', label: '🏢 官方直连', desc: '官网直连（MiniMax / DeepSeek / OpenAI …）' },
+    { kind: 'relay', label: '🔁 第三方中转站', desc: '聚合 / 代理站点' },
+    { kind: 'local', label: '💻 本地模型', desc: '本机运行（Ollama / LM Studio / 内嵌 llama.cpp）' }
+  ];
 
   return (
     <div className="mb-settings-config-list">
       <div className="mb-settings-config-bar">
-        <h4>该方案下的模型配置</h4>
+        <h4>该方案下的中转站 / 模型</h4>
         <div style={{ display: 'flex', gap: 8 }}>
-          <button className="mb-btn mb-btn-secondary mb-btn-sm" onClick={() => onAdd('text')}>
-            <PlusIcon size={14} /> 对话模型
+          <button
+            className="mb-btn mb-btn-primary mb-btn-sm"
+            onClick={() => onEditProvider([], undefined, true)}
+            title="新建官方直连中转站（MiniMax / DeepSeek / OpenAI 等官网直连）"
+          >
+            <PlusIcon size={14} /> 官方直连
           </button>
-          <button className="mb-btn mb-btn-secondary mb-btn-sm" onClick={() => onAdd('image')}>
-            <PlusIcon size={14} /> 绘画模型
-          </button>
-          <button className="mb-btn mb-btn-secondary mb-btn-sm" onClick={() => onAdd('video')}>
-            <PlusIcon size={14} /> 视频模型
+          <button
+            className="mb-btn mb-btn-secondary mb-btn-sm"
+            onClick={() => onEditProvider([], undefined, false)}
+            title="新建第三方中转站（聚合 / 代理站点）"
+          >
+            <PlusIcon size={14} /> 第三方中转站
           </button>
           <button className="mb-btn mb-btn-danger mb-btn-sm" onClick={onDeletePlan}>
             <TrashIcon size={14} /> 删除方案
@@ -531,7 +875,7 @@ function ConfigList({
         </div>
       </div>
 
-      {configs.length === 0 ? (
+      {visible.length === 0 ? (
         <EmptyState
           icon={<KeyIcon size={26} />}
           title="该方案下还没有任何模型配置"
@@ -539,105 +883,148 @@ function ConfigList({
           inline
         />
       ) : (
-        <>
-          <ConfigGroup
-            label="对话 / 多模态"
-            configs={textConfigs}
-            onEdit={onEdit}
-            onDuplicate={onDuplicateConfig}
-            onDelete={onDeleteConfig}
-          />
-          <ConfigGroup
-            label="绘画"
-            configs={imageConfigs}
-            onEdit={onEdit}
-            onDuplicate={onDuplicateConfig}
-            onDelete={onDeleteConfig}
-          />
-          <ConfigGroup
-            label="视频"
-            configs={videoConfigs}
-            onEdit={onEdit}
-            onDuplicate={onDuplicateConfig}
-            onDelete={onDeleteConfig}
-          />
-        </>
+        PROVIDER_SECTIONS.map((sec) => {
+          const list = providers.filter((p) => kindOf(p) === sec.kind);
+          if (list.length === 0) return null;
+          return (
+            <div key={sec.kind} className="mb-provider-section">
+              <div className="mb-provider-section-head">
+                <span className="mb-provider-section-title">{sec.label}</span>
+                <span className="mb-provider-section-desc">{sec.desc} · {list.length}</span>
+              </div>
+              <div className="mb-provider-grid">
+                {list.map((p, idx) => (
+                  <ProviderCard
+                    key={p.key}
+                    provider={p}
+                    index={idx}
+                    onEdit={onEdit}
+                    onEditProvider={onEditProvider}
+                    onDuplicate={onDuplicateConfig}
+                    onDelete={onDeleteConfig}
+                    onDeleteProvider={onDeleteProvider}
+                  />
+                ))}
+              </div>
+            </div>
+          );
+        })
       )}
+      <VideoProvidersCenter />
     </div>
   );
 }
 
-function ConfigGroup({
-  label,
-  configs,
+/** 中转站卡片：一张卡 = 一个站点，列出其 对话/绘画/视频 配置，并能一键补齐缺的能力（共享信息自动带入）。 */
+function ProviderCard({
+  provider,
+  index,
   onEdit,
+  onEditProvider,
   onDuplicate,
-  onDelete
+  onDelete,
+  onDeleteProvider
 }: {
-  label: string;
-  configs: ApiConfig[];
+  provider: ProviderGroup;
+  index: number;
   onEdit: (cfg: ApiConfig) => void;
+  onEditProvider: (existingConfigs: ApiConfig[], focus?: 'image' | 'text' | 'video') => void;
   onDuplicate: (cfg: ApiConfig) => void;
   onDelete: (cfg: ApiConfig) => void;
-}): JSX.Element | null {
-  if (configs.length === 0) return null;
+  onDeleteProvider: (groupConfigs: ApiConfig[]) => void;
+}): JSX.Element {
+  const isLocal = !provider.baseUrl.trim();
+  // 缺失的能力（用于「+ 补能力」按钮）——本地（空地址）站不提供补能力
+  const presentTypes = new Set(provider.configs.map((c) => c.type));
+  const missing = (['text', 'image', 'video'] as const).filter((t) => !presentTypes.has(t));
+
   return (
-    <div className="mb-config-group">
-      <div className="mb-config-group-label">{label}</div>
-      <div className="mb-config-card-grid">
-        {configs.map((c, idx) => {
-          // icon 优先取配置自身的，否则按 provider_name / base_url 猜
-          const iconValue = c.icon ?? guessProviderIcon({
-            providerName: c.provider_name,
-            baseUrl: c.base_url
-          });
+    <motion.div
+      className="mb-provider-card mb-card is-clickable"
+      initial={{ opacity: 0, scale: 0.96 }}
+      animate={{ opacity: 1, scale: 1 }}
+      transition={{ delay: index * 0.03 }}
+      onClick={() => onEditProvider(provider.configs)}
+      title="点击卡片进入三合一配置（对话 / 绘画 / 视频）"
+    >
+      <div className="mb-provider-head">
+        <ProviderIcon value={provider.icon} name={provider.name} size={38} radius={9} />
+        <div className="mb-provider-headtext">
+          <div className="mb-provider-name" title={provider.name}>{provider.name}</div>
+          <div className="mb-provider-url" title={provider.baseUrl || '本地（无地址）'}>
+            {provider.baseUrl || '本地'}
+          </div>
+        </div>
+        <span className="mb-provider-edit" aria-hidden title="点击卡片编辑">
+          <SettingsIcon size={15} />
+        </span>
+        <button
+          className="mb-provider-del"
+          title={isLocal ? '删除此配置' : '删除整个中转站（含其下全部配置）'}
+          onClick={(e) => {
+            e.stopPropagation();
+            onDeleteProvider(provider.configs);
+          }}
+        >
+          <TrashIcon size={14} />
+        </button>
+      </div>
+
+      <div className="mb-provider-rows">
+        {provider.configs.map((c) => {
+          const meta = CONFIG_TYPE_META[c.type as 'text' | 'image' | 'video'];
           return (
-            <motion.div
+            <div
               key={c.id}
-              className="mb-config-card mb-card"
-              initial={{ opacity: 0, scale: 0.94 }}
-              animate={{ opacity: 1, scale: 1 }}
-              transition={{ delay: idx * 0.03 }}
-              onClick={() => onEdit(c)}
+              className="mb-provider-row"
               onContextMenu={(e) => {
                 e.preventDefault();
+                e.stopPropagation();
                 openContextMenu({
                   x: e.clientX,
                   y: e.clientY,
                   items: [
-                    { label: '编辑', onClick: () => onEdit(c) },
-                    {
-                      label: '复制配置',
-                      icon: <CopyIconShape size={12} />,
-                      onClick: () => onDuplicate(c)
-                    },
+                    { label: '单项高级编辑…', onClick: () => onEdit(c) },
+                    { label: '复制配置', icon: <CopyIconShape size={12} />, onClick: () => onDuplicate(c) },
                     { separator: true },
-                    {
-                      label: '删除',
-                      variant: 'danger',
-                      icon: <TrashIcon size={12} />,
-                      onClick: () => onDelete(c)
-                    }
+                    { label: '删除此配置', variant: 'danger', icon: <TrashIcon size={12} />, onClick: () => onDelete(c) }
                   ]
                 });
               }}
-              title={`${c.provider_name || '(未命名)'}\n${c.base_url}\n${Object.keys(c.model_mapping ?? {}).length} 个映射模型\n右键有更多操作`}
+              title={`${meta?.label ?? c.type} · 点击卡片编辑 · 右键单项高级/复制/删除`}
             >
-              <ProviderIcon value={iconValue} size={42} radius={10} />
-              <div className="mb-config-card-name">{c.provider_name || '(未命名)'}</div>
-              <div className="mb-config-card-meta">
-                {Object.keys(c.model_mapping ?? {}).length} 模型
-              </div>
-              <div className="mb-config-card-tags">
-                {c.supports_vision && <span className="mb-config-card-tag" title="支持视觉">👁</span>}
-                {c.supports_web_search && <span className="mb-config-card-tag" title="支持联网">🌐</span>}
-                {c.supports_thinking && <span className="mb-config-card-tag" title="启用思考模式">💭</span>}
-              </div>
-            </motion.div>
+              <span className="mb-provider-row-ico">{meta?.icon ?? '•'}</span>
+              <span className="mb-provider-row-label">{meta?.label ?? c.type}</span>
+              <span className="mb-provider-row-meta">{Object.keys(c.model_mapping ?? {}).length} 模型</span>
+              <span className="mb-provider-row-tags">
+                {c.supports_vision && <span title="支持视觉">👁</span>}
+                {c.supports_web_search && <span title="支持联网">🌐</span>}
+                {c.supports_thinking && <span title="启用思考模式">💭</span>}
+              </span>
+            </div>
           );
         })}
       </div>
-    </div>
+
+      {!isLocal && missing.length > 0 && (
+        <div className="mb-provider-add">
+          <span className="mb-provider-add-label">+ 补能力</span>
+          {missing.map((t) => (
+            <button
+              key={t}
+              className="mb-btn mb-btn-ghost mb-btn-sm"
+              onClick={(e) => {
+                e.stopPropagation();
+                onEditProvider(provider.configs, t);
+              }}
+              title={`为本站新增${CONFIG_TYPE_META[t].label}模型（三合一编辑器，名称/地址/Key 自动带入）`}
+            >
+              {CONFIG_TYPE_META[t].icon} {CONFIG_TYPE_META[t].label}
+            </button>
+          ))}
+        </div>
+      )}
+    </motion.div>
   );
 }
 
@@ -737,15 +1124,20 @@ const CONFIG_PRESETS: ConfigPreset[] = [
 function ConfigForm({
   initial,
   isEditing,
+  siblings = [],
   onCancel,
   onSaved
 }: {
   initial: ApiConfigInput;
   isEditing: boolean;
+  /** 本站点其他配置（同 base_url，不同 id）——用于「改一处共享信息同步到全站」 */
+  siblings?: ApiConfig[];
   onCancel: () => void;
   onSaved: () => Promise<void>;
 }): JSX.Element {
   const [draft, setDraft] = useState<ApiConfigInput>(initial);
+  // 同站点有其他配置时，默认勾选「同步 名称/地址/Key 到全站」——改一处即全站生效
+  const [syncShared, setSyncShared] = useState(siblings.length > 0);
   const [mappingDraftKey, setMappingDraftKey] = useState('');
   const [mappingDraftVal, setMappingDraftVal] = useState('');
   const [testing, setTesting] = useState(false);
@@ -1068,6 +1460,7 @@ function ConfigForm({
   }
 
   async function save(): Promise<void> {
+    if (busy) return; // 防重入：异步保存期间忽略再次触发（狂按 Enter）
     if (!draft.provider_name.trim()) {
       toast.error('请填写中转站/官方名称');
       return;
@@ -1084,12 +1477,29 @@ function ConfigForm({
       toast.error('请至少添加一个模型映射');
       return;
     }
+    // 同步共享信息：把本配置的 名称/地址/Key/图标 一并写到本站其他配置（一次保存多条）。
+    // Key 仅在非空时同步——避免本配置 Key 解密失败（空串）误把其他配置的 Key 清掉。
+    const configsToSave: ApiConfigInput[] = [draft];
+    if (syncShared && siblings.length > 0) {
+      const keyToSync = draft.api_key_plain.trim();
+      for (const s of siblings) {
+        const sInput = configToInput(s);
+        configsToSave.push({
+          ...sInput,
+          provider_name: draft.provider_name,
+          base_url: draft.base_url,
+          api_key_plain: keyToSync ? draft.api_key_plain : sInput.api_key_plain,
+          icon: draft.icon
+        });
+      }
+    }
     setBusy(true);
-    const r = await window.electronAPI.settings.save({ configs: [draft] });
+    const r = await window.electronAPI.settings.save({ configs: configsToSave });
     setBusy(false);
     if (r.ok) {
       await onSaved();
-      toast.success(isEditing ? '已更新' : '已保存', draft.provider_name);
+      const extra = configsToSave.length > 1 ? `（同步到本站 ${configsToSave.length - 1} 个配置）` : '';
+      toast.success(isEditing ? '已更新' : '已保存', `${draft.provider_name}${extra}`);
     } else {
       toast.error(isEditing ? '更新失败' : '保存失败', r.error.message);
     }
@@ -1097,8 +1507,20 @@ function ConfigForm({
 
   const applicablePresets = CONFIG_PRESETS.filter((p) => p.for === draft.type);
 
+  function onEditorKeyDown(e: React.KeyboardEvent): void {
+    // 按 Enter 自动保存（纯 Enter；IME 组字 / Shift+Enter 不触发）
+    if (e.key !== 'Enter' || e.shiftKey || e.nativeEvent.isComposing) return;
+    const el = e.target as HTMLElement;
+    if (el instanceof HTMLTextAreaElement) return; // 多行框（SDK 片段 / JSON 覆盖）= 换行
+    if (el instanceof HTMLSelectElement) return; // 下拉框 Enter = 选中菜单项，保持原生行为
+    if (el.closest('.mb-mapping-add, .mb-mapping-list, .mb-mapping-row')) return; // 模型映射输入自有 Enter 语义
+    if (el.tagName === 'BUTTON') return; // 按钮上的 Enter = 点击它
+    e.preventDefault();
+    void save();
+  }
+
   return (
-    <div className="mb-config-form">
+    <div className="mb-config-form" onKeyDown={onEditorKeyDown}>
       {applicablePresets.length > 0 && (
         <div className="mb-presets-bar">
           <span className="mb-presets-label">🔌 一键预设：</span>
@@ -1293,7 +1715,7 @@ function ConfigForm({
       {/* ComfyUI workflow 由 /comfyui 工作流编排器管理，此处不再渲染 */}
 
       {draft.type === 'video' && (
-        <Field label="视频 API 协议">
+        <Field label="视频 API 协议（拿不准就不用管——运行时会按地址/模型自动匹配）">
           <select
             className="mb-select"
             style={{ width: '100%' }}
@@ -1306,12 +1728,30 @@ function ConfigForm({
               </option>
             ))}
           </select>
+          {(() => {
+            // 按 地址/模型 自动建议协议（与运行时自动纠偏同一套规则）——选错也能跑，但配置一致更清晰
+            const firstActual = Object.values(draft.model_mapping ?? {})[0];
+            const sug = suggestVideoKind(draft.base_url ?? '', firstActual);
+            const cur = draft.video_kind ?? 'kling';
+            if (!sug || sug === cur) return null;
+            return (
+              <div className="mb-field-hint" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span>
+                  检测到该 地址/模型 更像 <b>{VIDEO_KINDS.find((k) => k.value === sug)?.label ?? sug}</b>（运行时会自动按它处理）
+                </span>
+                <button className="mb-btn mb-btn-sm" onClick={() => update('video_kind', sug)}>
+                  一键采用
+                </button>
+              </div>
+            );
+          })()}
           <div className="mb-field-hint">
             {VIDEO_KINDS.find((k) => k.value === (draft.video_kind ?? 'kling'))?.hint}
           </div>
           <div className="mb-field-hint">
-            视频均为<b>异步</b>：提交任务 → 轮询 → 下载 mp4 落盘（自动入图库）。模型映射里填真实模型 ID（如
-            <code> kling-v2-1-master</code> / <code>sora-2</code> / <code>veo-3.1</code>）。各站字段差异用下方「请求体覆盖」兜底。
+            常规使用只需三样：<b>API 地址 + API Key + 模型映射</b>，协议选不对会自动纠偏。视频均为<b>异步</b>：提交任务 → 轮询 →
+            下载 mp4 落盘（自动入资产库）。模型映射里填真实模型 ID（如
+            <code> kling-v2-1-master</code> / <code>doubao-seedance-2.0</code> / <code>sora-2</code>）。各站字段差异用下方「请求体覆盖」兜底。
           </div>
         </Field>
       )}
@@ -1373,6 +1813,10 @@ function ConfigForm({
       ) : null}
 
       <Field label={`模型映射（${Object.keys(draft.model_mapping).length}）`}>
+        <div className="mb-mapping-head">
+          <span>显示名（应用内可见，自动带「{draft.provider_name || '中转站'} / 」前缀区分来源）</span>
+          <span>实际模型 ID（发给接口）</span>
+        </div>
         <div className="mb-mapping-list">
           {Object.entries(draft.model_mapping).map(([k, v]) => (
             <MappingRow
@@ -1468,6 +1912,13 @@ function ConfigForm({
         </Field>
       )}
 
+      {siblings.length > 0 && (
+        <label className="mb-sync-shared" title="本中转站还有其他配置（对话/绘画/视频）共用同一地址与 Key">
+          <input type="checkbox" checked={syncShared} onChange={(e) => setSyncShared(e.target.checked)} />
+          同步 名称 / 地址 / API Key 到本站其他 {siblings.length} 个配置（改一处，全站生效）
+        </label>
+      )}
+
       <div className="mb-config-form-actions">
         <button
           className="mb-btn mb-btn-secondary"
@@ -1538,6 +1989,1058 @@ function ConfigForm({
   );
 }
 
+// ─────────────────────────────────────────────────────
+// 中转站「三合一」统一编辑器
+//   一个站点只录一次 名称/地址/Key/图标；下面分 对话 / 绘画 / 视频 三块，
+//   各自配 协议 + 模型映射 + 能力。「测试连接 + 拉取模型」拉到的上游模型
+//   可一键指派到任意块。保存时按启用的块写多条 api_configs（一次保存），
+//   原本存在但被关掉的块则删除其配置。免去对同一中转站的重复录入。
+//   （同类型重复配置不在此合并——请用行内单项编辑器管理，避免误合并丢数据。）
+// ─────────────────────────────────────────────────────
+
+type ConfigType = 'text' | 'image' | 'video';
+const BLOCK_ORDER: ConfigType[] = ['text', 'image', 'video'];
+
+interface ModelBlockState {
+  enabled: boolean;
+  /** 该类已有配置的 id（编辑则 UPDATE，缺省则 INSERT）；关掉时据此删除 */
+  existingId?: number;
+  /** 该类原配置的明文 Key——共享 Key 留空（解密失败）时回退用，避免误清 */
+  existingKey?: string;
+  model_mapping: Record<string, string>;
+  official_kind: OfficialKind;
+  image_kind: ImageKind;
+  video_kind: VideoKind;
+  supports_web_search: boolean;
+  supports_vision: boolean;
+  supports_thinking: boolean;
+  thinking_effort: 'low' | 'medium' | 'high' | 'max' | null;
+  body_overrides_json: string | null;
+  local_model_path: string | null;
+  comfyui_workflow_json: string | null;
+  is_official: boolean;
+}
+
+function emptyBlock(): ModelBlockState {
+  return {
+    enabled: false,
+    model_mapping: {},
+    official_kind: null,
+    image_kind: null,
+    video_kind: 'seedance',
+    supports_web_search: false,
+    supports_vision: false,
+    supports_thinking: false,
+    thinking_effort: null,
+    body_overrides_json: null,
+    local_model_path: null,
+    comfyui_workflow_json: null,
+    is_official: false
+  };
+}
+
+function blockFromConfig(cfg: ApiConfig): ModelBlockState {
+  return {
+    enabled: true,
+    existingId: cfg.id,
+    existingKey: cfg.api_key_plain ?? '',
+    model_mapping: { ...(cfg.model_mapping ?? {}) },
+    official_kind: cfg.official_kind,
+    image_kind: cfg.image_kind ?? null,
+    video_kind: (cfg.video_kind ?? 'seedance') as VideoKind,
+    supports_web_search: cfg.supports_web_search,
+    supports_vision: cfg.supports_vision,
+    supports_thinking: cfg.supports_thinking ?? false,
+    thinking_effort: cfg.thinking_effort ?? null,
+    body_overrides_json: cfg.body_overrides_json ?? null,
+    local_model_path: cfg.local_model_path ?? null,
+    comfyui_workflow_json: cfg.comfyui_workflow_json ?? null,
+    is_official: cfg.is_official
+  };
+}
+
+/** 上游模型 ID 的一句话猜测（仅供指派参考）。与 ConfigForm 内的同名逻辑等价。 */
+function describeUpstreamModel(modelId: string): string {
+  const id = modelId.toLowerCase();
+  if (/(image|dall|sdxl|flux|nano-banana|midjourney|sora-image|gpt-image)/.test(id)) return '看起来是绘图模型';
+  if (/(embedding|embed)/.test(id)) return 'Embedding 模型';
+  if (/(rerank)/.test(id)) return '重排序模型';
+  if (/(audio|tts|whisper|voice|speech)/.test(id)) return '语音模型';
+  if (/(video|kling|seedance|veo|runway|hailuo|wan)/.test(id)) return '看起来是视频模型';
+  if (/(vision|vl|multimodal|4o|claude-3|gemini|nano-banana-pro)/.test(id)) return '多模态对话模型（含 vision）';
+  if (/(coder|code|coding)/.test(id)) return '代码专用模型';
+  return '通用对话/多模态模型';
+}
+
+/** 通用滑块开关（左关 / 右开）。用于三合一编辑器各能力块、GPU 加速、语音播报等。 */
+function SwitchControl({
+  checked,
+  onChange,
+  disabled,
+  title
+}: {
+  checked: boolean;
+  onChange: (next: boolean) => void;
+  disabled?: boolean;
+  title?: string;
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      className={`mb-switch ${checked ? 'is-on' : ''}`}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      title={title}
+    >
+      <span className="mb-switch-knob" />
+    </button>
+  );
+}
+
+/**
+ * 中转站归类：official（官方直连）/ relay（第三方中转站）/ local（本地无地址）。
+ * 完全以 is_official 标志为准（用户在新建时用两个按钮选定、编辑里可随时切换），不再按域名猜，
+ * 这样「官方 ↔ 第三方」两个方向都能手动调整且稳定不被自动判定覆盖。
+ */
+function providerKind(baseUrl: string, isOfficialFlag?: boolean): 'official' | 'relay' | 'local' {
+  if (!baseUrl.trim()) return 'local';
+  return isOfficialFlag ? 'official' : 'relay';
+}
+
+/** 官方直连一键预设（新建中转站时用）：勾上对应能力块并预填 地址/协议/能力。 */
+interface OfficialPreset {
+  key: string;
+  label: string;
+  name: string;
+  baseUrl: string;
+  official_kind: OfficialKind;
+  supports_vision?: boolean;
+  supports_web_search?: boolean;
+  hint: string;
+}
+const OFFICIAL_PRESETS: OfficialPreset[] = [
+  { key: 'deepseek', label: 'DeepSeek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', official_kind: 'openai-compat', hint: 'platform.deepseek.com 拿 key' },
+  { key: 'minimax', label: 'MiniMax', name: 'MiniMax', baseUrl: 'https://api.minimaxi.com/v1', official_kind: 'openai', supports_vision: true, supports_web_search: true, hint: 'platform.minimaxi.com 拿 key（M 系多模态 + 原生联网）' },
+  { key: 'kimi', label: 'Kimi（Moonshot）', name: 'Kimi', baseUrl: 'https://api.moonshot.cn/v1', official_kind: 'openai-compat', supports_vision: true, supports_web_search: true, hint: 'platform.moonshot.cn 拿 key' },
+  { key: 'zhipu', label: '智谱 GLM', name: '智谱 GLM', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', official_kind: 'openai-compat', supports_vision: true, supports_web_search: true, hint: 'bigmodel.cn 拿 key' },
+  { key: 'qwen', label: '通义千问', name: '通义千问', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', official_kind: 'openai-compat', supports_vision: true, hint: 'dashscope 兼容模式' },
+  { key: 'openai', label: 'OpenAI', name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', official_kind: 'openai', supports_vision: true, hint: 'platform.openai.com 拿 key' },
+  { key: 'anthropic', label: 'Anthropic Claude', name: 'Anthropic', baseUrl: 'https://api.anthropic.com', official_kind: 'anthropic', supports_vision: true, hint: 'console.anthropic.com 拿 key' },
+  { key: 'gemini', label: 'Google Gemini', name: 'Gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', official_kind: 'gemini', supports_vision: true, hint: 'aistudio.google.com 拿 key' }
+];
+
+/** 暴露给父级（弹窗顶部「保存」按钮）的命令式句柄。 */
+export interface ProviderEditorHandle {
+  save: () => Promise<void>;
+}
+
+const ProviderEditor = forwardRef<
+  ProviderEditorHandle,
+  {
+    planId: number;
+    /** 该中转站名下已有配置（按 base_url 聚合），新建中转站时为空 */
+    existing: ApiConfig[];
+    /** 初始展开/启用哪一类块（从「+ 补能力」进入时） */
+    focus?: ConfigType;
+    /** 新建时的分类默认（官方直连 true / 第三方 false）；编辑已有站则按现状判定 */
+    officialDefault?: boolean;
+    onSaved: () => Promise<void>;
+    onCancel: () => void;
+    /** busy 变化上报给父级（顶部保存按钮据此禁用 / 显示「保存中…」） */
+    onBusyChange?: (busy: boolean) => void;
+  }
+>(function ProviderEditor({ planId, existing, focus, officialDefault, onSaved, onBusyChange }, ref): JSX.Element {
+  const head = existing[0];
+  const [name, setName] = useState(head?.provider_name ?? '');
+  const [baseUrl, setBaseUrl] = useState(head?.base_url ?? '');
+  const [apiKey, setApiKey] = useState(head?.api_key_plain ?? '');
+  const [icon, setIcon] = useState<string | null>(head?.icon ?? null);
+  const [showKey, setShowKey] = useState(true);
+  // 官方直连标记：编辑已有站按域名/标志判定；新建用传入的分类默认（两个新建按钮分别 true/false）
+  const [official, setOfficial] = useState<boolean>(
+    head ? providerKind(head.base_url, head.is_official) === 'official' : (officialDefault ?? false)
+  );
+  // 自定义请求头（整站共用，写到该站每条配置）：JSON 文本 + 折叠 + 本地校验
+  const [headerOverrides, setHeaderOverrides] = useState<string>(head?.header_overrides_json ?? '');
+  const [headerErr, setHeaderErr] = useState<string | null>(null);
+  const [headerOpen, setHeaderOpen] = useState<boolean>(!!(head?.header_overrides_json ?? '').trim());
+  const [blocks, setBlocks] = useState<Record<ConfigType, ModelBlockState>>(() => {
+    const init = {} as Record<ConfigType, ModelBlockState>;
+    for (const t of BLOCK_ORDER) {
+      const cfg = existing.find((c) => c.type === t);
+      init[t] = cfg ? blockFromConfig(cfg) : emptyBlock();
+      if (focus === t) init[t].enabled = true;
+    }
+    return init;
+  });
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [detected, setDetected] = useState<string[]>([]);
+  // 「按模型原生协议路由」的中转返回的「实际模型 ID → 协议数组」，用于指派模型时自动判定对话协议
+  const [detectedProtocols, setDetectedProtocols] = useState<Record<string, string[]>>({});
+  const [busy, setBusy] = useState(false);
+  // 官方直连一键预设：默认收起（平时缩进去，需要才展开）
+  const [presetsOpen, setPresetsOpen] = useState(false);
+
+  // 跨块去重：已指派到任一块的上游模型 ID，不再出现在其它块的「+ 指派」候选里
+  // （用户期望「已添加的在下一个块就不显示」，避免同一上游模型误指派到多个块）。
+  const assignedAll = useMemo(() => {
+    const s = new Set<string>();
+    for (const t of BLOCK_ORDER) for (const v of Object.values(blocks[t].model_mapping)) if (v) s.add(v);
+    return s;
+  }, [blocks]);
+
+  // 同类型重复配置（每类多于一条，如截图里「视频」出现两行）：保留第一条编辑，
+  // 其余在保存时一并删除（合并为每类一条），杜绝三合一编辑器静默只改第一条、留孤儿。
+  const dupExtraIds = useMemo(() => {
+    const ids: number[] = [];
+    for (const t of BLOCK_ORDER) {
+      const ofType = existing.filter((c) => c.type === t);
+      for (let i = 1; i < ofType.length; i++) ids.push(ofType[i].id);
+    }
+    return ids;
+  }, [existing]);
+
+  // 把「保存」暴露给父级（弹窗顶部按钮调用）+ 上报 busy 供其禁用/显示「保存中…」
+  useImperativeHandle(ref, () => ({ save }));
+  useEffect(() => {
+    onBusyChange?.(busy);
+  }, [busy, onBusyChange]);
+
+  function patchBlock(t: ConfigType, patch: Partial<ModelBlockState>): void {
+    setBlocks((b) => ({ ...b, [t]: { ...b[t], ...patch } }));
+  }
+
+  /** 一键套用官方直连预设：填 名称/地址 + 启用对话块并预置协议/能力（key 仍需自己填）。 */
+  function applyOfficialPreset(p: OfficialPreset): void {
+    setName(p.name);
+    setBaseUrl(p.baseUrl);
+    setOfficial(true);
+    setBlocks((b) => ({
+      ...b,
+      text: {
+        ...b.text,
+        enabled: true,
+        official_kind: p.official_kind,
+        supports_vision: !!p.supports_vision,
+        supports_web_search: !!p.supports_web_search
+      }
+    }));
+    toast.info('已套用官方预设', `${p.label}：${p.hint}，填上 Key 即可`);
+  }
+
+  async function test(): Promise<void> {
+    if (!baseUrl.trim()) {
+      toast.error('请先填写 Base URL');
+      return;
+    }
+    if (!apiKey.trim()) {
+      toast.error('请先填写 API Key');
+      return;
+    }
+    setTesting(true);
+    setTestResult(null);
+    const firstEnabled = BLOCK_ORDER.find((t) => blocks[t].enabled) ?? 'text';
+    const r = await window.electronAPI.settings.testConnection({
+      base_url: baseUrl,
+      api_key_plain: apiKey,
+      type: firstEnabled,
+      header_overrides_json: headerOverrides.trim() ? headerOverrides : null
+    });
+    setTesting(false);
+    if (r.ok) {
+      const msg = `连通成功，延迟 ${r.data.latency_ms}ms${
+        r.data.models?.length ? `，发现 ${r.data.models.length} 个模型` : ''
+      }`;
+      setTestResult({ ok: true, message: msg });
+      setDetected(r.data.models ?? []);
+      setDetectedProtocols(r.data.model_protocols ?? {});
+      toast.success('测试连通成功', msg);
+    } else {
+      setTestResult({ ok: false, message: r.error.message });
+      toast.error('测试连通失败', r.error.message);
+    }
+  }
+
+  async function save(): Promise<void> {
+    if (busy) return; // 防重入：异步保存期间忽略再次触发（狂按 Enter）
+    if (!name.trim()) {
+      toast.error('请填写中转站/官方名称');
+      return;
+    }
+    const enabledTypes = BLOCK_ORDER.filter((t) => blocks[t].enabled);
+    if (enabledTypes.length === 0) {
+      toast.error('请至少启用一类模型', '点对话/绘画/视频块的标题即可启用');
+      return;
+    }
+    // 本地内嵌模型（仅对话 + local 协议）不需要 base_url / 在线 Key
+    const localOnly =
+      enabledTypes.length === 1 && enabledTypes[0] === 'text' && blocks.text.official_kind === 'local';
+    if (!baseUrl.trim() && !localOnly) {
+      toast.error('请填写 Base URL');
+      return;
+    }
+    for (const t of enabledTypes) {
+      if (Object.keys(blocks[t].model_mapping).length === 0) {
+        toast.error(`「${CONFIG_TYPE_META[t].label}」还没有模型映射`, '请添加至少一个模型，或关闭该类');
+        return;
+      }
+    }
+    const sharedKey = apiKey.trim() || (localOnly ? 'local' : '');
+    const hasNewBlock = enabledTypes.some((t) => blocks[t].existingId == null);
+    if (hasNewBlock && !sharedKey) {
+      toast.error('请填写 API Key');
+      return;
+    }
+    const configs: ApiConfigInput[] = enabledTypes.map((t) => {
+      const b = blocks[t];
+      // 共享 Key 非空就用它（一并写到三块）；编辑且解密失败留空时回退该块原 Key，避免误清
+      const keyForBlock = sharedKey || b.existingKey || '';
+      return {
+        id: b.existingId,
+        plan_id: planId,
+        type: t,
+        provider_name: name.trim(),
+        base_url: baseUrl.trim(),
+        api_key_plain: keyForBlock,
+        model_mapping: b.model_mapping,
+        is_official: official,
+        supports_web_search: t === 'text' ? b.supports_web_search : false,
+        supports_vision: t === 'text' ? b.supports_vision : false,
+        official_kind: t === 'text' ? b.official_kind : null,
+        image_kind: t === 'image' ? b.image_kind : null,
+        video_kind: t === 'video' ? b.video_kind : null,
+        body_overrides_json: t === 'image' || t === 'video' ? b.body_overrides_json : null,
+        header_overrides_json: headerOverrides.trim() ? headerOverrides : null,
+        comfyui_workflow_json: t === 'image' ? b.comfyui_workflow_json : null,
+        local_model_path: t === 'text' ? b.local_model_path : null,
+        supports_thinking: t === 'text' ? b.supports_thinking : false,
+        thinking_effort: t === 'text' ? b.thinking_effort : null,
+        icon
+      };
+    });
+    // 原本存在但现在关掉的块 → 删除其配置；同类型重复配置的多余条 → 一并删除（合并为每类一条）
+    const toDelete: number[] = [];
+    for (const t of BLOCK_ORDER) {
+      if (!blocks[t].enabled && blocks[t].existingId != null) toDelete.push(blocks[t].existingId as number);
+    }
+    for (const id of dupExtraIds) if (!toDelete.includes(id)) toDelete.push(id);
+    setBusy(true);
+    const r = await window.electronAPI.settings.save({ configs });
+    if (r.ok) {
+      for (const id of toDelete) {
+        const dr = await window.electronAPI.plan.configDelete(id);
+        if (!dr.ok) {
+          toast.error('删除失败', dr.error.message);
+          break;
+        }
+      }
+    }
+    setBusy(false);
+    if (r.ok) {
+      await onSaved();
+      toast.success(existing.length ? '已更新中转站' : '已保存中转站', `${name.trim()} · ${enabledTypes.length} 类模型`);
+    } else {
+      toast.error('保存失败', r.error.message);
+    }
+  }
+
+  function onEditorKeyDown(e: React.KeyboardEvent): void {
+    // 按 Enter 自动保存（纯 Enter；IME 组字 / Shift+Enter 不触发）
+    if (e.key !== 'Enter' || e.shiftKey || e.nativeEvent.isComposing) return;
+    const el = e.target as HTMLElement;
+    if (el instanceof HTMLTextAreaElement) return; // 多行框（JSON 覆盖 / 请求头）= 换行
+    if (el instanceof HTMLSelectElement) return; // 下拉框 Enter = 选中菜单项，保持原生行为
+    if (el.closest('.mb-mapping-add, .mb-mapping-list, .mb-mapping-row')) return; // 模型映射输入自有 Enter 语义
+    if (el.tagName === 'BUTTON') return; // 按钮上的 Enter = 点击它
+    e.preventDefault();
+    void save();
+  }
+
+  return (
+    <div className="mb-config-form mb-provider-editor" onKeyDown={onEditorKeyDown}>
+      {existing.length === 0 && (
+        <div className="mb-pe-presets-wrap">
+          <button type="button" className="mb-pe-presets-toggle" onClick={() => setPresetsOpen((v) => !v)}>
+            <span>🏢 官方直连一键预设（点一下自动填地址/协议/能力，只补 Key）</span>
+            <span className="mb-snippet-paste-chevron">{presetsOpen ? '▲' : '▼'}</span>
+          </button>
+          {presetsOpen && (
+            <div className="mb-pe-presets">
+              {OFFICIAL_PRESETS.map((p) => (
+                <button key={p.key} type="button" className="mb-pe-preset-chip" title={p.hint} onClick={() => applyOfficialPreset(p)}>
+                  {p.label}
+                </button>
+              ))}
+              <span className="mb-field-hint" style={{ flexBasis: '100%', marginTop: 2 }}>
+                点一下自动填 地址 + 协议 + 能力，你只要补 Key；也可手填任意第三方中转站。
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+
+      <Field label="中转站 / 官方名称（右侧选择分类，可随时改）">
+        <div className="mb-icon-and-name-row">
+          <IconPickerButton value={icon} fallbackHint={{ providerName: name, baseUrl }} onChange={setIcon} />
+          <input
+            className="mb-input mb-pe-name-input"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="如：OpenAI 官方 / 我的中转站"
+          />
+          <div className="mb-pe-cat" role="group" aria-label="分类">
+            <button
+              type="button"
+              className={`mb-pe-cat-btn ${official ? 'is-active' : ''}`}
+              onClick={() => setOfficial(true)}
+              title="归到「官方直连」区（官网直连：MiniMax / DeepSeek / OpenAI …）"
+            >
+              🏢 官方直连
+            </button>
+            <button
+              type="button"
+              className={`mb-pe-cat-btn ${!official ? 'is-active' : ''}`}
+              onClick={() => setOfficial(false)}
+              title="归到「第三方中转站」区（聚合 / 代理站点）"
+            >
+              🔁 第三方
+            </button>
+          </div>
+        </div>
+      </Field>
+
+      <div className="mb-pe-shared-row">
+        <Field label="API 调用地址（base_url）">
+          <input
+            className="mb-input"
+            value={baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+            placeholder="https://api.example.com/v1"
+          />
+        </Field>
+        <Field label="API Key（对话/绘画/视频共用）">
+          <div className="mb-key-input-wrap">
+            <input
+              type={showKey ? 'text' : 'password'}
+              className="mb-input"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder="sk-..."
+              autoComplete="off"
+              spellCheck={false}
+            />
+            <button
+              type="button"
+              className="mb-key-toggle"
+              onClick={() => setShowKey((v) => !v)}
+              title={showKey ? '隐藏 Key' : '显示 Key'}
+              tabIndex={-1}
+            >
+              {showKey ? <EyeOffIcon size={16} /> : <EyeIcon size={16} />}
+            </button>
+          </div>
+        </Field>
+        {/* 测试连接 + 拉取模型 紧跟在 地址 / Key 之后（与输入框底对齐） */}
+        <div className="mb-pe-testcol">
+          <button className="mb-btn mb-btn-secondary" onClick={test} disabled={testing || busy}>
+            {testing ? '测试中…' : '🔍 测试连接 + 拉取模型'}
+          </button>
+        </div>
+      </div>
+
+      {(testResult || detected.length > 0) && (
+        <div className="mb-pe-testresult">
+          {testResult && (
+            <span className={`mb-test-result ${testResult.ok ? 'is-ok' : 'is-fail'}`}>
+              {testResult.ok ? <CheckIcon size={14} /> : null}
+              {testResult.message}
+            </span>
+          )}
+          {detected.length > 0 && (
+            <span className="mb-field-hint">已拉到 {detected.length} 个上游模型——下面各块点「+ 模型」即可指派（已指派的不再重复出现）</span>
+          )}
+        </div>
+      )}
+
+      {dupExtraIds.length > 0 && (
+        <div className="mb-field-hint" style={{ color: 'var(--mb-warning, #b8860b)', marginBottom: 8 }}>
+          ⚠ 检测到 {dupExtraIds.length} 条同类型重复配置（如「视频」出现多条）。保存后将自动合并为每类一条，多余的会被删除。
+        </div>
+      )}
+
+      <div className="mb-pe-advanced" style={{ marginBottom: 10 }}>
+        <button type="button" className="mb-snippet-paste-toggle" onClick={() => setHeaderOpen((v) => !v)}>
+          高级：自定义请求头 / 鉴权（绝大多数中转站无需设置，看不懂可跳过）
+          <span className="mb-snippet-paste-chevron">{headerOpen ? '▲' : '▼'}</span>
+        </button>
+        {headerOpen && (
+          <>
+            <textarea
+              className="mb-textarea"
+              rows={4}
+              spellCheck={false}
+              placeholder={'{\n  "Authorization": "Token ${key}"\n}'}
+              value={headerOverrides}
+              onChange={(e) => {
+                setHeaderOverrides(e.target.value);
+                setHeaderErr(null);
+              }}
+              onBlur={(e) => {
+                const v = e.target.value.trim();
+                if (!v) {
+                  setHeaderErr(null);
+                  return;
+                }
+                try {
+                  const p = JSON.parse(v) as unknown;
+                  if (typeof p !== 'object' || p === null || Array.isArray(p)) setHeaderErr('必须是 JSON 对象（header 名 → 值）');
+                  else setHeaderErr(null);
+                } catch (err) {
+                  setHeaderErr(`JSON 解析失败：${(err as Error).message}`);
+                }
+              }}
+            />
+            {headerErr && (
+              <div className="mb-field-hint" style={{ color: 'var(--mb-danger, #d44)' }}>
+                {headerErr}
+              </div>
+            )}
+            <div className="mb-field-hint">
+              自定义 HTTP 请求头，合并进默认头（对话 / 绘画 / 视频 都生效，整站共用）。值里 <code>{'${key}'}</code> = 本站 Key、
+              <code>{'${model}'}</code> = 实际模型 ID；值写 <code>null</code> 可删掉默认头（如默认的 <code>Authorization</code> 换成别的鉴权方式）。
+              常见：<code>{'{"Authorization":"Token ${key}"}'}</code>、<code>{'{"x-api-key":"${key}","Authorization":null}'}</code>。
+            </div>
+          </>
+        )}
+      </div>
+
+      <div className="mb-pe-blocks">
+        {BLOCK_ORDER.map((t) => (
+          <ModelBlock
+            key={t}
+            type={t}
+            block={blocks[t]}
+            detected={detected}
+            detectedProtocols={detectedProtocols}
+            assignedAll={assignedAll}
+            onPatch={(p) => patchBlock(t, p)}
+            baseUrl={baseUrl}
+            apiKey={apiKey}
+            headerOverrides={headerOverrides}
+            providerName={name}
+          />
+        ))}
+      </div>
+      {/* 保存 / 取消 已移到弹窗标题栏右侧（✕ 左边），此处不再重复 */}
+    </div>
+  );
+});
+
+/** 统一编辑器里的一个能力块（对话/绘画/视频）：协议 + 模型映射 + 能力。 */
+function ModelBlock({
+  type,
+  block,
+  detected,
+  detectedProtocols,
+  assignedAll,
+  onPatch,
+  baseUrl,
+  apiKey,
+  headerOverrides,
+  providerName
+}: {
+  type: ConfigType;
+  block: ModelBlockState;
+  detected: string[];
+  /** 实际模型 ID → 协议数组（中转声明的 supported_protocols）；用于指派时自动判定对话协议 */
+  detectedProtocols: Record<string, string[]>;
+  /** 已指派到任一块的上游模型 ID（跨块去重用） */
+  assignedAll: Set<string>;
+  onPatch: (patch: Partial<ModelBlockState>) => void;
+  baseUrl: string;
+  apiKey: string;
+  headerOverrides: string;
+  providerName: string;
+}): JSX.Element {
+  const meta = CONFIG_TYPE_META[type];
+  const [draftKey, setDraftKey] = useState('');
+  const [draftVal, setDraftVal] = useState('');
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [bodyErr, setBodyErr] = useState<string | null>(null);
+  const [detectingCaps, setDetectingCaps] = useState(false);
+  const [testingProto, setTestingProto] = useState(false);
+  const [protoResult, setProtoResult] = useState<{ ok: boolean; skipped?: boolean; message: string; detail?: string } | null>(null);
+  // 折叠态（独立于启用态）：已配置过的块（从中转站载入）默认折叠成一条，保持启用；
+  // 新启用的块默认展开。用户可手动折叠/展开而不改启用状态。
+  const [collapsed, setCollapsed] = useState<boolean>(!!block.existingId);
+
+  function toggleEnabled(): void {
+    const next = !block.enabled;
+    onPatch({ enabled: next });
+    if (next) setCollapsed(false); // 刚启用 → 自动展开方便填写
+  }
+
+  const mapping = block.model_mapping;
+  const mappingCount = Object.keys(mapping).length;
+  const setMapping = (next: Record<string, string>): void => onPatch({ model_mapping: next });
+
+  function addMapping(): void {
+    if (!draftKey.trim() || !draftVal.trim()) {
+      toast.error('显示名和实际模型 ID 都不能为空');
+      return;
+    }
+    setMapping({ ...mapping, [draftKey.trim()]: draftVal.trim() });
+    setDraftKey('');
+    setDraftVal('');
+  }
+  function removeMapping(k: string): void {
+    const n = { ...mapping };
+    delete n[k];
+    setMapping(n);
+  }
+  function renameMapping(oldKey: string, newKey: string, newVal: string): boolean {
+    const tk = newKey.trim();
+    const tv = newVal.trim();
+    if (!tk) {
+      toast.error('显示名不能为空');
+      return false;
+    }
+    if (!tv) {
+      toast.error('实际模型 ID 不能为空');
+      return false;
+    }
+    if (tk !== oldKey && mapping[tk] !== undefined) {
+      toast.error('显示名已存在', `已有「${tk}」，请换一个`);
+      return false;
+    }
+    const n: Record<string, string> = {};
+    for (const [k, v] of Object.entries(mapping)) {
+      if (k === oldKey) n[tk] = tv;
+      else n[k] = v;
+    }
+    setMapping(n);
+    return true;
+  }
+  function addDetected(id: string): void {
+    let dn = id;
+    let k = 2;
+    while (mapping[dn]) dn = `${id} (${k++})`;
+    setMapping({ ...mapping, [dn]: id });
+    // 按模型原生协议自动回填「对话 API 协议」（仅对话块）：messages→Anthropic 可用；gemini/responses 明确警告不支持
+    if (type === 'text') {
+      const protos = detectedProtocols[id];
+      if (protos && protos.length) {
+        const m = protocolToOfficialKind(protos);
+        if (m.supported) {
+          if (m.kind !== block.official_kind) {
+            onPatch({ official_kind: m.kind });
+            const label = OFFICIAL_KINDS.find((x) => x.value === m.kind)?.label ?? String(m.kind);
+            toast.success('已自动匹配对话协议', `「${id}」走 ${m.badge ?? '原生'} 协议，已切到「${label}」`);
+          }
+        } else {
+          toast.error('该模型暂不能在梦笔对话里使用', m.reason ?? `协议 ${protos.join('/')} 未支持`);
+        }
+      }
+    }
+  }
+
+  async function detectCaps(): Promise<void> {
+    let ids = Object.values(mapping).filter(Boolean);
+    if (ids.length === 0 && baseUrl.trim() && apiKey.trim()) {
+      setDetectingCaps(true);
+      const r = await window.electronAPI.settings.testConnection({
+        base_url: baseUrl,
+        api_key_plain: apiKey,
+        type: 'text',
+        header_overrides_json: headerOverrides.trim() ? headerOverrides : null
+      });
+      setDetectingCaps(false);
+      if (r.ok) ids = r.data.models ?? [];
+    }
+    if (ids.length === 0) {
+      toast.error('先加模型映射，或在上方填好地址/Key 测试连接');
+      return;
+    }
+    const caps = detectModelCapabilities(ids);
+    onPatch({
+      supports_vision: caps.vision,
+      supports_thinking: caps.thinking,
+      supports_web_search: caps.webSearch || block.supports_web_search,
+      thinking_effort: caps.thinking ? block.thinking_effort ?? caps.thinkingEffort ?? 'high' : block.thinking_effort
+    });
+    toast.success('已识别能力', `${summarizeCapabilities(caps)}（可手动微调）`);
+  }
+
+  // 候选：上游模型里去掉「已指派到任一块」的实际 ID（跨块去重——已添加的不再出现在下一个块）
+  const blockDetected = detected.filter((m) => !assignedAll.has(m));
+
+  async function testProtocol(): Promise<void> {
+    const firstModel = Object.values(mapping)[0];
+    if (!firstModel) {
+      toast.error('先在本块加一个模型映射', '协议测试需要一个实际模型 ID');
+      return;
+    }
+    if (!baseUrl.trim() || !apiKey.trim()) {
+      toast.error('请先填好 地址 与 API Key');
+      return;
+    }
+    setTestingProto(true);
+    setProtoResult(null);
+    const r = await window.electronAPI.settings.testProtocol({
+      base_url: baseUrl,
+      api_key_plain: apiKey,
+      type,
+      model_id: firstModel,
+      official_kind: type === 'text' ? block.official_kind : null,
+      image_kind: type === 'image' ? block.image_kind : null,
+      body_overrides_json: type === 'image' || type === 'video' ? block.body_overrides_json : null,
+      header_overrides_json: headerOverrides.trim() ? headerOverrides : null
+    });
+    setTestingProto(false);
+    if (r.ok) {
+      setProtoResult(r.data);
+      if (r.data.ok) toast.success('协议测试通过', r.data.message);
+      else if (r.data.skipped) toast.info('未做协议测试', r.data.message);
+      else toast.error('协议测试失败', r.data.message);
+    } else {
+      setProtoResult({ ok: false, message: r.error.message });
+      toast.error('协议测试失败', r.error.message);
+    }
+  }
+
+  return (
+    <div className={`mb-pe-block ${block.enabled ? 'is-on' : ''}`}>
+      <div className="mb-pe-block-head">
+        <button
+          type="button"
+          className="mb-pe-block-headmain"
+          onClick={() => (block.enabled ? setCollapsed((c) => !c) : toggleEnabled())}
+          title={block.enabled ? (collapsed ? '展开本类设置' : '折叠本类设置（仍保持启用）') : '点此启用本类'}
+        >
+          <span className="mb-pe-block-ico">{meta.icon}</span>
+          <span className="mb-pe-block-title">{meta.label}模型</span>
+          {block.enabled && mappingCount > 0 && <span className="mb-pe-block-count">{mappingCount} 模型</span>}
+          {block.enabled && collapsed && <span className="mb-pe-block-state">已启用 · 已折叠</span>}
+        </button>
+        <div className="mb-pe-block-ctl">
+          {block.enabled && (
+            <button
+              type="button"
+              className="mb-pe-collapse"
+              onClick={() => setCollapsed((c) => !c)}
+              title={collapsed ? '展开' : '折叠'}
+            >
+              {collapsed ? '▸' : '▾'}
+            </button>
+          )}
+          <SwitchControl
+            checked={block.enabled}
+            onChange={() => toggleEnabled()}
+            title={block.enabled ? '关闭本类（保存时会删除该类配置）' : '启用本类'}
+          />
+        </div>
+      </div>
+
+      {block.enabled && !collapsed && (
+        <div className="mb-pe-block-body">
+          {type === 'text' && (
+            <Field label="对话 API 协议">
+              <select
+                className="mb-select"
+                value={block.official_kind ?? ''}
+                onChange={(e) => onPatch({ official_kind: (e.target.value || null) as OfficialKind })}
+              >
+                {OFFICIAL_KINDS.map((k) => (
+                  <option key={k.value ?? 'none'} value={k.value ?? ''}>
+                    {k.label}
+                  </option>
+                ))}
+              </select>
+              <div className="mb-field-hint">
+                {OFFICIAL_KINDS.find((k) => k.value === (block.official_kind ?? null))?.hint}
+              </div>
+            </Field>
+          )}
+          {type === 'image' && (
+            <Field label="绘图 API 协议">
+              <select
+                className="mb-select"
+                value={block.image_kind ?? ''}
+                onChange={(e) => onPatch({ image_kind: (e.target.value || null) as ImageKind })}
+              >
+                {IMAGE_KINDS.map((k) => (
+                  <option key={k.value ?? 'openai'} value={k.value ?? ''}>
+                    {k.label}
+                  </option>
+                ))}
+              </select>
+              <div className="mb-field-hint">
+                {IMAGE_KINDS.find((k) => k.value === (block.image_kind ?? null))?.hint}
+              </div>
+            </Field>
+          )}
+          {type === 'video' && (
+            <Field label="视频 API 协议（拿不准就先默认，运行时会按地址/模型自动匹配）">
+              <select
+                className="mb-select"
+                value={block.video_kind ?? 'kling'}
+                onChange={(e) => onPatch({ video_kind: e.target.value as VideoKind })}
+              >
+                {VIDEO_KINDS.map((k) => (
+                  <option key={k.value ?? 'kling'} value={k.value ?? 'kling'}>
+                    {k.label}
+                  </option>
+                ))}
+              </select>
+              {(() => {
+                const firstActual = Object.values(mapping)[0];
+                const sug = suggestVideoKind(baseUrl ?? '', firstActual);
+                const cur = block.video_kind ?? 'kling';
+                if (!sug || sug === cur) return null;
+                return (
+                  <div className="mb-field-hint" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span>
+                      该 地址/模型 更像 <b>{VIDEO_KINDS.find((k) => k.value === sug)?.label ?? sug}</b>
+                    </span>
+                    <button className="mb-btn mb-btn-sm" onClick={() => onPatch({ video_kind: sug })}>
+                      一键采用
+                    </button>
+                  </div>
+                );
+              })()}
+              <div className="mb-field-hint">
+                {VIDEO_KINDS.find((k) => k.value === (block.video_kind ?? 'kling'))?.hint}
+              </div>
+            </Field>
+          )}
+
+          {type === 'text' && block.official_kind === 'local' && (
+            <Field label="本地模型文件（.gguf）">
+              <input
+                className="mb-input"
+                value={block.local_model_path ?? ''}
+                onChange={(e) => onPatch({ local_model_path: e.target.value || null })}
+                placeholder="C:\\models\\xxx.gguf"
+              />
+              <div className="mb-field-hint">本地协议需 .gguf 路径；要选择文件请用行内单项编辑器。</div>
+            </Field>
+          )}
+
+          <Field label={`模型映射（${mappingCount}）`}>
+            <div className="mb-mapping-head">
+              <span>显示名（带「{providerName || '中转站'} / 」前缀）</span>
+              <span>实际模型 ID</span>
+            </div>
+            <div className="mb-mapping-list">
+              {Object.entries(mapping).map(([k, v]) => (
+                <MappingRow
+                  key={k}
+                  displayName={k}
+                  actualId={v}
+                  onRename={(nk, nv) => renameMapping(k, nk, nv)}
+                  onRemove={() => removeMapping(k)}
+                />
+              ))}
+            </div>
+            <div className="mb-mapping-add">
+              <input
+                className="mb-input"
+                placeholder="显示名"
+                value={draftKey}
+                onChange={(e) => setDraftKey(e.target.value)}
+              />
+              <input
+                className="mb-input"
+                placeholder="实际模型 ID"
+                value={draftVal}
+                onChange={(e) => setDraftVal(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') addMapping();
+                }}
+              />
+              <button className="mb-btn mb-btn-secondary mb-btn-sm" onClick={addMapping}>
+                <PlusIcon size={14} /> 添加
+              </button>
+            </div>
+            {blockDetected.length > 0 && (
+              <div className="mb-pe-detected">
+                <span className="mb-field-hint">从上游模型指派（{blockDetected.length}，全部可选，多了可滚动）：</span>
+                <div className="mb-pe-detected-chips">
+                  {/* 全部展示（不再截断 40 个），容器可滚动 */}
+                  {blockDetected.map((m) => {
+                    const protos = detectedProtocols[m];
+                    const badge = protos?.length ? protocolToOfficialKind(protos).badge : undefined;
+                    const titleProto = protos?.length ? `（协议：${protos.join('/')}）` : '';
+                    return (
+                      <button
+                        key={m}
+                        className="mb-pe-chip"
+                        title={`${describeUpstreamModel(m)}${titleProto}`}
+                        onClick={() => addDetected(m)}
+                      >
+                        + {m}
+                        {badge && <span style={{ marginLeft: 6, fontSize: '10px', opacity: 0.6 }}>{badge}</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </Field>
+
+          <div className="mb-config-capsbar">
+            <button
+              className="mb-btn mb-btn-secondary mb-btn-sm"
+              onClick={() => void testProtocol()}
+              disabled={testingProto}
+              title={
+                type === 'text'
+                  ? '真实发一次最小对话调用（max_tokens:1，近乎免费），验证协议/请求头/模型是否能跑'
+                  : type === 'image'
+                    ? '真实生成一张 1024 测试图（绘画模型可能产生少量费用），捕获 response_format 等字段被拒'
+                    : '视频为异步按量计费，不做一键测试（点击会给出说明）'
+              }
+            >
+              {testingProto ? '测试中…' : '🧪 测试协议（真实调用一次）'}
+            </button>
+            <span className="mb-config-capsbar-hint">
+              {type === 'image' ? '会真实出 1 张图，可能产生少量费用' : type === 'text' ? '近乎免费' : '视频不做真实调用'}
+            </span>
+          </div>
+          {protoResult && (
+            <div
+              className="mb-field-hint"
+              style={{ color: protoResult.ok ? 'var(--mb-success, #2a8)' : protoResult.skipped ? undefined : 'var(--mb-danger, #d44)' }}
+            >
+              {protoResult.ok ? '✓ ' : protoResult.skipped ? 'ℹ ' : '✗ '}
+              {protoResult.message}
+              {protoResult.detail && (
+                <pre
+                  style={{
+                    marginTop: 6,
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-all',
+                    maxHeight: 140,
+                    overflow: 'auto',
+                    fontSize: 11,
+                    opacity: 0.8
+                  }}
+                >
+                  {protoResult.detail}
+                </pre>
+              )}
+            </div>
+          )}
+
+          {type === 'text' && (
+            <>
+              <div className="mb-config-capsbar">
+                <button
+                  className="mb-btn mb-btn-secondary mb-btn-sm"
+                  onClick={() => void detectCaps()}
+                  disabled={detectingCaps}
+                  title="按真实模型 ID 自动判断：多模态 / 思考 / 原生联网"
+                >
+                  {detectingCaps ? '识别中…' : '✨ 自动识别能力'}
+                </button>
+                <span className="mb-config-capsbar-hint">按模型 ID 判断 多模态/思考/联网</span>
+              </div>
+              <div className="mb-config-toggles">
+                <Toggle
+                  label="原生联网搜索"
+                  value={block.supports_web_search}
+                  onChange={(v) => onPatch({ supports_web_search: v })}
+                />
+                <Toggle label="vision 多模态" value={block.supports_vision} onChange={(v) => onPatch({ supports_vision: v })} />
+                <Toggle label="思考模式" value={block.supports_thinking} onChange={(v) => onPatch({ supports_thinking: v })} />
+              </div>
+              {block.supports_thinking && (
+                <Field label="思考强度">
+                  <select
+                    className="mb-select"
+                    value={block.thinking_effort ?? ''}
+                    onChange={(e) =>
+                      onPatch({ thinking_effort: (e.target.value || null) as 'low' | 'medium' | 'high' | 'max' | null })
+                    }
+                  >
+                    <option value="">（默认）</option>
+                    <option value="low">low（最少思考）</option>
+                    <option value="medium">medium</option>
+                    <option value="high">high（推荐）</option>
+                    <option value="max">max（最深思考）</option>
+                  </select>
+                </Field>
+              )}
+            </>
+          )}
+
+          {(type === 'image' || type === 'video') && (
+            <div className="mb-pe-advanced">
+              <button type="button" className="mb-snippet-paste-toggle" onClick={() => setAdvancedOpen((v) => !v)}>
+                高级：请求体覆盖（绝大多数中转站无需设置，看不懂可跳过）
+                <span className="mb-snippet-paste-chevron">{advancedOpen ? '▲' : '▼'}</span>
+              </button>
+              {advancedOpen && (
+                <>
+                  <textarea
+                    className="mb-textarea"
+                    rows={4}
+                    spellCheck={false}
+                    placeholder={'{\n  "response_format": null\n}'}
+                    value={block.body_overrides_json ?? ''}
+                    onChange={(e) => {
+                      onPatch({ body_overrides_json: e.target.value === '' ? null : e.target.value });
+                      setBodyErr(null);
+                    }}
+                    onBlur={(e) => {
+                      const v = e.target.value.trim();
+                      if (!v) {
+                        setBodyErr(null);
+                        return;
+                      }
+                      try {
+                        const p = JSON.parse(v) as unknown;
+                        if (typeof p !== 'object' || p === null || Array.isArray(p)) setBodyErr('必须是 JSON 对象');
+                        else setBodyErr(null);
+                      } catch (err) {
+                        setBodyErr(`JSON 解析失败：${(err as Error).message}`);
+                      }
+                    }}
+                  />
+                  {bodyErr && (
+                    <div className="mb-field-hint" style={{ color: 'var(--mb-danger, #d44)' }}>
+                      {bodyErr}
+                    </div>
+                  )}
+                  <div className="mb-field-hint">
+                    与默认请求体顶层合并发出，<code>null</code> 值表示删除该字段。
+                    {type === 'video' ? '各站视频字段差异用它兜底。' : ''}
+                  </div>
+                  <button
+                    type="button"
+                    className="mb-btn mb-btn-secondary mb-btn-sm"
+                    style={{ marginTop: 6 }}
+                    onClick={() => {
+                      onPatch({ body_overrides_json: '{\n  "response_format": null\n}' });
+                      setBodyErr(null);
+                    }}
+                    title="部分中转站（如 LiteLLM 代理）不支持 response_format，会报 400 UnsupportedParamsError——一键屏蔽它"
+                  >
+                    一键填：屏蔽 response_format（修复部分中转站 400/500）
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Field({
   label,
   hint,
@@ -1553,6 +3056,27 @@ function Field({
       {children}
       {hint && <div className="mb-field-hint">{hint}</div>}
     </div>
+  );
+}
+
+/** 设置分区卡片：标题 + 说明 + 内容，给各设置页清晰的区域划分。 */
+function SettingsSection({
+  title,
+  desc,
+  children
+}: {
+  title: string;
+  desc?: string;
+  children: React.ReactNode;
+}): JSX.Element {
+  return (
+    <section className="mb-settings-card mb-card">
+      <div className="mb-settings-card-head">
+        <span className="mb-settings-card-title">{title}</span>
+        {desc && <span className="mb-settings-card-desc">{desc}</span>}
+      </div>
+      <div className="mb-settings-card-body">{children}</div>
+    </section>
   );
 }
 
@@ -1686,7 +3210,7 @@ function IconPickerButton({
         onClick={() => setOpen((v) => !v)}
         title="点击选择厂商图标"
       >
-        <ProviderIcon value={effective} size={36} radius={9} />
+        <ProviderIcon value={effective} name={fallbackHint.providerName} size={36} radius={9} />
       </button>
       {open && (
         <>
@@ -1719,7 +3243,7 @@ function IconPickerButton({
                 }}
                 title="自动跟随"
               >
-                <ProviderIcon value={null} size={36} radius={9} title="自动" />
+                <ProviderIcon value={null} name={fallbackHint.providerName} size={36} radius={9} title="自动" />
                 <span>自动</span>
               </button>
               {filtered.map((p) => (
@@ -1891,7 +3415,56 @@ function LocalLlmFields({
           </div>
         </Field>
       )}
+      {!usingExternal && <LocalLlmGpuLayersField running={status.running} onStop={stopServer} />}
     </>
+  );
+}
+
+/** 本地模型 GPU 层数（全局 pref `local_llm_gpu_layers`）：层数越高推理越快、但越挤占界面 GPU。 */
+function LocalLlmGpuLayersField({ running, onStop }: { running: boolean; onStop: () => Promise<void> }): JSX.Element {
+  const { prefs, load } = useSettingsStore();
+  const [draftVal, setDraftVal] = useState(prefs.local_llm_gpu_layers ?? '');
+  useEffect(() => {
+    setDraftVal(prefs.local_llm_gpu_layers ?? '');
+  }, [prefs.local_llm_gpu_layers]);
+
+  async function commit(): Promise<void> {
+    const t = draftVal.trim();
+    // 空 = 自动；否则 clamp [0, 999]
+    const v = t === '' ? '' : String(Math.max(0, Math.min(999, Math.trunc(Number(t) || 0))));
+    setDraftVal(v);
+    const r = await window.electronAPI.settings.save({ prefs: { local_llm_gpu_layers: v } });
+    if (r.ok) {
+      await load();
+      toast.success('已保存 GPU 层数', running ? '先「停止当前内嵌服务」，下次对话重新加载后生效' : '下次加载模型时生效');
+    } else toast.error('保存失败', r.error.message);
+  }
+
+  return (
+    <Field label="GPU 层数（显卡占用控制）">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <input
+          className="mb-input"
+          style={{ width: 120 }}
+          value={draftVal}
+          placeholder="自动"
+          onChange={(e) => setDraftVal(e.target.value)}
+          onBlur={() => void commit()}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+          }}
+        />
+        {running && (
+          <button type="button" className="mb-btn mb-btn-ghost mb-btn-sm" onClick={() => void onStop()}>
+            停止以应用新值
+          </button>
+        )}
+      </div>
+      <div className="mb-field-hint">
+        放到显卡的模型层数：留空 = 自动（最快，但推理时界面可能变卡）；<b>0 = 纯 CPU</b>（最慢，完全不抢界面显卡）；
+        填小一点的正整数（如 20）= 推理与界面分摊显卡。换值需重新加载模型（停止服务后下次对话生效）。
+      </div>
+    </Field>
   );
 }
 
@@ -1921,7 +3494,7 @@ function Toggle({
 // ─────────────────────────────────────────────────────
 
 function AppearanceTab(): JSX.Element {
-  const { atmosphere, palette, setAtmosphere, setPalette, flowColor, setFlowColor, appZoom, setAppZoom } =
+  const { atmosphere, palette, setAtmosphere, setPalette, flowColor, setFlowColor, appZoom, setAppZoom, perfMode, setPerfMode } =
     useThemeStore();
   const haloStyle = useCursorHaloStore((s) => s.style);
   const setHaloStyle = useCursorHaloStore((s) => s.setStyle);
@@ -1937,6 +3510,7 @@ function AppearanceTab(): JSX.Element {
         </div>
       </header>
 
+      <SettingsSection title="主题外观" desc="10 材质氛围 × 10 主题配色，共 100 组合">
       <Field label="材质氛围">
         <div className="mb-appearance-atmospheres">
           {ATMOSPHERES.map((a, i) => (
@@ -1985,6 +3559,9 @@ function AppearanceTab(): JSX.Element {
         </div>
       </Field>
 
+      </SettingsSection>
+
+      <SettingsSection title="显示与缩放" desc="整窗界面缩放（webFrame）">
       <Field label="界面缩放">
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           <button
@@ -2030,6 +3607,43 @@ function AppearanceTab(): JSX.Element {
         </span>
       </Field>
 
+      </SettingsSection>
+
+      <SettingsSection title="性能模式" desc="动效开销控制，立即生效">
+      <Field label="性能模式">
+        <div className="mb-appearance-halos">
+          <motion.button
+            type="button"
+            onClick={() => setPerfMode('normal')}
+            className={`mb-appearance-halo ${perfMode === 'normal' ? 'is-active' : ''}`}
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
+          >
+            <span className="mb-appearance-halo-label">完整动效</span>
+            <span className="mb-appearance-halo-desc">星辰 / 流星 / 光晕 / 页面过渡 / 连线流动全开，视觉效果最佳</span>
+          </motion.button>
+          <motion.button
+            type="button"
+            onClick={() => {
+              setPerfMode('low');
+              toast.info('已开启低配模式', '装饰动画与页面过渡已停（进度条/加载指示不受影响），立即生效');
+            }}
+            className={`mb-appearance-halo ${perfMode === 'low' ? 'is-active' : ''}`}
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
+          >
+            <span className="mb-appearance-halo-label">低配模式</span>
+            <span className="mb-appearance-halo-desc">停 装饰动画（流星/星辰/光晕）+ 页面切换过渡 + 智能画布连线流动 → 降 GPU 占用、改善掉帧</span>
+          </motion.button>
+        </div>
+        <div className="mb-field-hint">
+          影响范围：装饰动画、页面切换过渡、智能画布连线流动动画。进度条与加载指示永远保留。无需重启，立即生效；本地大模型推理时会自动临时降效（推理完恢复）。
+        </div>
+      </Field>
+
+      </SettingsSection>
+
+      <SettingsSection title="智能画布与光标" desc="连线流动色 / 鼠标光晕">
       <Field label="智能画布连线流动色">
         <div className="mb-appearance-flow">
           <input
@@ -2077,6 +3691,7 @@ function AppearanceTab(): JSX.Element {
           想完全关闭选「关闭」即可。
         </div>
       </Field>
+      </SettingsSection>
     </div>
   );
 }
@@ -2086,7 +3701,7 @@ function AppearanceTab(): JSX.Element {
 // ─────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────
-// 工具箱 tab：保存路径 + 引擎状态（Real-ESRGAN ncnn + HYPIR 占位）
+// 工具箱 tab：保存路径 + 引擎状态（Real-ESRGAN ncnn）
 // 真正的放大引擎参数（模型 / 倍率 / 后端）在工具箱面板里按单次任务设置
 // ─────────────────────────────────────────────────────
 function ToolsTab(): JSX.Element {
@@ -2099,7 +3714,6 @@ function ToolsTab(): JSX.Element {
     enginePath: string;
     platform: string;
   } | null>(null);
-  const [hypirReady, setHypirReady] = useState<boolean | null>(null);
 
   const toolsPath = prefs.tools_storage_path ?? '(沿用图片存储路径)';
   const autoSave = prefs.tools_auto_save === 'true';
@@ -2119,9 +3733,6 @@ function ToolsTab(): JSX.Element {
 
   useEffect(() => {
     void refreshEngineStatus();
-    void window.electronAPI.hypir.check({}).then((r) => {
-      if (r.ok) setHypirReady(r.data.ready);
-    });
   }, []);
 
   async function pickPath(): Promise<void> {
@@ -2200,7 +3811,7 @@ function ToolsTab(): JSX.Element {
     const ok = await confirmDialog({
       title: '卸载放大引擎',
       message: '确定卸载 Real-ESRGAN ncnn Vulkan 引擎吗？',
-      detail: '会删除引擎二进制 + 所有已装模型；HYPIR / 矢量化不受影响。',
+      detail: '会删除引擎二进制 + 所有已装模型；矢量化不受影响。',
       okText: '卸载',
       danger: true
     });
@@ -2229,11 +3840,12 @@ function ToolsTab(): JSX.Element {
         <div>
           <h3>工具箱</h3>
           <p className="mb-settings-pane-desc">
-            保真放大（Real-ESRGAN ncnn）+ AI 修复（HYPIR 占位）+ 矢量化的本地化处理偏好与引擎管理。
+            保真放大（Real-ESRGAN ncnn）+ 矢量化的本地化处理偏好与引擎管理。
           </p>
         </div>
       </header>
 
+      <SettingsSection title="输出与保存" desc="工具箱产出目录与自动保存">
       <Field label="工具箱保存路径">
         <div className="mb-storage-path-row">
           <div
@@ -2267,6 +3879,9 @@ function ToolsTab(): JSX.Element {
         />
       </Field>
 
+      </SettingsSection>
+
+      <SettingsSection title="Real-ESRGAN 放大引擎" desc="ncnn Vulkan 本地引擎与已装模型">
       <Field label="Real-ESRGAN ncnn 引擎">
         {engineStatus ? (
           <div className="mb-field-hint" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -2393,24 +4008,15 @@ function ToolsTab(): JSX.Element {
         )}
       </Field>
 
+      </SettingsSection>
+
+      <SettingsSection title="ONNX 放大模型" desc="onnxruntime-node 主进程，无 Python 依赖">
       <Field label="ONNX 放大模型(走 onnxruntime-node 主进程,无 Python 依赖)">
         <OnnxModelsField />
       </Field>
+      </SettingsSection>
 
-      <Field label="HYPIR（AI 高质量修复，需 Python+CUDA）">
-        <div className="mb-field-hint" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          {hypirReady === null ? (
-            <div>读取依赖状态中…</div>
-          ) : hypirReady ? (
-            <div>✓ 依赖全部就绪 —— 推理后端将在后续版本启用</div>
-          ) : (
-            <div>✗ 部分依赖未就绪 —— 到工具箱 → AI 修复 查看详细清单</div>
-          )}
-          <div>引擎与权重均独立管理，不会被打入主程序安装包。</div>
-        </div>
-      </Field>
-
-      {/* AI 矢量化(StarVector / 实验精修)已于 2026-05-28 整体砍除 */}
+      {/* AI 矢量化(StarVector / 实验精修)已于 2026-05-28 整体砍除；HYPIR AI 修复 + ai-platform 底座已于 2026-06-18 整体砍除 */}
     </div>
   );
 }
@@ -2450,32 +4056,321 @@ function StorageTab(): JSX.Element {
       <header className="mb-settings-pane-header">
         <div>
           <h3>存储与系统</h3>
-          <p className="mb-settings-pane-desc">控制图片落盘位置、备份策略与系统体验。</p>
+          <p className="mb-settings-pane-desc">控制图片落盘位置、资产库性能与配置备份。</p>
         </div>
       </header>
 
-      <Field label="图片存储路径">
-        <div className="mb-storage-path-row">
-          <div className="mb-input" style={{ flex: 1, display: 'flex', alignItems: 'center' }}>
-            <FolderIcon size={16} />
-            <span style={{ marginLeft: 10, color: 'var(--mb-text-secondary)' }}>{imagePath}</span>
+      <SettingsSection title="存储位置" desc="图片落盘目录与文件命名规则">
+        <Field label="图片存储路径">
+          <div className="mb-storage-path-row">
+            <div className="mb-input" style={{ flex: 1, display: 'flex', alignItems: 'center' }}>
+              <FolderIcon size={16} />
+              <span style={{ marginLeft: 10, color: 'var(--mb-text-secondary)' }}>{imagePath}</span>
+            </div>
+            <button
+              className="mb-btn mb-btn-secondary"
+              onClick={() => void pickFolder('image_storage_path', '图片存储路径')}
+              disabled={busy}
+            >
+              选择文件夹
+            </button>
           </div>
-          <button
-            className="mb-btn mb-btn-secondary"
-            onClick={() => void pickFolder('image_storage_path', '图片存储路径')}
-            disabled={busy}
-          >
-            选择文件夹
-          </button>
+        </Field>
+        <FilenameTemplateField />
+      </SettingsSection>
+
+      <SettingsSection title="资产库" desc="资产库（图库）的加载与性能">
+        <GalleryPrefsField />
+      </SettingsSection>
+
+      <SettingsSection title="配置备份" desc="导出 / 导入全部方案与设置（加密）">
+        <ConfigIOSection />
+      </SettingsSection>
+    </div>
+  );
+}
+
+/**
+ * 智能化方案 Tab：把「智能体（自动生成 + 模型指派）」「系统与体验」「联网搜索」集中到一处。
+ * 原先散落在「存储与系统 → 系统与体验 / 联网搜索」，这里独立成顶级菜单，便于统一管理 AI 行为与系统体验。
+ * 纯界面归位：复用同样的字段组件、prefs 键与处理逻辑，不改任何行为。
+ */
+function IntelligentTab(): JSX.Element {
+  return (
+    <div className="mb-settings-pane">
+      <header className="mb-settings-pane-header">
+        <div>
+          <h3>智能化方案</h3>
+          <p className="mb-settings-pane-desc">智能画布 AI 智能体、系统体验与对话联网搜索的集中配置。</p>
+        </div>
+      </header>
+
+      <SettingsSection title="智能体" desc="智能画布「🤖 智能体」的自动生成行为与模型指派">
+        <AgentAutoRunField />
+        <AgentModelsField />
+      </SettingsSection>
+
+      <SettingsSection title="系统与体验" desc="硬件加速、任务完成语音播报">
+        <GpuAccelField />
+        <VoiceNotifyField />
+      </SettingsSection>
+
+      <SettingsSection title="联网搜索" desc="对话联网后端：模型原生 / 各类代搜">
+        <SearchBackendField />
+      </SettingsSection>
+    </div>
+  );
+}
+
+/** 任务完成语音播报：开关（缺省 = 开）+ 试听 + 按任务类型自定义话术（prefs.voice_phrases_json）。 */
+function VoiceNotifyField(): JSX.Element {
+  const { prefs, load } = useSettingsStore();
+  const enabled = voiceNotifyEnabled(prefs);
+  const [busy, setBusy] = useState(false);
+  const [showPhrases, setShowPhrases] = useState(false);
+  // 本地草稿：失焦才保存（避免每键 IPC）
+  const [draft, setDraft] = useState<Partial<Record<VoiceTaskKey, VoicePhrase>>>(() => parsePhrases(prefs.voice_phrases_json));
+
+  async function toggle(next: boolean): Promise<void> {
+    setBusy(true);
+    const r = await window.electronAPI.settings.save({ prefs: { voice_notify: next ? '1' : '0' } });
+    setBusy(false);
+    if (r.ok) {
+      await load();
+      if (next) speakText('语音播报已开启');
+    } else {
+      toast.error('保存失败', r.error.message);
+    }
+  }
+
+  async function savePhrases(next: Partial<Record<VoiceTaskKey, VoicePhrase>>): Promise<void> {
+    // 清掉全空项再落库
+    const cleaned: Partial<Record<VoiceTaskKey, VoicePhrase>> = {};
+    for (const k of Object.keys(next) as VoiceTaskKey[]) {
+      const v = next[k];
+      const ok = v?.ok?.trim();
+      const fail = v?.fail?.trim();
+      if (ok || fail) cleaned[k] = { ...(ok ? { ok } : {}), ...(fail ? { fail } : {}) };
+    }
+    const r = await window.electronAPI.settings.save({
+      prefs: { voice_phrases_json: Object.keys(cleaned).length ? JSON.stringify(cleaned) : '' }
+    });
+    if (r.ok) await load();
+    else toast.error('保存失败', r.error.message);
+  }
+
+  const keys = Object.keys(VOICE_TASK_NAMES) as VoiceTaskKey[];
+
+  return (
+    <Field label="任务完成语音播报">
+      <div className="mb-switch-row" style={{ flexWrap: 'wrap' }}>
+        <SwitchControl checked={enabled} disabled={busy} onChange={(v) => void toggle(v)} />
+        <span className="mb-switch-state">{enabled ? '已开启（默认）' : '已关闭'}</span>
+        <button type="button" className="mb-btn mb-btn-sm mb-btn-ghost" onClick={() => speakText(defaultPhrase('image', 'ok'))}>
+          🔊 试听
+        </button>
+        <button type="button" className="mb-btn mb-btn-sm mb-btn-ghost" onClick={() => setShowPhrases((v) => !v)}>
+          {showPhrases ? '收起自定义话术' : '自定义话术…'}
+        </button>
+      </div>
+      {showPhrases && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
+          {keys.map((k) => (
+            <div key={k} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span style={{ minWidth: 110, color: 'var(--mb-text-secondary)', fontSize: 13 }}>{VOICE_TASK_NAMES[k]}</span>
+              <input
+                className="mb-input"
+                style={{ flex: 1, minWidth: 150 }}
+                placeholder={defaultPhrase(k, 'ok')}
+                value={draft[k]?.ok ?? ''}
+                onChange={(e) => setDraft((d) => ({ ...d, [k]: { ...d[k], ok: e.target.value } }))}
+                onBlur={() => void savePhrases(draft)}
+              />
+              <input
+                className="mb-input"
+                style={{ flex: 1, minWidth: 150 }}
+                placeholder={defaultPhrase(k, 'fail')}
+                value={draft[k]?.fail ?? ''}
+                onChange={(e) => setDraft((d) => ({ ...d, [k]: { ...d[k], fail: e.target.value } }))}
+                onBlur={() => void savePhrases(draft)}
+              />
+              <button
+                type="button"
+                className="mb-btn mb-btn-sm mb-btn-ghost"
+                title="试听当前成功话术"
+                onClick={() => speakText(draft[k]?.ok?.trim() || defaultPhrase(k, 'ok'))}
+              >
+                🔊
+              </button>
+            </div>
+          ))}
+          <span className="mb-appearance-flow-hint">左 = 成功话术、右 = 失败话术；留空即用默认。失焦自动保存。</span>
+        </div>
+      )}
+      <span className="mb-appearance-flow-hint">
+        生图 / 视频 / ComfyUI / 矢量化 / 放大 / 插帧 等耗时任务完成或失败时用系统语音播报（对话回复不播报）。
+        没有声音时请检查 Windows 是否安装了中文语音（设置 → 时间和语言 → 语音）。
+      </span>
+    </Field>
+  );
+}
+
+/** GPU 加速开关：写 prefs.boot_disable_gpu（settings.ts 同步落 boot-flags.json），重启梦笔生效。 */
+function GpuAccelField(): JSX.Element {
+  const { prefs, load } = useSettingsStore();
+  const disabled = prefs.boot_disable_gpu === '1';
+  const [busy, setBusy] = useState(false);
+
+  async function toggle(next: boolean): Promise<void> {
+    setBusy(true);
+    const r = await window.electronAPI.settings.save({ prefs: { boot_disable_gpu: next ? '0' : '1' } });
+    setBusy(false);
+    if (r.ok) {
+      await load();
+      toast.info(next ? '已开启 GPU 加速' : '已关闭 GPU 加速', '重启梦笔后生效');
+    } else {
+      toast.error('保存失败', r.error.message);
+    }
+  }
+
+  return (
+    <Field label="GPU 加速">
+      <div className="mb-switch-row">
+        <SwitchControl checked={!disabled} disabled={busy} onChange={(v) => void toggle(v)} />
+        <span className="mb-switch-state">{!disabled ? '已开启（默认）' : '已关闭'}</span>
+      </div>
+      <span className="mb-appearance-flow-hint">
+        硬件加速渲染（画布动画 / 预览切换更流畅）。若开启后出现花屏 / 黑块等兼容性问题，可关闭后重启梦笔；
+        切换需要重启才生效。
+      </span>
+    </Field>
+  );
+}
+
+/** 资产库常驻预加载（写 prefs.gallery_preload，缺省=开）：软件未关期间保持图库已加载，切回瞬开不空等。 */
+function GalleryPrefsField(): JSX.Element {
+  const { prefs, load } = useSettingsStore();
+  const on = prefs.gallery_preload !== '0';
+  const [busy, setBusy] = useState(false);
+  async function toggle(next: boolean): Promise<void> {
+    setBusy(true);
+    const r = await window.electronAPI.settings.save({ prefs: { gallery_preload: next ? '1' : '0' } });
+    setBusy(false);
+    if (r.ok) await load();
+    else toast.error('保存失败', r.error.message);
+  }
+  return (
+    <Field label="资产库常驻预加载">
+      <div className="mb-switch-row">
+        <SwitchControl checked={on} disabled={busy} onChange={(v) => void toggle(v)} />
+        <span className="mb-switch-state">{on ? '已开启（默认）' : '已关闭'}</span>
+      </div>
+      <span className="mb-appearance-flow-hint">
+        软件未关闭期间保持资产库内容已加载在内存里：从别的功能切回资产库时瞬间打开、不再每次重新拉取空等 2-3 秒。
+        新产出 / 删除会自动后台同步。关闭则每次进资产库都重新加载（更省内存）。
+      </span>
+    </Field>
+  );
+}
+
+/** 智能画布 AI 智能体：建图后是否直接生成（写 prefs.agent_auto_run）。默认关=先确认（省钱防错）。 */
+function AgentAutoRunField(): JSX.Element {
+  const { prefs, load } = useSettingsStore();
+  const auto = prefs.agent_auto_run === '1';
+  const [busy, setBusy] = useState(false);
+
+  async function toggle(next: boolean): Promise<void> {
+    setBusy(true);
+    const r = await window.electronAPI.settings.save({ prefs: { agent_auto_run: next ? '1' : '0' } });
+    setBusy(false);
+    if (r.ok) {
+      await load();
+      toast.info(next ? '已开启智能体自动生成' : '已关闭（建图后先确认）');
+    } else {
+      toast.error('保存失败', r.error.message);
+    }
+  }
+
+  return (
+    <Field label="智能体自动生成">
+      <div className="mb-switch-row">
+        <SwitchControl checked={auto} disabled={busy} onChange={(v) => void toggle(v)} />
+        <span className="mb-switch-state">{auto ? '建好图直接生成' : '建图后先确认（默认）'}</span>
+      </div>
+      <span className="mb-appearance-flow-hint">
+        智能画布「🤖 智能体」根据你的一句话自动搭好节点图后：默认停下来让你确认，点「确认生成」才调用绘画模型（省钱防错）；
+        开启后建好图直接开始生成。
+      </span>
+    </Field>
+  );
+}
+
+/**
+ * 智能体使用的模型（文本 / 绘画 / 视频）。写 prefs.agent_{text,image,video}_model（显示名，空 = 自动用首个可用）。
+ * 智能体建图时按此把模型指派到对应节点：生图→绘画、视频→视频，LLM / 角色设计 / 智能分镜 / 图像反推→文本。
+ * 解决「智能体接了功能但没地方设模型、跑起来报错」——在这里显式指定即可。
+ */
+function AgentModelsField(): JSX.Element {
+  const { configs, activePlanId, prefs, load } = useSettingsStore();
+  const [busy, setBusy] = useState(false);
+  const textModels = listMappedModels(configs, activePlanId, 'text').filter((m) => m.usable);
+  const imageModels = listMappedModels(configs, activePlanId, 'image').filter((m) => m.usable);
+  const videoModels = listMappedModels(configs, activePlanId, 'video').filter((m) => m.usable);
+
+  async function setModel(key: string, value: string): Promise<void> {
+    setBusy(true);
+    const r = await window.electronAPI.settings.save({ prefs: { [key]: value } });
+    setBusy(false);
+    if (r.ok) await load();
+    else toast.error('保存失败', r.error.message);
+  }
+
+  function row(label: string, key: string, models: ReturnType<typeof listMappedModels>, emptyHint: string, autoLabel = '自动（用首个可用）'): JSX.Element {
+    return (
+      <Field label={label}>
+        <select
+          className="mb-select"
+          disabled={busy || models.length === 0}
+          value={prefs[key] ?? ''}
+          onChange={(e) => void setModel(key, e.target.value)}
+        >
+          <option value="">{autoLabel}</option>
+          {models.map((m) => (
+            <option key={m.name} value={m.name}>
+              {m.label}
+            </option>
+          ))}
+        </select>
+        {models.length === 0 && <span className="mb-field-hint">{emptyHint}</span>}
+      </Field>
+    );
+  }
+
+  return (
+    <>
+      {row('智能体 · 文本模型', 'agent_text_model', textModels, '当前方案没有可用对话模型（规划 / LLM / 角色 / 分镜 / 图像反推 都用它）')}
+      {row('智能体 · 绘画模型', 'agent_image_model', imageModels, '当前方案没有可用绘画模型（生图节点用它）', '自动（跟随最近在生图里选用的模型）')}
+      {row('智能体 · 视频模型', 'agent_video_model', videoModels, '当前方案没有可用视频模型（视频节点用它）', '自动（跟随最近在视频里选用的模型）')}
+      <span className="mb-appearance-flow-hint">
+        智能体建图时按这里指派模型：生图节点用「绘画模型」、视频节点用「视频模型」，LLM / 角色设计 / 智能分镜 / 图像反推用「文本模型」。
+        绘画 / 视频留「自动」时优先沿用你最近在生图 / 视频里选用的模型，没有再用首个可用。配好后，智能画布右下角「🤖 智能体」面板不再单独选模型。
+      </span>
+
+      <div style={{ marginTop: 16, marginBottom: 4, fontSize: 13, fontWeight: 600, color: 'var(--mb-text-secondary)' }}>快捷翻译（智能画布「🌐 翻译」框）</div>
+      {row('快捷翻译模型', 'quick_translate_model', textModels, '当前方案没有可用对话模型')}
+      <Field label="翻译输出">
+        <div className="mb-switch-row">
+          <SwitchControl
+            checked={prefs.quick_translate_output === 'translated'}
+            onChange={(v) => void setModel('quick_translate_output', v ? 'translated' : 'both')}
+          />
+          <span className="mb-switch-state">{prefs.quick_translate_output === 'translated' ? '仅译文' : '原文 + 译文'}</span>
         </div>
       </Field>
-
-      <FilenameTemplateField />
-
-      <SearchBackendField />
-
-      <ConfigIOSection />
-    </div>
+      <span className="mb-appearance-flow-hint">
+        智能画布的「🌐 翻译」框默认用这里的模型与输出格式，不必每次在画布里二次设置（仍可在翻译框临时切换）。
+      </span>
+    </>
   );
 }
 
@@ -2494,7 +4389,8 @@ function ConfigIOSection(): JSX.Element {
   const [exportSections, setExportSections] = useState({
     plans: true,
     appearance: true,
-    prompts: true
+    prompts: true,
+    nodeTemplates: true
   });
 
   // 导入 modal 状态
@@ -2509,6 +4405,7 @@ function ConfigIOSection(): JSX.Element {
       prompts: number;
       albums: number;
       settings: number;
+      nodeTemplates: number;
     };
     exportedAt: string;
     appVersion: string;
@@ -2519,20 +4416,73 @@ function ConfigIOSection(): JSX.Element {
   const [importSections, setImportSections] = useState({
     plans: true,
     appearance: true,
-    prompts: true
+    prompts: true,
+    nodeTemplates: true
   });
 
   function resetExport(): void {
     setPwd1('');
     setPwd2('');
-    setExportSections({ plans: true, appearance: true, prompts: true });
+    setExportSections({ plans: true, appearance: true, prompts: true, nodeTemplates: true });
   }
   function resetImport(): void {
     setImportFilePath(null);
     setImportPwd('');
     setImportPreview(null);
     setImportMergeStrategy('merge');
-    setImportSections({ plans: true, appearance: true, prompts: true });
+    setImportSections({ plans: true, appearance: true, prompts: true, nodeTemplates: true });
+  }
+
+  // 打开软件配置文件夹（含数据库 / 节点模板 / 临时文件）
+  async function openConfigFolder(): Promise<void> {
+    const r = await window.electronAPI.storage.openConfigFolder();
+    if (!r.ok) toast.error('打开失败', r.error.message);
+  }
+
+  // —— 图片导出 / 导入（文件夹 + 清单，不加密、与配置分开）——
+  async function exportImages(): Promise<void> {
+    const pick = await window.electronAPI.storage.selectFolder();
+    if (!pick.ok || !pick.data) return;
+    setBusy(true);
+    const r = await window.electronAPI.config.exportImages({ dir: pick.data.path });
+    setBusy(false);
+    if (!r.ok) {
+      toast.error('图片导出失败', r.error.message);
+      return;
+    }
+    toast.success(
+      '图片导出完成',
+      `已导出 ${r.data.copied} 张${r.data.missing ? `（${r.data.missing} 张源文件缺失已跳过）` : ''} → ${r.data.dir}`
+    );
+  }
+
+  async function importImages(): Promise<void> {
+    const pick = await window.electronAPI.storage.selectFolder();
+    if (!pick.ok || !pick.data) return;
+    const dir = pick.data.path;
+    setBusy(true);
+    const scan = await window.electronAPI.config.scanImageDir({ dir });
+    if (!scan.ok) {
+      setBusy(false);
+      toast.error('不是有效的图片导出文件夹', scan.error.message);
+      return;
+    }
+    const go = await confirmDialog({
+      title: '导入图片到资产库',
+      message: `该文件夹含 ${scan.data.count} 张图片（导出于 ${scan.data.exportedAt.slice(0, 10) || '未知'}）。导入为追加方式（自动跳过重复），确定导入吗？`,
+      okText: '导入'
+    });
+    if (!go) {
+      setBusy(false);
+      return;
+    }
+    const r = await window.electronAPI.config.importImages({ dir });
+    setBusy(false);
+    if (!r.ok) {
+      toast.error('图片导入失败', r.error.message);
+      return;
+    }
+    toast.success('图片导入完成', `新增 ${r.data.imported} 张 · 跳过 ${r.data.skipped} 张（重复 / 缺文件）`);
   }
 
   async function doExport(): Promise<void> {
@@ -2544,7 +4494,12 @@ function ConfigIOSection(): JSX.Element {
       toast.error('两次密码不一致');
       return;
     }
-    if (!exportSections.plans && !exportSections.appearance && !exportSections.prompts) {
+    if (
+      !exportSections.plans &&
+      !exportSections.appearance &&
+      !exportSections.prompts &&
+      !exportSections.nodeTemplates
+    ) {
       toast.error('请至少勾选一项导出范围');
       return;
     }
@@ -2636,7 +4591,7 @@ function ConfigIOSection(): JSX.Element {
     const s = r.data.stats;
     toast.success(
       '导入完成',
-      `方案 ${s.plansImported} · 配置 ${s.configsImported} · 主题 ${s.themesImported} · 提示词 ${s.promptsImported} · 相册 ${s.albumsImported} · 设置 ${s.settingsImported}`
+      `方案 ${s.plansImported} · 配置 ${s.configsImported} · 主题 ${s.themesImported} · 提示词 ${s.promptsImported} · 相册 ${s.albumsImported} · 设置 ${s.settingsImported} · 节点模板 ${s.nodeTemplatesImported}`
     );
     // 刷新前端缓存的设置（自定义主题列表 / 提示词列表会在各自页面进入时再读）
     await load();
@@ -2646,6 +4601,15 @@ function ConfigIOSection(): JSX.Element {
 
   return (
     <Field label="配置导入 / 导出">
+      <div className="mb-storage-path-row" style={{ marginBottom: 10 }}>
+        <button className="mb-btn mb-btn-secondary" onClick={() => void openConfigFolder()}>
+          <FolderIcon size={14} /> 打开配置文件夹
+        </button>
+      </div>
+      <div className="mb-field-hint" style={{ marginBottom: 14 }}>
+        配置文件夹存放数据库、节点模板（node-templates）与临时文件，可在此查看 / 备份 / 分享单个模板文件。
+      </div>
+
       <div className="mb-storage-path-row">
         <button
           className="mb-btn mb-btn-secondary"
@@ -2667,8 +4631,28 @@ function ConfigIOSection(): JSX.Element {
         </button>
       </div>
       <div className="mb-field-hint">
-        包含模型方案 + API Key（密码加密）、外观、系统设置、图库。
-        不含对话历史与图片本身。
+        可选择性导出：模型方案 + API Key（密码加密）、外观 + 系统设置、提示词库、节点模板。
+        不含对话历史与图片本身（图片单独导出，见下方）。
+      </div>
+
+      <div className="mb-storage-path-row" style={{ marginTop: 16 }}>
+        <button
+          className="mb-btn mb-btn-secondary"
+          onClick={() => void exportImages()}
+          disabled={busy}
+        >
+          <ImageIcon size={14} /> 导出图片到文件夹
+        </button>
+        <button
+          className="mb-btn mb-btn-secondary"
+          onClick={() => void importImages()}
+          disabled={busy}
+        >
+          <FolderIcon size={14} /> 从文件夹导入图片
+        </button>
+      </div>
+      <div className="mb-field-hint">
+        资产库图片单独导出到一个文件夹（复制图片 + 生成清单，不加密）。导入为追加方式、自动跳过重复。
       </div>
 
       {/* —— 导出 modal —— */}
@@ -2726,7 +4710,17 @@ function ConfigIOSection(): JSX.Element {
                   setExportSections((s) => ({ ...s, prompts: e.target.checked }))
                 }
               />
-              <span>图库（提示词 + 分类 + 相册元数据）</span>
+              <span>资产库（提示词 + 分类 + 相册元数据）</span>
+            </label>
+            <label className="mb-tools-switch-row">
+              <input
+                type="checkbox"
+                checked={exportSections.nodeTemplates}
+                onChange={(e) =>
+                  setExportSections((s) => ({ ...s, nodeTemplates: e.target.checked }))
+                }
+              />
+              <span>智能画布节点模板</span>
             </label>
           </div>
           <div>
@@ -2828,7 +4822,8 @@ function ConfigIOSection(): JSX.Element {
                 预览：方案 {importPreview.counts.plans} · 配置{' '}
                 {importPreview.counts.configs} · 主题 {importPreview.counts.themes} ·
                 提示词 {importPreview.counts.prompts} · 相册{' '}
-                {importPreview.counts.albums} · 设置 {importPreview.counts.settings}
+                {importPreview.counts.albums} · 设置 {importPreview.counts.settings} ·
+                节点模板 {importPreview.counts.nodeTemplates}
               </div>
             </div>
           )}
@@ -2867,7 +4862,17 @@ function ConfigIOSection(): JSX.Element {
                       setImportSections((s) => ({ ...s, prompts: e.target.checked }))
                     }
                   />
-                  <span>图库</span>
+                  <span>资产库</span>
+                </label>
+                <label className="mb-tools-switch-row">
+                  <input
+                    type="checkbox"
+                    checked={importSections.nodeTemplates}
+                    onChange={(e) =>
+                      setImportSections((s) => ({ ...s, nodeTemplates: e.target.checked }))
+                    }
+                  />
+                  <span>智能画布节点模板</span>
                 </label>
               </div>
               <div>

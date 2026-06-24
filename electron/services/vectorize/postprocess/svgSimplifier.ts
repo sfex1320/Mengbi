@@ -4,6 +4,7 @@
  *   2) 删 display:none / visibility:hidden / opacity:0
  *   3) 删除完全重复的 path
  *   4) 限制最大 path 数(超出按 d 长度排序保留最长的)
+ *   5) 合并相近 fill 颜色(colorMergeDelta,RGB 距离阈值,只改色不动几何)
  */
 import type { PostprocessOptions } from '../types';
 
@@ -87,5 +88,54 @@ export function simplifySvg(svg: string, opts: PostprocessOptions = {}): Simplif
     }
   }
 
+  // 5) 合并相近颜色(colorMergeDelta): 相近 fill 色归一到代表色 → 减少颜色数,视觉更干净(只改色不动几何)
+  if (opts.colorMergeDelta && opts.colorMergeDelta > 0) {
+    s = mergeSimilarFills(s, opts.colorMergeDelta);
+  }
+
   return { final: s, acted: s !== original, pathsRemoved: removed };
+}
+
+function hexToRgb(hex: string): [number, number, number] | null {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(hex.trim());
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+function rgbToHex(r: number, g: number, b: number): string {
+  const h = (v: number): string => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0');
+  return `#${h(r)}${h(g)}${h(b)}`;
+}
+
+/**
+ * 把 SVG 里 fill 的相近颜色归一到代表色（RGB 欧氏距离 ≤ delta 视为同色，归到先出现的代表色）。
+ * 只改颜色属性、不动几何，安全。delta 取值同 colorMergeDelta(0-255)。
+ */
+export function mergeSimilarFills(svg: string, delta: number): string {
+  if (!(delta > 0)) return svg;
+  const reps: Array<[number, number, number]> = [];
+  const cache = new Map<string, string>();
+  const remap = (hex: string): string => {
+    const cached = cache.get(hex);
+    if (cached !== undefined) return cached;
+    const rgb = hexToRgb(hex);
+    if (!rgb) {
+      cache.set(hex, hex);
+      return hex;
+    }
+    for (const r of reps) {
+      const dr = r[0] - rgb[0];
+      const dg = r[1] - rgb[1];
+      const db = r[2] - rgb[2];
+      if (Math.sqrt(dr * dr + dg * dg + db * db) <= delta) {
+        const rep = rgbToHex(r[0], r[1], r[2]);
+        cache.set(hex, rep);
+        return rep;
+      }
+    }
+    reps.push(rgb);
+    cache.set(hex, hex);
+    return hex;
+  };
+  return svg.replace(/(\sfill\s*=\s*")(#[0-9a-fA-F]{6})(")/gi, (_m, pre, hex, post) => pre + remap(hex) + post);
 }

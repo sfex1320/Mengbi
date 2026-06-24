@@ -9,18 +9,18 @@ import { registerMiscHandlers } from './misc';
 import { registerDragHandlers } from './drag';
 import { registerToolsHandlers } from './tools';
 import { registerConfigIOHandlers } from './configIO';
+import { registerImageIOHandlers } from './imageIO';
+import { registerNodeTemplateHandlers } from './nodeTemplates';
 import { registerLocalLlmHandlers } from './localLlm';
 import { registerUpscaleHandlers } from './upscale';
-import { registerHypirHandlers } from './hypir';
+import { registerInterpHandlers } from './interp';
 import { registerVecHandlers } from './vec';
 import { registerPsHandlers } from './ps';
 import { registerComfyuiConnectionHandlers } from './comfyuiConnection';
 import { registerComfyuiWorkflowHandlers } from './comfyuiWorkflow';
 import { registerComfyuiRunHandlers } from './comfyuiRun';
 import { registerComfyuiResultsHandlers } from './comfyuiResults';
-import { registerAiFeatureHandlers } from './aiFeature';
-import { registerAiModelHandlers } from './aiModel';
-import { registerBuiltinAiFeatures } from '../services/ai-features';
+import { registerShortcutsHandlers } from './shortcuts';
 
 export function registerAllIpcHandlers(): void {
   registerSettingsHandlers();
@@ -33,15 +33,14 @@ export function registerAllIpcHandlers(): void {
   registerDragHandlers();
   registerToolsHandlers();
   registerConfigIOHandlers();
+  // 资产库图片导出 / 导入（文件夹 + 清单，api:image-io:*）
+  registerImageIOHandlers();
+  // 智能画布节点模板（存 userData/node-templates/，api:template:*）
+  registerNodeTemplateHandlers();
   registerLocalLlmHandlers();
   registerUpscaleHandlers();
-  // 通用 AI 平台底座 —— 先注册 feature spec 再注册 IPC handler，
-  // 这样 api:ai-feature:list 等通道初次调用时已经能看到 HYPIR
-  registerBuiltinAiFeatures();
-  registerAiFeatureHandlers();
-  registerAiModelHandlers();
-  // HYPIR feature-specific IPC（提交任务请求体 / 错误码映射 / polling）
-  registerHypirHandlers();
+  // 视频插帧（本地 RIFE ncnn Vulkan，api:interp:*）
+  registerInterpHandlers();
   // 图像转矢量:VTracer(彩色)+ Potrace(单色)在 Node 层跑;AI 模式(OmniSVG)已于 2026-05-27 砍除
   registerVecHandlers();
   // 画板 Photoshop 联动（api:ps:*）—— 画板首个主进程 IPC 子系统，详见 CLAUDE.md §4.8
@@ -51,4 +50,6 @@ export function registerAllIpcHandlers(): void {
   registerComfyuiWorkflowHandlers();
   registerComfyuiRunHandlers();
   registerComfyuiResultsHandlers();
+  // 侧栏外部软件 / 文件夹快捷方式（api:shortcuts:*）
+  registerShortcutsHandlers();
 }

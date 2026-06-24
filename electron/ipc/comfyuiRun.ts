@@ -107,6 +107,7 @@ export function registerComfyuiRunHandlers(): void {
         bindings,
         outputNodeIds: input.outputNodeIds,
         fileTaskId: nextFileTaskId(),
+        skipGallery: input.skipGallery,
         sender: event.sender
       }
     ]);

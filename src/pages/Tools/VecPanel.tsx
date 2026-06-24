@@ -18,7 +18,7 @@ import { toast } from '@/store/toastStore';
 import { useVecStore } from '@/store/vecStore';
 import { useSettingsStore } from '@/store/settingsStore';
 import { VecModeSelector } from './Vec/ModeSelector';
-import { InputCard } from './Vec/InputCard';
+import { InputCard, type UpscalePre } from './Vec/InputCard';
 import { OutputCard } from './Vec/OutputCard';
 import { VecHistoryDrawer } from './Vec/HistoryDrawer';
 import { useVecProgressBridge } from './Vec/hooks/useVecBatch';
@@ -44,16 +44,47 @@ export function VecPanel(): JSX.Element {
   const effectiveOutputDir = outputDir.trim() || resolveDefaultOutputDir(prefs);
 
   const handleSubmit = useCallback(
-    async (params: VecParams) => {
+    async (params: VecParams, upscale?: UpscalePre) => {
       if (pendingInputs.length === 0) {
         toast.info('无输入', '拖入图片或点击选择文件');
         return;
       }
       setSubmitting(true);
       try {
+        // 放大前置：逐张过 Real-ESRGAN，产物喂给矢量化（失败项跳过；全失败则中止）
+        let inputsForVec = pendingInputs;
+        if (upscale && upscale.modelName) {
+          toast.info('正在放大', `先放大 ${pendingInputs.length} 张再矢量化…`);
+          const upscaled: string[] = [];
+          let failed = 0;
+          for (const src of pendingInputs) {
+            const ur = await window.electronAPI.upscale.runSingle({
+              inputPath: src,
+              modelName: upscale.modelName,
+              scale: upscale.scale,
+              format: 'png',
+              tile: 0,
+              gpuId: 'auto',
+              tta: false,
+              backend: 'ncnn',
+              keepAlpha: true
+            });
+            if (ur.ok) upscaled.push(ur.data.outputPath);
+            else failed++;
+          }
+          if (upscaled.length === 0) {
+            toast.error('放大失败', '所有图片放大失败，已取消矢量化');
+            return;
+          }
+          if (failed > 0) {
+            toast.info('部分放大失败', `${failed} 张已跳过，继续矢量化 ${upscaled.length} 张`);
+          }
+          inputsForVec = upscaled;
+        }
+
         const r = await window.electronAPI.vec.runBatch({
           mode: selectedMode,
-          inputs: pendingInputs,
+          inputs: inputsForVec,
           options: {
             outputDir: effectiveOutputDir,
             naming,

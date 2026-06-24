@@ -4,6 +4,7 @@ import { useNotificationStore, selectUnreadFailureCount, type NotificationEntry 
 import { labelForChannel } from '@/lib/operationLabels';
 import { BellIcon, CheckIcon, XIcon, TrashIcon } from '@/components/Icon';
 import { confirmDialog } from '@/components/ConfirmDialog';
+import { toast } from '@/store/toastStore';
 import './NotificationCenter.css';
 
 /**
@@ -118,6 +119,32 @@ export function NotificationCenter(): JSX.Element {
 function NotificationRow({ entry }: { entry: NotificationEntry }): JSX.Element {
   const label = labelForChannel(entry.channel);
   const time = formatRelativeTime(entry.ts);
+  const remedy = entry.remedy;
+  const [fixed, setFixed] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  async function applyFix(): Promise<void> {
+    if (!remedy || busy) return;
+    setBusy(true);
+    try {
+      const r = await window.electronAPI.settings.applyOverrides({
+        modelId: remedy.modelId,
+        bodyMerge: remedy.bodyMerge,
+        headerMerge: remedy.headerMerge
+      });
+      if (r.ok) {
+        setFixed(true);
+        toast.success('已修复', `「${remedy.label}」已写入${r.data.providerName ? `「${r.data.providerName}」` : ''}该模型，重新生成即可生效`);
+      } else {
+        toast.error('修复失败', r.error.message);
+      }
+    } catch (e) {
+      toast.error('修复失败', (e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <li
       className={`mb-notif-row mb-notif-row-${entry.kind}`}
@@ -154,6 +181,17 @@ function NotificationRow({ entry }: { entry: NotificationEntry }): JSX.Element {
         )}
         {entry.hint && entry.kind === 'failure' && (
           <div className="mb-notif-row-hint">{entry.hint}</div>
+        )}
+        {remedy && entry.kind === 'failure' && (
+          <button
+            type="button"
+            className="mb-notif-row-fix"
+            disabled={busy || fixed}
+            title={remedy.detail ?? remedy.label}
+            onClick={() => void applyFix()}
+          >
+            {fixed ? '✓ 已修复，重新生成即可' : busy ? '修复中…' : `🔧 一键修复：${remedy.label}`}
+          </button>
         )}
       </div>
     </li>

@@ -1,0 +1,272 @@
+/* 模型配置智能体：对话式悬浮窗 + FAB。样式对齐项目卡片/按钮体系。 */
+
+.mb-cfgagent-fab {
+  position: fixed;
+  right: 24px;
+  bottom: 26px;
+  z-index: 60;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  border: none;
+  background: linear-gradient(135deg, var(--mb-accent), #8b5cf6);
+  color: #fff;
+  font-size: 24px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.3);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.mb-cfgagent-fab:hover {
+  transform: scale(1.06);
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.34);
+}
+.mb-cfgagent-fab.is-open {
+  transform: scale(0.96);
+}
+
+.mb-cfgagent-window.mb-card {
+  position: fixed;
+  z-index: 61;
+  min-width: 360px;
+  min-height: 300px;
+  padding: 0;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 14px 46px rgba(0, 0, 0, 0.4);
+}
+
+.mb-cfgagent-titlebar {
+  cursor: grab;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px 9px 16px;
+  border-bottom: 1px solid var(--mb-border-soft);
+  background: var(--mb-bg-card);
+  flex-shrink: 0;
+}
+.mb-cfgagent-titlebar:active {
+  cursor: grabbing;
+}
+.mb-cfgagent-titlebar h3 {
+  margin: 0;
+  font-size: 15px;
+  flex: 1;
+}
+.mb-cfgagent-x {
+  background: none;
+  border: none;
+  color: var(--mb-text-secondary);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 6px;
+  border-radius: 8px;
+}
+.mb-cfgagent-x:hover {
+  color: var(--mb-text-primary);
+  background: var(--mb-border-soft);
+}
+
+/* 对话区 */
+.mb-cfgagent-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mb-cfgagent-bubble {
+  max-width: 86%;
+  padding: 8px 11px;
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.mb-cfgagent-bubble.is-assistant {
+  align-self: flex-start;
+  background: var(--mb-bg-card);
+  border: 1px solid var(--mb-border-soft);
+  border-bottom-left-radius: 4px;
+}
+.mb-cfgagent-bubble.is-user {
+  align-self: flex-end;
+  background: linear-gradient(135deg, var(--mb-accent), #8b5cf6);
+  color: #fff;
+  border-bottom-right-radius: 4px;
+}
+.mb-cfgagent-bubble.is-typing {
+  opacity: 0.6;
+  letter-spacing: 2px;
+}
+
+/* 配置提议块（卡片） */
+.mb-cfgagent-proposal {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 2px;
+}
+.mb-cfgagent-empty {
+  font-size: 12.5px;
+  color: var(--mb-text-secondary);
+}
+.mb-cfgagent-card {
+  border: 1px solid var(--mb-border-soft);
+  border-radius: 12px;
+  padding: 9px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  background: var(--mb-bg-card);
+}
+.mb-cfgagent-card-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.mb-cfgagent-card-sub {
+  font-size: 11.5px;
+  color: var(--mb-text-secondary);
+}
+.mb-cfgagent-caps {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.mb-cfgagent-caps span {
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--mb-border);
+  color: var(--mb-text-secondary);
+}
+.mb-cfgagent-models {
+  font-size: 11.5px;
+  color: var(--mb-text-secondary);
+  word-break: break-all;
+  line-height: 1.5;
+}
+.mb-cfgagent-test-note {
+  font-size: 11.5px;
+  color: var(--mb-text-secondary);
+}
+.mb-cfgagent-testrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.mb-cfgagent-teststatus {
+  font-size: 12px;
+  color: var(--mb-text-secondary);
+}
+.mb-cfgagent-teststatus.is-ok {
+  color: var(--mb-success, #2a8);
+}
+.mb-cfgagent-teststatus.is-bad {
+  color: var(--mb-danger, #d44);
+}
+.mb-cfgagent-testmsg {
+  font-size: 11.5px;
+  color: var(--mb-danger, #d44);
+  line-height: 1.5;
+}
+.mb-cfgagent-skipped ul {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.mb-cfgagent-skipped li {
+  font-size: 11.5px;
+  color: var(--mb-text-secondary);
+  line-height: 1.5;
+}
+.mb-cfgagent-skiptoggle {
+  background: none;
+  border: none;
+  color: var(--mb-text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  text-align: left;
+  padding: 0;
+}
+.mb-cfgagent-skiptoggle:hover {
+  color: var(--mb-accent);
+}
+.mb-cfgagent-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* 底部：模型选择 + 输入 */
+.mb-cfgagent-foot {
+  flex-shrink: 0;
+  border-top: 1px solid var(--mb-border-soft);
+  padding: 8px 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  background: var(--mb-bg-card);
+}
+.mb-cfgagent-modelrow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--mb-text-secondary);
+}
+.mb-cfgagent-modelrow .mb-select {
+  flex: 1;
+  min-width: 0;
+}
+.mb-cfgagent-rulehint {
+  font-size: 11.5px;
+  color: var(--mb-text-secondary);
+}
+.mb-cfgagent-inputrow {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+.mb-cfgagent-input {
+  flex: 1;
+  min-height: 0;
+  resize: none;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.mb-cfgagent-send {
+  flex-shrink: 0;
+  align-self: stretch;
+}
+
+.mb-cfgagent-resize {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  z-index: 2;
+  background: linear-gradient(135deg, transparent 0 45%, var(--mb-border) 45% 55%, transparent 55% 70%, var(--mb-border) 70% 80%, transparent 80%);
+  opacity: 0.6;
+}
+.mb-cfgagent-resize:hover {
+  opacity: 1;
+}

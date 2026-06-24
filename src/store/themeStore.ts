@@ -9,6 +9,9 @@ import {
   type Palette
 } from '@shared/theme';
 
+/** 性能模式：normal=完整动效 / low=低配模式（停装饰动画，无需重启） */
+export type PerfMode = 'normal' | 'low';
+
 interface ThemeState {
   atmosphere: Atmosphere;
   palette: Palette;
@@ -16,11 +19,14 @@ interface ThemeState {
   flowColor: string;
   /** 整窗界面缩放系数（1=100%）；持久化，启动时套用到 webFrame */
   appZoom: number;
+  /** 性能模式：low 时 html 常驻 data-perf="low"，CSS 停装饰动画（流星/星辰/光晕等） */
+  perfMode: PerfMode;
   setAtmosphere: (a: Atmosphere) => void;
   setPalette: (p: Palette) => void;
   setFlowColor: (c: string) => void;
   /** 设置整窗界面缩放（clamp [0.5, 2]）：套用到 webFrame + 持久化 */
   setAppZoom: (z: number) => void;
+  setPerfMode: (m: PerfMode) => void;
 }
 
 /** 把流动连线色写到 CSS 变量（空 = 移除 → CSS 里回退 var(--mb-accent)）。 */
@@ -43,6 +49,12 @@ function applyAppZoom(z: number): void {
   } catch {
     /* preload 未就绪 / 非 electron 环境：忽略 */
   }
+}
+
+/** 把性能模式写到 html data-perf（CSS 据此停装饰动画；normal 时移除属性）。 */
+function applyPerfMode(m: PerfMode): void {
+  if (m === 'low') document.documentElement.dataset.perf = 'low';
+  else delete document.documentElement.dataset.perf;
 }
 
 export const useThemeStore = create<ThemeState>()(
@@ -70,6 +82,11 @@ export const useThemeStore = create<ThemeState>()(
         const appZoom = clampAppZoom(z);
         applyAppZoom(appZoom);
         set({ appZoom });
+      },
+      perfMode: 'normal',
+      setPerfMode: (perfMode) => {
+        applyPerfMode(perfMode);
+        set({ perfMode });
       }
     }),
     {
@@ -80,17 +97,19 @@ export const useThemeStore = create<ThemeState>()(
           document.documentElement.dataset.palette = state.palette;
           applyFlowColor(state.flowColor ?? '');
           applyAppZoom(state.appZoom ?? 1);
+          applyPerfMode(state.perfMode ?? 'normal');
         }
       }
     }
   )
 );
 
-/** 应用启动时调用：把当前 store 状态写入 HTML 根属性 + 套用界面缩放 */
+/** 应用启动时调用：把当前 store 状态写入 HTML 根属性 + 套用界面缩放/性能模式 */
 export function applyThemeToDocument(): void {
-  const { atmosphere, palette, flowColor, appZoom } = useThemeStore.getState();
+  const { atmosphere, palette, flowColor, appZoom, perfMode } = useThemeStore.getState();
   document.documentElement.dataset.atmosphere = atmosphere;
   document.documentElement.dataset.palette = palette;
   applyFlowColor(flowColor);
   applyAppZoom(appZoom);
+  applyPerfMode(perfMode);
 }

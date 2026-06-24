@@ -8,6 +8,7 @@
 import type { WebContents } from 'electron';
 import { runIteration } from './runEngine';
 import { updateRun } from './store';
+import { appendNotification } from '../../ipc/helpers';
 import type {
   RunProgressPayload,
   RunDonePayload,
@@ -32,6 +33,8 @@ export interface QueuedRun {
   /** 输出限定：只读这些节点 id 的输出（空/未传 = 全部） */
   outputNodeIds?: string[];
   fileTaskId: number;
+  /** true=输出图不进资产库（提示词商城缩略图生成用） */
+  skipGallery?: boolean;
   sender: WebContents;
   /** feedback 模式：把上一轮输出路径回灌到这个输入控件 */
   feedbackToControlId?: string;
@@ -202,6 +205,7 @@ class SerialRunQueue {
         bindings: item.bindings,
         outputNodeIds: item.outputNodeIds,
         fileTaskId: item.fileTaskId,
+        skipGallery: item.skipGallery,
         signal: ctrl.signal,
         onPromptId: (promptId) => updateRun(item.runId, { promptId }),
         onUploaded: (map) => updateRun(item.runId, { uploadedFiles: map }),
@@ -274,6 +278,18 @@ class SerialRunQueue {
     // 暂停时仍有排队项 → 不清理，等恢复跑完再清。
     const stillQueued = this.queue.some((q) => q.batchId === item.batchId);
     if (!stillQueued && !this.paused && c && c.pending === 0 && c.running === 0) {
+      // 批次完成 → 进通知中心（与 image:done/video:done 同语义；语音播报也挂在这条上）。
+      // 单次运行（批次=1）天然也走这里。
+      if (!item.sender.isDestroyed()) {
+        appendNotification(item.sender, {
+          channel: 'comfyui:run-done',
+          kind: c.failed > 0 ? 'failure' : 'success',
+          message:
+            c.failed > 0
+              ? `ComfyUI 运行完成：成功 ${c.done}/${c.done + c.failed}，失败 ${c.failed}（可在运行记录里单条查看）`
+              : `ComfyUI 运行完成：${c.done} 项全部成功`
+        });
+      }
       this.lastOutput.delete(item.batchId);
       this.batches.delete(item.batchId);
       this.batchOpts.delete(item.batchId);

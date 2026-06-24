@@ -49,6 +49,8 @@ export interface RunIterationParams {
   /** 输出限定：只读这些节点 id 的输出（空/未传 = 全部） */
   outputNodeIds?: string[];
   fileTaskId: number;
+  /** true=不把输出图同步进资产库（提示词商城缩略图生成走 ComfyUI 时用，避免缩略图污染图库） */
+  skipGallery?: boolean;
   signal: AbortSignal;
   onPromptId?: (promptId: string) => void;
   onUploaded?: (map: Record<string, string>) => void;
@@ -183,18 +185,21 @@ export async function runIteration(params: RunIterationParams): Promise<OutputFi
     throw new Error('工作流执行完成但没有任何输出节点产出文件，请检查输出节点（如 SaveImage）是否在工作流里');
   }
 
-  // 自动同步输出图到图库（params 里剔除 data:URI，避免把大图塞进 params_json）
-  try {
-    const slim: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(cv)) {
-      if (!(typeof v === 'string' && v.startsWith('data:'))) slim[k] = v;
+  // 自动同步输出图到资产库（params 里剔除 data:URI，避免把大图塞进 params_json）。
+  // skipGallery=true（提示词商城缩略图生成）则不入库——缩略图不进资产库。
+  if (!params.skipGallery) {
+    try {
+      const slim: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(cv)) {
+        if (!(typeof v === 'string' && v.startsWith('data:'))) slim[k] = v;
+      }
+      await addImagesToGallery(outputs, {
+        prompt: (variables.prompt as string) || null,
+        paramsJson: JSON.stringify(slim)
+      });
+    } catch {
+      /* 入库失败不影响出图返回 */
     }
-    await addImagesToGallery(outputs, {
-      prompt: (variables.prompt as string) || null,
-      paramsJson: JSON.stringify(slim)
-    });
-  } catch {
-    /* 入库失败不影响出图返回 */
   }
 
   params.onProgress({ phase: 'done', percent: 100 });

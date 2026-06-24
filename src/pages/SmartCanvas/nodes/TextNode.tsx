@@ -12,9 +12,11 @@ export function TextNode({ id, data, selected }: NodeProps): JSX.Element {
   const remove = useSmartCanvasStore((s) => s.removeNode);
   const beginEdit = useSmartCanvasStore((s) => s.beginEdit);
   const commitEdit = useSmartCanvasStore((s) => s.commitEdit);
+  const setNodeSize = useSmartCanvasStore((s) => s.setNodeSize);
   const d = data as unknown as TextNodeData;
   const [editing, setEditing] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const viewRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (editing && taRef.current) {
@@ -23,6 +25,27 @@ export function TextNode({ id, data, selected }: NodeProps): JSX.Element {
       beginEdit();
     }
   }, [editing, beginEdit]);
+
+  // 自适应贴合：按文字实际渲染高度（含按节点宽度换行后的高度）双向贴合节点高度；
+  // 手动调过尺寸（manualSize）则让位手动。文字按 .mb-sc-textnode-view 的 width:100% 自动适应节点宽度换行。
+  useEffect(() => {
+    const el = editing ? taRef.current : viewRef.current;
+    if (!el) return;
+    const n = useSmartCanvasStore.getState().nodes.find((x) => x.id === id);
+    if ((n?.data as { manualSize?: boolean } | undefined)?.manualSize) return;
+    const apply = (): void => {
+      const cur = useSmartCanvasStore.getState().nodes.find((x) => x.id === id);
+      if (!cur || (cur.data as { manualSize?: boolean } | undefined)?.manualSize) return;
+      const need = Math.ceil(el.scrollHeight) + 14;
+      const curH = typeof cur.height === 'number' ? cur.height : cur.measured?.height ?? 0;
+      if (Math.abs(need - curH) > 4) setNodeSize(id, { height: need });
+    };
+    apply();
+    // 节点变宽 → 文字重排 → view 高度变 → ResizeObserver 重新贴合（解决「字体排布适应节点宽度」）
+    const ro = new ResizeObserver(apply);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [id, d.text, d.fontSize, d.bold, d.italic, d.align, editing, setNodeSize]);
 
   const style: CSSProperties = {
     fontFamily: d.fontFamily || undefined,
@@ -55,7 +78,7 @@ export function TextNode({ id, data, selected }: NodeProps): JSX.Element {
           }}
         />
       ) : (
-        <div className="mb-sc-textnode-view" style={style} onDoubleClick={() => setEditing(true)} title="双击编辑">
+        <div ref={viewRef} className="mb-sc-textnode-view" style={style} onDoubleClick={() => setEditing(true)} title="双击编辑">
           {d.text || '双击编辑文字'}
         </div>
       )}

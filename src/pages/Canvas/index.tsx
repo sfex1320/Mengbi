@@ -642,11 +642,6 @@ export default function CanvasPage(): JSX.Element {
               height={project.height}
             />
           )}
-          {project.layers.length === 0 && (
-            <div className="mb-canvas-drop-hint">
-              点击工具条「+ 添加图片」开始拼版（Z = 适合屏幕，H = 抓手，Space 临时抓手）
-            </div>
-          )}
         </div>
         {tool === 'mask' ? (
           <MaskPanel />

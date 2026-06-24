@@ -21,7 +21,13 @@ export function serialize(nodes: Node[], edges: Edge[], viewport: Viewport): Sma
       ...(n.parentId ? { parentId: n.parentId } : {}),
       data: n.data as unknown as SmartNodeData
     })),
-    connections: edges.map((e) => ({ id: e.id, source: e.source, target: e.target })),
+    connections: edges.map((e) => ({
+      id: e.id,
+      source: e.source,
+      target: e.target,
+      // 多输出口（智能分镜 out-trans）必须随文档保留，否则重开画布后转场口连线退化成分镜口
+      ...(e.sourceHandle && e.sourceHandle !== 'out' ? { sourceHandle: e.sourceHandle } : {})
+    })),
     viewport: { x: viewport.x, y: viewport.y, scale: viewport.zoom },
     settings: {}
   };
@@ -40,7 +46,12 @@ export function deserialize(doc: SmartCanvasDoc): { nodes: Node[]; edges: Edge[]
       ...(n.parentId ? { parentId: n.parentId } : {}),
       data: n.data as unknown as Record<string, unknown>
     })),
-    edges: doc.connections.map((c) => ({ id: c.id, source: c.source, target: c.target })),
+    edges: doc.connections.map((c) => ({
+      id: c.id,
+      source: c.source,
+      target: c.target,
+      ...(c.sourceHandle ? { sourceHandle: c.sourceHandle } : {})
+    })),
     viewport: { x: doc.viewport.x, y: doc.viewport.y, zoom: doc.viewport.scale }
   };
 }

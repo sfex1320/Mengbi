@@ -45,7 +45,8 @@ const VTracerParamsSchema = z
     spliceThreshold: z.number().int().min(0).max(180).optional(),
     pathPrecision: z.number().int().min(0).max(10).optional(),
     maxPaths: z.number().int().min(1).max(100000).optional(),
-    colorMergeDelta: z.number().min(0).max(255).optional()
+    colorMergeDelta: z.number().min(0).max(255).optional(),
+    pathMode: z.enum(['none', 'polygon', 'spline']).optional()
   })
   .strict();
 
@@ -56,7 +57,9 @@ const PotraceParamsSchema = z
     turdSize: z.number().int().min(0).max(100).optional(),
     alphaMax: z.number().min(0).max(1.34).optional(),
     optCurve: z.boolean().optional(),
-    optTolerance: z.number().min(0).max(2).optional()
+    optTolerance: z.number().min(0).max(2).optional(),
+    color: z.string().min(1).max(32).optional(),
+    background: z.string().min(1).max(32).optional()
   })
   .strict();
 

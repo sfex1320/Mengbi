@@ -1,10 +1,56 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useComfyuiStore } from '@/store/comfyuiStore';
 import { CustomSelect } from '@/components/CustomSelect';
 import { confirmDialog } from '@/components/ConfirmDialog';
 import { toast } from '@/store/toastStore';
 import { nodeNameZh } from './nodeLabels';
 import type { InputControl } from '@shared/comfyui';
+
+/** 数字控件：编辑期可删空、失焦/回车提交、聚焦全选（铁律 19）。min/max 可缺省（不 clamp）。 */
+function FreeNumberField({
+  value,
+  min,
+  max,
+  step,
+  onCommit
+}: {
+  value: string;
+  min?: number;
+  max?: number;
+  step?: number;
+  onCommit: (v: number) => void;
+}): JSX.Element {
+  const [text, setText] = useState(value);
+  useEffect(() => setText(value), [value]);
+  const commit = (): void => {
+    const n = Number(text);
+    if (text.trim() === '' || Number.isNaN(n)) {
+      setText(value);
+      return;
+    }
+    let v = n;
+    if (typeof min === 'number') v = Math.max(min, v);
+    if (typeof max === 'number') v = Math.min(max, v);
+    setText(String(v));
+    onCommit(v);
+  };
+  return (
+    <input
+      type="number"
+      className="mb-input"
+      min={min}
+      max={max}
+      step={step}
+      value={text}
+      onChange={(e) => setText(e.target.value)}
+      onFocus={(e) => e.currentTarget.select()}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+      }}
+    />
+  );
+}
 
 /**
  * 参数面板：按「绑定的节点」分组成卡片，一行 3 张（响应式）。
@@ -159,23 +205,13 @@ function ControlWidget({
   }
 
   if (c.type === 'number') {
-    return (
-      <input
-        type="number"
-        className="mb-input"
-        min={c.min}
-        max={c.max}
-        step={c.step}
-        value={str}
-        onChange={(e) => onChange(Number(e.target.value))}
-      />
-    );
+    return <FreeNumberField value={str} min={c.min} max={c.max} step={c.step} onCommit={onChange} />;
   }
 
   if (c.type === 'seed') {
     return (
       <div className="mb-cfy-seed-row">
-        <input type="number" className="mb-input" value={str} onChange={(e) => onChange(Number(e.target.value))} />
+        <FreeNumberField value={str} onCommit={onChange} />
         <button type="button" className="mb-btn mb-btn-sm mb-btn-ghost" onClick={() => onChange(-1)}>
           随机
         </button>

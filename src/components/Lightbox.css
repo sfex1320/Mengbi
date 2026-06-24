@@ -17,9 +17,9 @@
   max-height: calc(100vh - 96px);
   object-fit: contain;
   transition: none;
-  will-change: transform;
-  transform: translateZ(0);
-  backface-visibility: hidden;
+  /* 不强制 GPU 合成层：will-change/translateZ/backface 会把图片栅格化成一张「首帧分辨率」的
+     GPU 纹理并缓存，之后 transform: scale() 只是放大这张低清纹理 → 首次放大很糊；二次打开因解码缓存
+     才偶发清晰。去掉强制提层后 Chromium 在缩放时按新比例重新栅格化 <img>，任何缩放都清晰（铁律：放大预览必须真清晰）。 */
   image-rendering: auto;
   pointer-events: auto;
   border-radius: 6px;
@@ -51,6 +51,72 @@
   background: rgba(255, 90, 90, 0.85);
   color: #fff;
   transform: scale(1.06);
+}
+
+/* 左右切换箭头：风格与关闭按钮一致（圆形、半透明、悬停实色），垂直居中贴两侧 */
+.mb-lightbox-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 26px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 1;
+  transition:
+    background var(--mb-duration-fast) var(--mb-ease),
+    color var(--mb-duration-fast) var(--mb-ease),
+    transform var(--mb-duration-fast) var(--mb-ease-snap),
+    opacity var(--mb-duration-fast) var(--mb-ease);
+}
+.mb-lightbox-nav.is-prev {
+  left: 22px;
+}
+.mb-lightbox-nav.is-next {
+  right: 22px;
+}
+.mb-lightbox-nav:hover:not(:disabled) {
+  background: var(--mb-accent);
+  color: #fff;
+  transform: translateY(-50%) scale(1.08);
+}
+.mb-lightbox-nav:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
+/* N / total 计数角标（顶部居中，避开 traffic-lights） */
+.mb-lightbox-count {
+  position: absolute;
+  top: 64px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 12px;
+  border-radius: var(--mb-radius-pill);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* 视频预览：原生控制条播放，不参与缩放/平移 */
+.mb-lightbox-video {
+  max-width: 92vw;
+  max-height: calc(100vh - 140px);
+  border-radius: 6px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+  background: #000;
 }
 
 .mb-lightbox-hint {

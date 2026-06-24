@@ -356,6 +356,28 @@ export async function maskToEditAlphaPng(canvas: HTMLCanvasElement): Promise<Blo
   return canvasToBlob(out);
 }
 
+/**
+ * 导出「人类可见」的红色半透明标注层：已涂 / 编辑区显红、其余透明。
+ * 供智能画布图片节点卡上直观显示「蒙版画了哪些区域 / 扩了多少边」。
+ * 红色透明度跟随覆盖强度（最大约 50%）。与 maskToEditAlphaPng 同尺寸。
+ */
+export async function maskToVisualRedPng(canvas: HTMLCanvasElement): Promise<Blob> {
+  const out = createMaskCanvas(canvas.width, canvas.height);
+  const octx = out.getContext('2d')!;
+  const src = canvas.getContext('2d')!.getImageData(0, 0, canvas.width, canvas.height).data;
+  const img = octx.createImageData(out.width, out.height);
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const cover = src[i + 3]; // 覆盖 alpha = 编辑 / AI 区强度
+    d[i] = 239;
+    d[i + 1] = 68;
+    d[i + 2] = 68;
+    d[i + 3] = Math.round(cover * 0.5);
+  }
+  octx.putImageData(img, 0, 0);
+  return canvasToBlob(out);
+}
+
 /** 把黑白 PNG（白 = AI 区）导入为蒙版画布。invert=true 时按相反规则解释。 */
 export async function blackWhitePngToMask(
   src: HTMLImageElement,

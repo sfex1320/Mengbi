@@ -4,14 +4,15 @@ import { useStoreApi } from '@xyflow/react';
 import { useSmartCanvasStore, useSmartResultStore, useSmartCanvasUiStore, useSmartPreviewStore, absPosition } from '@/store/smartCanvasStore';
 import { useImageParamsStore } from '@/store/imageParamsStore';
 import { useSettingsStore } from '@/store/settingsStore';
-import { runWithUpstream, cancelWork, computeUpstream, comfyInputSlots } from '@/lib/smartCanvasRunner';
+import { runWithUpstream, cancelWork, computeUpstream, comfyInputSlots, comfySizeRole } from '@/lib/smartCanvasRunner';
 import { toast } from '@/store/toastStore';
 import { localPathToImageUrl } from '@/lib/imageUrl';
-import { listMappedModels, diagnoseChatModel, type MappedModel } from '@/lib/modelMapping';
+import { listMappedModels, diagnoseChatModel, modelRefValue, resolveModelRef, parseModelRef, type MappedModel } from '@/lib/modelMapping';
 import { detectFamily } from '@shared/imageModelFamilies';
 import type { WorkflowTemplateSummary, InputControl } from '@shared/comfyui';
 import { renderComfyControl, COMFY_IMAGE_KINDS } from './comfyControl';
-import { SegmentedControl } from './nodePanel/consoleControls';
+import { comfyModeUnavailableReason, COMFY_TEXT_KINDS } from '@/lib/comfyDispatch';
+import { SegmentedControl, ClampNumberInput, SearchableModelSelect } from './nodePanel/consoleControls';
 import {
   WORK_TYPE_LABELS,
   RUN_MODE_LABELS,
@@ -32,6 +33,9 @@ import {
   type LlmNodeData,
   type LlmOp,
   type ComfyNodeData,
+  type ComfyMultiMode,
+  type ComfyInputBinding,
+  COMFY_MULTI_MODE_LABELS,
   type AnglePromptNodeData,
   type ScaleNodeData,
   type ScaleMode,
@@ -44,8 +48,11 @@ import {
   type LightNodeData,
   type LightOcclusion,
   type LightEffect,
+  type LightSourceType,
   LIGHT_OCCLUSION_LABELS,
-  LIGHT_EFFECT_LABELS
+  LIGHT_EFFECT_LABELS,
+  LIGHT_SOURCE_LABELS,
+  LIGHT_SOURCE_ICON
 } from '@shared/smartCanvas';
 import { buildLightPrompt } from '@/lib/lightPrompt';
 import { buildAnglePrompt } from '@/lib/anglePrompt';
@@ -54,21 +61,34 @@ import { NODE_ICONS } from './icons';
 import './nodePanel/nodePanel.css';
 
 /** 节点类型 → 中文名（面板标题用，与工具坞一致）。 */
-const NODE_TYPE_LABELS: Record<SmartNodeKind, string> = {
+export const NODE_TYPE_LABELS: Record<SmartNodeKind, string> = {
   image: '图片',
   prompt: '提示词',
   llm: 'LLM',
-  'angle-prompt': '视角',
+  'angle-prompt': '镜头',
   scale: '缩放',
   ratio: '尺寸',
-  work: '生成',
+  work: '生图',
   comfy: 'ComfyUI',
   result: '结果',
   group: '分组',
   text: '文字',
   light: '光源',
+  palette: '配色工具',
   compare: '对比',
-  video: '视频'
+  video: '视频',
+  'image-reverse': '图像反推',
+  'video-source': '视频上传',
+  'video-reverse': '视频反推',
+  'frame-interp': '插帧',
+  'video-clip': '视频剪辑',
+  storyboard: '智能分镜',
+  'prompt-mall': '提示词商城',
+  loop: '循环',
+  upscale: '保真放大',
+  vectorize: '图像转矢量',
+  'folder-input': '文件夹输入',
+  'folder-output': '文件夹输出'
 };
 
 /** 运行状态胶囊（与生成控制台同款 mb-np-status，work/comfy/llm 共用）。 */
@@ -102,12 +122,106 @@ function Field({
   );
 }
 
+/** 随内容自适应高度的多行输入框（卡内/检查器通用，铁律16 不写死 height）。
+ *  min 64 / max 240，超出内滚；用于 LLM 额外指令等需要放大可变长度的字段。 */
+function AutoTextarea({
+  value,
+  onChange,
+  placeholder,
+  onFocus,
+  onBlur
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  onFocus?: () => void;
+  onBlur?: () => void;
+}): JSX.Element {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(240, Math.max(64, el.scrollHeight))}px`;
+  }, [value]);
+  return (
+    <textarea
+      ref={ref}
+      className="mb-textarea mb-sc-itext mb-sc-autotext"
+      value={value}
+      placeholder={placeholder}
+      onFocus={onFocus}
+      onBlur={onBlur}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  );
+}
+
 /** 拆 ComfyUI 控件标签「{字段} · {节点标题}」→ { field, group }。无分隔符时归到「常用」。
  *  用于把工作流参数按所属节点分类成一个个「模块」横向排布。 */
 function comfyGroupOf(label: string): { field: string; group: string } {
   const idx = label.lastIndexOf(' · ');
   if (idx >= 0) return { field: label.slice(0, idx), group: label.slice(idx + 3) };
   return { field: label, group: '常用' };
+}
+
+interface ComfyModule {
+  g: string;
+  cs: InputControl[];
+  /** 估算渲染高度（px），用于瀑布流贪心分列 */
+  weight: number;
+}
+
+/**
+ * ComfyUI 工作流参数「瀑布流（masonry）」：真·先横向铺满、再纵向堆叠。
+ * CSS 多列做不到（它按高度平衡、且列数不随项目数封顶 → 宽面板右侧会空一大块），故用 JS：
+ *  列数 = min(模块数, ⌊容器宽 / 理想列宽⌋) —— 列数永不超过模块数，flex:1 把列拉伸填满整宽（右侧不留白）；
+ *  每个模块按「当前最矮的列」贪心放入（瀑布）。容器宽用 ResizeObserver 跟随面板拖宽实时重算。
+ */
+function ComfyMasonry({
+  modules,
+  renderCtl
+}: {
+  modules: ComfyModule[];
+  renderCtl: (c: InputControl) => JSX.Element;
+}): JSX.Element {
+  const ref = useRef<HTMLDivElement>(null);
+  const [w, setW] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    setW(el.clientWidth);
+    const ro = new ResizeObserver((es) => setW(es[0]?.contentRect.width ?? el.clientWidth));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const IDEAL = 268;
+  const GAP = 10;
+  const fit = w > 0 ? Math.max(1, Math.floor((w + GAP) / (IDEAL + GAP))) : 1;
+  const cols = Math.max(1, Math.min(modules.length || 1, fit));
+  const buckets = Array.from({ length: cols }, () => ({ items: [] as ComfyModule[], h: 0 }));
+  for (const m of modules) {
+    let t = buckets[0];
+    for (const b of buckets) if (b.h < t.h) t = b;
+    t.items.push(m);
+    t.h += m.weight;
+  }
+
+  return (
+    <div className="mb-sc-modules" ref={ref}>
+      {buckets.map((b, i) => (
+        <div className="mb-sc-mcol" key={i}>
+          {b.items.map((m) => (
+            <div className="mb-sc-module" key={m.g}>
+              <div className="mb-sc-module-h">{m.g}</div>
+              <div className="mb-sc-module-b">{m.cs.map(renderCtl)}</div>
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 /** 运行日志导出按钮（work/comfy/llm 共用）。 */
@@ -121,54 +235,9 @@ function ExportLogBtn({ title, logs, error }: { title: string; logs?: string[]; 
   );
 }
 
-/**
- * 受控数字输入：编辑时允许自由输入（含清空 / 中间态），失焦或回车才 clamp 并提交。
- * 解决「min 限制让 16 一直卡在输入框、无法清空重输」的问题（不再每次按键即 clamp）。
- */
-function ClampNumberInput({
-  value,
-  min,
-  max,
-  onCommit,
-  className = 'mb-input'
-}: {
-  value: number;
-  min: number;
-  max: number;
-  onCommit: (v: number) => void;
-  className?: string;
-}): JSX.Element {
-  const [text, setText] = useState(String(value));
-  // 外部值变化（切换节点 / 提交后回写）时同步显示；编辑中 value 不变，不会打断输入
-  useEffect(() => {
-    setText(String(value));
-  }, [value]);
-  const commit = (): void => {
-    const n = Number(text);
-    if (text.trim() === '' || Number.isNaN(n)) {
-      setText(String(value));
-      return;
-    }
-    const clamped = Math.max(min, Math.min(max, Math.round(n)));
-    setText(String(clamped));
-    if (clamped !== value) onCommit(clamped);
-  };
-  return (
-    <input
-      className={className}
-      type="number"
-      inputMode="numeric"
-      value={text}
-      onChange={(e) => setText(e.target.value)}
-      onBlur={commit}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-      }}
-    />
-  );
-}
+// ClampNumberInput 统一从 consoleControls 导入（铁律 19：数值输入框单一实现）
 
-/** 本地路径/数据 URI → dataUri（入图库 / 另存 都要 dataUri）。 */
+/** 本地路径/数据 URI → dataUri（入资产库 / 另存 都要 dataUri）。 */
 async function imageToDataUri(src: string): Promise<string | null> {
   if (src.startsWith('data:')) return src;
   try {
@@ -185,7 +254,7 @@ async function imageToDataUri(src: string): Promise<string | null> {
   }
 }
 
-/** 结果图操作块：缩略图 + 另存 / 作参考图（发回生图页）。结果/工作/ComfyUI 节点共用。生成结果已自动入库，故不再有「入图库」。 */
+/** 结果图操作块：缩略图 + 另存 / 作参考图（发回生图页）。结果/工作/ComfyUI 节点共用。生成结果已自动入库，故不再有「入资产库」。 */
 function ResultActionsBlock({ images, durationMs }: { images: string[]; durationMs?: number }): JSX.Element | null {
   const navigate = useNavigate();
   const addRefs = useImageParamsStore((s) => s.addRefs);
@@ -201,7 +270,7 @@ function ResultActionsBlock({ images, durationMs }: { images: string[]; duration
     if (r.ok && r.data) toast.success('已另存', r.data.filePath);
     else if (!r.ok) toast.error(r.error.message, r.error.hint);
   }
-  // 发回生图页当参考图（复用 imageParamsStore.addRefs，与图库/画板同一通道）
+  // 发回生图页当参考图（复用 imageParamsStore.addRefs，与资产库/画板同一通道）
   async function toCreateRef(src: string): Promise<void> {
     const du = await imageToDataUri(src);
     if (!du) {
@@ -262,16 +331,20 @@ export function NodeInspector({ float = false }: { float?: boolean } = {}): JSX.
   // 文本/属性编辑进撤销栈：聚焦快照、失焦若有改动则压栈
   const editProps = { onFocus: beginEdit, onBlur: commitEdit };
 
-  // 绘画模型：跳过「实际ID为空」的映射（选了也跑不了）；保留 comfyui 排除逻辑
+  // 绘画模型：跳过「实际ID为空」的映射（选了也跑不了）；保留 comfyui 排除逻辑。
+  // value=复合标识「中转站 / 名」（同名不同中转站可区分），label 显示前缀。
   const imageModels = useMemo(() => {
-    const out: string[] = [];
+    const out: { ref: string; label: string }[] = [];
     const seen = new Set<string>();
     for (const c of configs) {
       if (c.type !== 'image' || c.image_kind === 'comfyui') continue;
+      const prov = (c.provider_name ?? '').trim();
       for (const [name, actualId] of Object.entries(c.model_mapping)) {
-        if (seen.has(name) || !(actualId && actualId.trim())) continue;
-        seen.add(name);
-        out.push(name);
+        if (!(actualId && actualId.trim())) continue;
+        const ref = modelRefValue(prov, name);
+        if (seen.has(ref)) continue;
+        seen.add(ref);
+        out.push({ ref, label: prov ? `${prov} / ${name}` : name });
       }
     }
     return out;
@@ -283,13 +356,9 @@ export function NodeInspector({ float = false }: { float?: boolean } = {}): JSX.
     [configs, activePlanId]
   );
 
-  /** 显示名 → 真实模型 ID（用于 detectFamily 判系列；查不到回退显示名本身）。 */
-  function realModelId(displayName: string): string {
-    for (const c of configs) {
-      const v = c.model_mapping?.[displayName];
-      if (c.type === 'image' && v) return v;
-    }
-    return displayName;
+  /** 复合标识/旧裸名 → 真实模型 ID（用于 detectFamily 判系列；查不到回退 name 段）。 */
+  function realModelId(ref: string): string {
+    return resolveModelRef(configs, 'image', ref)?.actualId ?? parseModelRef(ref).name;
   }
 
   // ComfyUI 工作流模板列表（页面挂载时拉一次）
@@ -332,7 +401,7 @@ export function NodeInspector({ float = false }: { float?: boolean } = {}): JSX.
   const sel = nodes.find((n) => n.selected);
   // 选中节点的真实上游（文本 / 图片）——用于把「被上游喂入」的输入框替换成黄色「由上游输入」提示。
   const up = useMemo(
-    () => (sel ? computeUpstream(nodes, edges, sel.id) : { images: [], prompts: [], refs: [] }),
+    () => (sel ? computeUpstream(nodes, edges, sel.id) : { images: [], prompts: [], refs: [], videos: [], sizes: [], masks: [] }),
     [nodes, edges, sel?.id]
   );
   const collapsed = useSmartCanvasUiStore((s) => s.inspectorCollapsed);
@@ -404,6 +473,49 @@ export function NodeInspector({ float = false }: { float?: boolean } = {}): JSX.
       if (raf) cancelAnimationFrame(raf);
     };
   }, [float, storeApi, sel?.id]);
+
+  // 浮动面板尺寸记忆（铁律 20）：按节点类型持久化用户用 CSS resize 拖出的宽高，重开/切画布/重启保持
+  useEffect(() => {
+    if (!float || !selKind) return;
+    const el = floatRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const key = `mengbi.sc.inspector.${selKind}.v1`;
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw) {
+        const s = JSON.parse(raw) as { w?: number; h?: number };
+        if (typeof s.w === 'number' && s.w >= 280) el.style.width = `${s.w}px`;
+        if (typeof s.h === 'number' && s.h >= 160) el.style.height = `${s.h}px`;
+      }
+    } catch {
+      /* ignore */
+    }
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let first = true;
+    const ro = new ResizeObserver(() => {
+      if (first) {
+        // 跳过挂载/应用存档时的首次回调，只记用户拖动
+        first = false;
+        return;
+      }
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        try {
+          localStorage.setItem(key, JSON.stringify({ w: el.offsetWidth, h: el.offsetHeight }));
+        } catch {
+          /* ignore */
+        }
+      }, 400);
+    });
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+      if (timer) clearTimeout(timer);
+      // 切换节点类型时清掉内联尺寸，让下个类型按自己的存档/默认走
+      el.style.width = '';
+      el.style.height = '';
+    };
+  }, [float, selKind]);
 
   // 浮动模式下没有选中节点 → 不渲染（画布回到无边框无限感）
   if (float && !sel) return <></>;
@@ -492,8 +604,8 @@ export function NodeInspector({ float = false }: { float?: boolean } = {}): JSX.
                   <select className="mb-select" value={d.modelId} onChange={(e) => setF({ modelId: e.target.value })}>
                     <option value="">（选择模型）</option>
                     {imageModels.map((m) => (
-                      <option key={m} value={m}>
-                        {m}
+                      <option key={m.ref} value={m.ref}>
+                        {m.label}
                       </option>
                     ))}
                   </select>
@@ -507,21 +619,17 @@ export function NodeInspector({ float = false }: { float?: boolean } = {}): JSX.
                     随机延迟 {d.mockDelayMin ?? 200}–{d.mockDelayMax ?? 800} ms
                   </label>
                   <div className="mb-sc-seedrow">
-                    <input
-                      className="mb-input"
-                      type="number"
+                    <ClampNumberInput
                       min={0}
+                      max={600000}
                       value={d.mockDelayMin ?? 200}
-                      title="延迟下限 ms"
-                      onChange={(e) => setF({ mockDelayMin: Math.max(0, Number(e.target.value) || 0) })}
+                      onCommit={(v) => setF({ mockDelayMin: v })}
                     />
-                    <input
-                      className="mb-input"
-                      type="number"
+                    <ClampNumberInput
                       min={0}
+                      max={600000}
                       value={d.mockDelayMax ?? 800}
-                      title="延迟上限 ms"
-                      onChange={(e) => setF({ mockDelayMax: Math.max(0, Number(e.target.value) || 0) })}
+                      onCommit={(v) => setF({ mockDelayMax: v })}
                     />
                   </div>
                   <label className="mb-sc-flabel">随机失败概率 {Math.round((d.mockErrorRate ?? 0) * 100)}%</label>
@@ -558,22 +666,22 @@ export function NodeInspector({ float = false }: { float?: boolean } = {}): JSX.
                         </div>
                       )}
 
-                      <label className="mb-sc-flabel">分辨率</label>
-                      {family.supportedTiers.length > 0 ? (
-                        <select
-                          className="mb-select"
-                          value={d.imageSize ?? ''}
-                          onChange={(e) => setF({ imageSize: e.target.value })}
-                        >
-                          <option value="">（默认）</option>
-                          {family.supportedTiers.map((t) => (
-                            <option key={t} value={t}>
-                              {t}
-                            </option>
-                          ))}
-                        </select>
-                      ) : (
-                        <div className="mb-sc-note">该系列由 size 决定分辨率（不用 1K/2K/4K 档）。</div>
+                      {family.supportedTiers.length > 0 && (
+                        <>
+                          <label className="mb-sc-flabel">分辨率</label>
+                          <select
+                            className="mb-select"
+                            value={d.imageSize ?? ''}
+                            onChange={(e) => setF({ imageSize: e.target.value })}
+                          >
+                            <option value="">（默认）</option>
+                            {family.supportedTiers.map((t) => (
+                              <option key={t} value={t}>
+                                {t}
+                              </option>
+                            ))}
+                          </select>
+                        </>
                       )}
 
                       {family.supportsQuality && (
@@ -620,6 +728,7 @@ export function NodeInspector({ float = false }: { float?: boolean } = {}): JSX.
                       type="number"
                       value={d.seed ?? ''}
                       placeholder="随机"
+                      onFocus={(e) => e.currentTarget.select()}
                       onChange={(e) => {
                         const v = e.target.value.trim();
                         const num = Number(v);
@@ -641,14 +750,7 @@ export function NodeInspector({ float = false }: { float?: boolean } = {}): JSX.
               )}
 
               <label className="mb-sc-flabel">张数（1-4）</label>
-              <input
-                className="mb-input"
-                type="number"
-                min={1}
-                max={4}
-                value={d.n}
-                onChange={(e) => setF({ n: Math.max(1, Math.min(4, Number(e.target.value) || 1)) })}
-              />
+              <ClampNumberInput min={1} max={4} value={d.n} onCommit={(v) => setF({ n: v })} />
 
               {d.inputRefs.length > 0 && (
                 <>
@@ -708,20 +810,12 @@ export function NodeInspector({ float = false }: { float?: boolean } = {}): JSX.
               </Field>
 
               <Field label={`对话模型${isImageOp ? '（需 vision）' : ''}`}>
-                <select className="mb-select" value={d.modelId} onChange={(e) => setF({ modelId: e.target.value })}>
-                  <option value="">（选择模型）</option>
-                  {/* 已选模型不在当前可选列表（换方案后失效等）→ 仍占位显示，让用户看到要改 */}
-                  {d.modelId && !textModels.some((m) => m.name === d.modelId) && (
-                    <option value={d.modelId} disabled>
-                      {d.modelId}（已失效）
-                    </option>
-                  )}
-                  {textModels.map((m) => (
-                    <option key={m.name} value={m.name} disabled={!m.usable}>
-                      {m.usable ? m.name : `${m.name}（实际ID未填）`}
-                    </option>
-                  ))}
-                </select>
+                <SearchableModelSelect
+                  value={d.modelId}
+                  options={textModels.map((m) => ({ value: m.ref, label: m.usable ? m.label : `${m.label}（实际ID未填）` }))}
+                  placeholder="（选择模型）"
+                  onChange={(v) => setF({ modelId: v })}
+                />
               </Field>
 
               {isImageOp ? (
@@ -737,14 +831,25 @@ export function NodeInspector({ float = false }: { float?: boolean } = {}): JSX.
                   />
                 </Field>
               ) : (
-                <Field label="额外指令（可选）">
-                  <input
-                    className="mb-input"
-                    value={d.instruction}
-                    {...editProps}
-                    onChange={(e) => setF({ instruction: e.target.value })}
-                    placeholder="例如：偏写实 / 限 50 词以内"
-                  />
+                <Field label="额外指令（可选）" wide>
+                  <label className="mb-sc-instr-toggle" title="开启后：上游连入的提示词文本作为额外指令（注入系统提示词），不再作为待处理文本">
+                    <input
+                      type="checkbox"
+                      checked={!!d.instructionFromUpstream}
+                      onChange={(e) => setF({ instructionFromUpstream: e.target.checked })}
+                    />
+                    外接上游文本作指令
+                  </label>
+                  {d.instructionFromUpstream && up.prompts.length > 0 ? (
+                    <div className="mb-sc-fromup is-fed">额外指令由上游输入（{up.prompts.length} 段），无需手填</div>
+                  ) : (
+                    <AutoTextarea
+                      value={d.instruction}
+                      {...editProps}
+                      onChange={(v) => setF({ instruction: v })}
+                      placeholder="例如：偏写实 / 限 50 词以内；或勾「外接上游文本作指令」从上游提示词节点接入"
+                    />
+                  )}
                 </Field>
               )}
 
@@ -756,10 +861,10 @@ export function NodeInspector({ float = false }: { float?: boolean } = {}): JSX.
 
               {isImageOp ? (
                 <div className="mb-sc-note">连一个上游图片节点，反推成提示词文本喂给下游。</div>
-              ) : up.prompts.length > 0 ? (
+              ) : up.prompts.length > 0 && !d.instructionFromUpstream ? (
                 <div className="mb-sc-fromup is-fed">输入文本由上游输入（{up.prompts.length} 段），无需手填</div>
               ) : (
-                <Field label="输入文本（与上游文本/提示词合并）" wide>
+                <Field label={d.instructionFromUpstream && up.prompts.length > 0 ? '待处理文本（上游已作指令，这里填要处理的文本）' : '输入文本（与上游文本/提示词合并）'} wide>
                   <textarea
                     className="mb-textarea mb-sc-itext"
                     value={d.input}
@@ -816,20 +921,104 @@ export function NodeInspector({ float = false }: { float?: boolean } = {}): JSX.
               )}
 
               {d.workflowId && (
+                <Field label="多输入运行方式" wide>
+                  <select
+                    className="mb-select"
+                    value={d.multiMode ?? 'merge'}
+                    onChange={(e) => update(sel.id, { multiMode: e.target.value as ComfyMultiMode } as Partial<SmartNodeData>)}
+                  >
+                    {(Object.keys(COMFY_MULTI_MODE_LABELS) as ComfyMultiMode[]).map((m) => {
+                      const reason = comfyModeUnavailableReason(m, d.controls, { prompts: up.prompts, images: up.images });
+                      return (
+                        <option key={m} value={m} disabled={!!reason} title={reason ?? COMFY_MULTI_MODE_LABELS[m]}>
+                          {COMFY_MULTI_MODE_LABELS[m]}
+                          {reason ? `（不可用：${reason}）` : ''}
+                        </option>
+                      );
+                    })}
+                  </select>
+                  {(d.multiMode ?? 'merge') !== 'merge' && (
+                    <div className="mb-sc-note">
+                      逐条执行：每条/每张单独跑一遍完整工作流，失败跳过继续，结果按批次聚合成合集卡（可单条重试）。
+                    </div>
+                  )}
+                </Field>
+              )}
+
+              {d.workflowId && (
                 <>
                   <Field label="工作流参数（按所属节点分模块，运行时随工作流发出）" wide />
                   {(() => {
                     // 按「节点标题」把控件分类成一个个模块卡片，横向铺开（3:1~4:1 宽屏）
                     const visible = d.controls.filter((c) => c.visible !== false);
                     if (visible.length === 0) return null;
-                    // 哪些输入槽会被上游覆盖（与运行引擎 runComfyNode 同逻辑）：
-                    //   文本槽 i 被喂入 ⟺ 上游提示词数 > i；图片槽被喂入 ⟺ 有上游图片。
+                    // 哪些输入槽会被上游覆盖（与运行引擎 buildComfyControlValues 同逻辑，含 inputBindings）：
+                    //   显式绑定的槽按绑定显示；off 槽不接收；其余「自动」槽按剔除被绑定消费后的剩余条目判定。
                     const slots = comfyInputSlots(visible);
+                    const bindings = d.inputBindings ?? {};
+                    const bindOf = (c: InputControl): ComfyInputBinding | undefined => bindings[c.id];
+                    // 文本：被显式绑定消费的提示词序号
+                    const consumedP = new Set<number>();
+                    for (const c of slots.text) {
+                      const b = bindOf(c);
+                      if (b?.kind === 'prompt' && up.prompts.length) consumedP.add(Math.min(b.index, up.prompts.length - 1));
+                    }
+                    const autoTextSlots = slots.text.filter((c) => !bindOf(c));
+                    const remainPrompts = up.prompts.filter((_, i) => !consumedP.has(i)).length;
                     const fedText = new Set<string>();
-                    slots.text.forEach((c, i) => {
-                      if (up.prompts.length > i) fedText.add(c.id);
+                    autoTextSlots.forEach((c, i) => {
+                      if (remainPrompts > i) fedText.add(c.id);
                     });
-                    const imagesFed = up.images.length > 0;
+                    // 图片：自动池剩余
+                    const consumedI = new Set<number>();
+                    for (const c of slots.image) {
+                      const b = bindOf(c);
+                      if (b?.kind === 'image' && up.images.length) consumedI.add(Math.min(b.index, up.images.length - 1));
+                      if (b?.kind === 'all-images') up.images.forEach((_, i) => consumedI.add(i));
+                    }
+                    const imagesFed = up.images.filter((_, i) => !consumedI.has(i)).length > 0;
+                    const setBinding = (cid: string, v: string): void => {
+                      const next: Record<string, ComfyInputBinding> = { ...bindings };
+                      if (v === 'auto') delete next[cid];
+                      else if (v === 'off') next[cid] = { kind: 'off' };
+                      else if (v === 'all') next[cid] = { kind: 'all-images' };
+                      else if (v.startsWith('p:')) next[cid] = { kind: 'prompt', index: Number(v.slice(2)) };
+                      else if (v.startsWith('i:')) next[cid] = { kind: 'image', index: Number(v.slice(2)) };
+                      else if (v.startsWith('m:')) next[cid] = { kind: 'mask', index: Number(v.slice(2)) };
+                      update(sel.id, { inputBindings: next } as Partial<SmartNodeData>);
+                    };
+                    const bindValue = (c: InputControl): string => {
+                      const b = bindOf(c);
+                      if (!b) return 'auto';
+                      if (b.kind === 'off') return 'off';
+                      if (b.kind === 'all-images') return 'all';
+                      if (b.kind === 'mask') return `m:${b.index}`;
+                      return b.kind === 'prompt' ? `p:${b.index}` : `i:${b.index}`;
+                    };
+                    const cut = (s: string): string => (s.length > 14 ? `${s.slice(0, 14)}…` : s);
+                    /** 绑定下拉（仅有上游对应输入时显示）：自动 / 第 N 条·张·遮罩 / 全部图 / 不接收。slot=控件吃哪类上游。 */
+                    const bindSelect = (c: InputControl, slot: 'image' | 'prompt' | 'mask'): JSX.Element | null => {
+                      const list = slot === 'image' ? up.images : slot === 'mask' ? up.masks : up.prompts;
+                      if (!list.length) return null;
+                      const prefix = slot === 'image' ? 'i' : slot === 'mask' ? 'm' : 'p';
+                      return (
+                        <select className="mb-select mb-sc-bindsel" value={bindValue(c)} title="该控件接收哪条上游输入" onChange={(e) => setBinding(c.id, e.target.value)}>
+                          <option value="auto">自动（按序分发）</option>
+                          {list.map((v, i) => (
+                            <option key={i} value={`${prefix}:${i}`}>
+                              {slot === 'image' ? `上游图 ${i + 1}` : slot === 'mask' ? `上游遮罩 ${i + 1}` : `提示词 ${i + 1}：${cut(String(v))}`}
+                            </option>
+                          ))}
+                          {slot === 'image' && c.type === 'multi_image' && <option value="all">全部上游图（{up.images.length} 张）</option>}
+                          <option value="off">不接收（用手填 / 工作流默认）</option>
+                        </select>
+                      );
+                    };
+                    // 上游「尺寸来源」尽力而为：名字像 width/height/宽/高 的数值控件被喂入（与 runComfyNode 同逻辑）
+                    const upSize = up.sizes[0];
+                    const sizeFed = new Set<string>();
+                    // emit='aspect'（只比例）时不喂宽高（ComfyUI 需具体像素），故不标黄
+                    if (upSize && (upSize.emit ?? 'both') !== 'aspect') for (const c of visible) if (comfySizeRole(c)) sizeFed.add(c.id);
                     const modules = new Map<string, InputControl[]>();
                     for (const c of visible) {
                       const { group } = comfyGroupOf(c.label);
@@ -837,37 +1026,105 @@ export function NodeInspector({ float = false }: { float?: boolean } = {}): JSX.
                       if (arr) arr.push(c);
                       else modules.set(group, [c]);
                     }
-                    // 被上游喂入的输入：去掉输入框、改黄色「由上游输入」一行字（省空间 + 防误填）
+                    // 被上游喂入的输入：去掉输入框、改黄色「由上游输入」一行字（省空间 + 防误填）；
+                    // 有上游时附「绑定」下拉——指定该控件收上游第几条提示词 / 第几张图（缺省自动按序）。
                     const renderCtl = (c: InputControl): JSX.Element => {
                       const field = comfyGroupOf(c.label).field;
-                      if (COMFY_IMAGE_KINDS.has(c.type)) {
+                      const b = bindOf(c);
+                      // 遮罩（局部重绘 mask）控件：吃上游遮罩（Flux Fill / inpaint），与图片控件分开
+                      if (c.type === 'mask') {
+                        const fed = b?.kind === 'mask' || (!b && up.masks.length > 0);
+                        const text =
+                          b?.kind === 'off'
+                            ? '不接收上游（用手填 / 工作流默认）'
+                            : b?.kind === 'mask'
+                              ? `绑定上游遮罩 ${Math.min(b.index, Math.max(0, up.masks.length - 1)) + 1}`
+                              : up.masks.length
+                                ? '由上游遮罩输入（局部重绘）'
+                                : '由上游遮罩喂入（未接则用工作流默认）';
                         return (
-                          <div key={c.id} className={`mb-sc-fromup ${imagesFed ? 'is-fed' : ''}`}>
-                            {field}：{imagesFed ? '由上游输入图片' : '由上游喂入（未接则用工作流默认）'}
+                          <div key={c.id} className="mb-sc-bindwrap">
+                            <div className={`mb-sc-fromup ${fed && up.masks.length ? 'is-fed' : ''}`}>
+                              {field}：{text}
+                            </div>
+                            {bindSelect(c, 'mask')}
                           </div>
                         );
                       }
-                      if (fedText.has(c.id)) {
+                      if (COMFY_IMAGE_KINDS.has(c.type)) {
+                        const fed = b?.kind === 'image' || b?.kind === 'all-images' || (!b && imagesFed);
+                        const text =
+                          b?.kind === 'off'
+                            ? '不接收上游（用手填 / 工作流默认）'
+                            : b?.kind === 'image'
+                              ? `绑定上游图 ${Math.min(b.index, Math.max(0, up.images.length - 1)) + 1}`
+                              : b?.kind === 'all-images'
+                                ? `收全部上游图（${up.images.length} 张）`
+                                : imagesFed
+                                  ? '由上游输入图片'
+                                  : '由上游喂入（未接则用工作流默认）';
+                        return (
+                          <div key={c.id} className="mb-sc-bindwrap">
+                            <div className={`mb-sc-fromup ${fed && up.images.length ? 'is-fed' : ''}`}>
+                              {field}：{text}
+                            </div>
+                            {bindSelect(c, 'image')}
+                          </div>
+                        );
+                      }
+                      // 文本槽：off / 无上游喂入 → 正常可编辑控件；显式绑定或自动被喂入 → 黄条
+                      const tFed = b?.kind === 'prompt' || fedText.has(c.id);
+                      if (tFed || (b && b.kind !== 'off')) {
+                        const text =
+                          b?.kind === 'prompt'
+                            ? `绑定上游提示词 ${Math.min(b.index, Math.max(0, up.prompts.length - 1)) + 1}`
+                            : '由上游输入（无需手填）';
+                        return (
+                          <div key={c.id} className="mb-sc-bindwrap">
+                            <div className="mb-sc-fromup is-fed">
+                              {field}：{text}
+                            </div>
+                            {bindSelect(c, 'prompt')}
+                          </div>
+                        );
+                      }
+                      if (sizeFed.has(c.id) && upSize) {
                         return (
                           <div key={c.id} className="mb-sc-fromup is-fed">
-                            {field}：由上游输入（无需手填）
+                            {field}：由上游尺寸输入（{comfySizeRole(c) === 'height' ? upSize.height : upSize.width}）
+                          </div>
+                        );
+                      }
+                      // 文本槽且有上游但当前不被喂入（off / 自动池不够分）：可编辑 + 绑定下拉
+                      if (COMFY_TEXT_KINDS.has(c.type) && up.prompts.length > 0) {
+                        return (
+                          <div key={c.id} className="mb-sc-bindwrap">
+                            {renderComfyControl({ ...c, label: field }, d.controlValues[c.id], setCv)}
+                            {bindSelect(c, 'prompt')}
                           </div>
                         );
                       }
                       return renderComfyControl({ ...c, label: field }, d.controlValues[c.id], setCv);
                     };
-                    return (
-                      <div className="mb-sc-modules">
-                        {[...modules].map(([g, cs]) => (
-                          <div className="mb-sc-module" key={g}>
-                            <div className="mb-sc-module-h">{g}</div>
-                            <div className="mb-sc-module-b">{cs.map(renderCtl)}</div>
-                          </div>
-                        ))}
-                      </div>
-                    );
+                    // 估算每个控件高度（用于瀑布流贪心分列）：被喂入/图片=一行黄字；textarea 高；slider/普通各档。
+                    const estCtl = (c: InputControl): number => {
+                      const bindH = (COMFY_IMAGE_KINDS.has(c.type) && (up.images.length || up.masks.length)) || (COMFY_TEXT_KINDS.has(c.type) && up.prompts.length) ? 32 : 0;
+                      if (COMFY_IMAGE_KINDS.has(c.type) || fedText.has(c.id) || sizeFed.has(c.id)) return 36 + bindH;
+                      if (c.type === 'textarea' || c.type === 'json' || c.type === 'prompt') return 104 + bindH;
+                      if (c.type === 'slider') return 52;
+                      return 54;
+                    };
+                    const moduleList = [...modules].map(([g, cs]) => ({
+                      g,
+                      cs,
+                      weight: 34 + cs.reduce((s, c) => s + estCtl(c), 0)
+                    }));
+                    return <ComfyMasonry modules={moduleList} renderCtl={renderCtl} />;
                   })()}
-                  <div className="mb-sc-note">图片 / 文本输入由上游节点喂入；其余参数在此调。</div>
+                  <div className="mb-sc-note">
+                    图片 / 文本输入由上游节点喂入；其余参数在此调。<b>多图 / 多条提示词</b>时，用每个输入槽下的「绑定」下拉精确指定它收<b>上游第几张图 / 第几条提示词</b>——
+                    例如把深度图绑到 ControlNet 槽、原图绑到主图槽；正向 / 负向提示词分别绑到对应文本槽。选「不接收」则该槽用工作流默认 / 手填。
+                  </div>
                 </>
               )}
 
@@ -1092,6 +1349,7 @@ export function NodeInspector({ float = false }: { float?: boolean } = {}): JSX.
           };
           const OCCS = Object.keys(LIGHT_OCCLUSION_LABELS) as LightOcclusion[];
           const EFFS = Object.keys(LIGHT_EFFECT_LABELS) as LightEffect[];
+          const SRCS = Object.keys(LIGHT_SOURCE_LABELS) as LightSourceType[];
           return (
             <div className="mb-sc-form">
               <div className="mb-sc-note">接入图片 → 在节点上拖光点 / 调下列参数 → 输出光照提示词喂下游。</div>
@@ -1107,6 +1365,15 @@ export function NodeInspector({ float = false }: { float?: boolean } = {}): JSX.
 
               <label className="mb-sc-flabel">色温 {l.warmth}（负 = 冷 / 正 = 暖）</label>
               <input className="mb-sc-range" type="range" min={-100} max={100} step={1} value={l.warmth} onChange={(e) => setL({ warmth: Number(e.target.value) })} />
+
+              <label className="mb-sc-flabel">光源类型</label>
+              <select className="mb-select" value={l.sourceType ?? 'none'} onChange={(e) => setL({ sourceType: e.target.value as LightSourceType })}>
+                {SRCS.map((o) => (
+                  <option key={o} value={o}>
+                    {LIGHT_SOURCE_ICON[o]} {LIGHT_SOURCE_LABELS[o]}
+                  </option>
+                ))}
+              </select>
 
               <label className="mb-sc-flabel">遮挡</label>
               <select className="mb-select" value={l.occlusion} onChange={(e) => setL({ occlusion: e.target.value as LightOcclusion })}>
@@ -1260,6 +1527,8 @@ export function NodeInspector({ float = false }: { float?: boolean } = {}): JSX.
                             className="mb-sc-result-video"
                             src={v.startsWith('data:') || v.startsWith('http') ? v : localPathToImageUrl(v)}
                             controls
+                            loop
+                            preload="metadata"
                           />
                         ))}
                       </div>

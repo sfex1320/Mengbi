@@ -1,12 +1,11 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import { NodeResizer, type NodeProps } from '@xyflow/react';
 import { useSmartCanvasStore, useSmartPreviewStore, useSmartTextStore } from '@/store/smartCanvasStore';
 import { runWithUpstream, comfyInputSlots, cancelComfy, forceResetComfy, computeUpstream } from '@/lib/smartCanvasRunner';
-import { localPathToImageUrl } from '@/lib/imageUrl';
 import type { ComfyNodeData } from '@shared/smartCanvas';
 import { NodeShell } from './NodeShell';
-import { MeasuredThumb } from '../MeasuredThumb';
-import { fmtDur, areaMenu, copyText, copyImage, imageToGallery, imageSaveAs, makePromptNodeFrom } from '../nodeArea';
+import { MeasuredThumb, thumbPair } from '../MeasuredThumb';
+import { fmtDur, areaMenu, copyText, copyImage, imageToGallery, imageSaveAs, makePromptNodeFrom, ToPromptButton, autoGrowNode, getNodeWidth, dragOutNative, showInFolder } from '../nodeArea';
 
 const STATUS_TEXT: Record<string, string> = {
   idle: '待运行',
@@ -14,10 +13,6 @@ const STATUS_TEXT: Record<string, string> = {
   success: '成功',
   error: '失败'
 };
-
-function imgUrl(src: string): string {
-  return src.startsWith('data:') ? src : localPathToImageUrl(src);
-}
 
 /** ComfyUI 节点：绑定工作流模板，运行后取回输出图。模板与控件在弹出检查器编辑。 */
 export function ComfyNode({ id, data }: NodeProps): JSX.Element {
@@ -32,6 +27,33 @@ export function ComfyNode({ id, data }: NodeProps): JSX.Element {
   // 真实上游（实时按连线计算，运行也用它；没接就是没接，不存在「后台缓存的旧输入」）
   const up = useMemo(() => computeUpstream(nodes, edges, id), [nodes, edges, id]);
   const texts = d.result?.texts ?? [];
+
+  // 外接提示词：新建一个提示词节点放到本节点左侧并连上（在那里编辑提示词更方便）
+  function attachPromptNode(): void {
+    const st = useSmartCanvasStore.getState();
+    const self = st.nodes.find((n) => n.id === id);
+    const pos = self ? { x: self.position.x - 320, y: self.position.y } : undefined;
+    const pid = st.addNode('prompt', pos);
+    st.onConnect({ source: pid, target: id, sourceHandle: null, targetHandle: null });
+    st.selectOnly(pid);
+  }
+
+  // 自适应贴合：完整计入「模板名 + 上游输入行 + 外接提示词预览框（或接提示词按钮）+ 运行 + 结果图行 + 文本 + 错误」。
+  // 关键：必须计入「外接提示词预览框」——否则接了上游提示词时内容比估高，运行按钮 / 结果图会被截断（双向贴合）。
+  const imgCount = d.result?.images?.length ?? 0;
+  const upPrompts = up.prompts.length;
+  useEffect(() => {
+    const width = getNodeWidth(id);
+    let need = 152; // 标题 + 模板名 + 上游输入行 + 运行按钮
+    need += upPrompts ? 84 : 30; // 外接提示词预览框 / 「＋ 接提示词节点」按钮
+    if (d.error) need += 28;
+    if (imgCount) {
+      const cols = Math.max(1, Math.floor((width - 24) / 104));
+      need += Math.ceil(imgCount / cols) * 104 + 8;
+    }
+    if (texts.length) need += Math.min(200, 40 + texts.length * 26);
+    autoGrowNode(id, need);
+  }, [id, d.error, imgCount, texts.length, upPrompts]);
 
   return (
     <>
@@ -58,6 +80,25 @@ export function ComfyNode({ id, data }: NodeProps): JSX.Element {
               ? `上游输入：${up.prompts.length} 词 · ${up.images.length} 图`
               : `未接上游 · 可接 ${slots.text.length} 词 / ${slots.image.length} 图（现用工作流默认）`}
         </div>
+        {d.workflowId &&
+          (up.prompts.length > 0 ? (
+            <div
+              className="mb-sc-comfy-prompt nodrag"
+              title="送入工作流的提示词（来自上游提示词节点）· 点击放大查看"
+              onClick={() => openText(up.prompts.join('\n'), 'ComfyUI 提示词（外接）')}
+            >
+              <span className="mb-sc-comfy-prompt-tag">外接提示词</span>
+              <span className="mb-sc-comfy-prompt-text">{up.prompts.join(' / ')}</span>
+            </div>
+          ) : slots.text.length > 0 ? (
+            <button
+              className="mb-sc-comfy-attach nodrag"
+              onClick={attachPromptNode}
+              title="新建一个提示词节点并连到本节点的文本控件——在提示词节点里编辑更方便（外接）"
+            >
+              ＋ 接提示词节点（外接编辑）
+            </button>
+          ) : null)}
         <div className="mb-sc-work-runrow nodrag">
           <button className="mb-btn mb-btn-sm mb-btn-primary" disabled={running || !d.workflowId} onClick={() => void runWithUpstream(id)}>
             {running ? '运行中…' : '运行'}
@@ -81,23 +122,41 @@ export function ComfyNode({ id, data }: NodeProps): JSX.Element {
         {d.result?.durationMs != null && <div className="mb-sc-work-dur">{fmtDur(d.result.durationMs)}</div>}
         {d.result?.images && d.result.images.length > 0 && (
           <div className="mb-sc-work-thumbs nodrag">
-            {d.result.images.slice(0, 4).map((p, i) => (
-              <MeasuredThumb
-                key={i}
-                src={imgUrl(p)}
-                alt={`输出 ${i + 1}`}
-                title="结果 · 角标=实际分辨率 · 右键复制 / 另存"
-                onClick={() => openPreview(imgUrl(p))}
-                onContextMenu={(e) =>
-                  areaMenu(e, [
-                    { label: '复制图片', onClick: () => void copyImage(imgUrl(p)) },
-                    { label: '放大预览', onClick: () => openPreview(imgUrl(p)) },
-                    { label: '入图库', onClick: () => void imageToGallery(p) },
-                    { label: '另存…', onClick: () => void imageSaveAs(p, 'comfyui-result.png') }
-                  ])
-                }
-              />
-            ))}
+            {d.result.images.slice(0, 4).map((p, i) => {
+              const t = thumbPair(p);
+              // 统一预览：本节点全部输出图作为列表，从点击的那张开始（←→ 切换）
+              const all = d.result?.images ?? [];
+              const preview = (): void =>
+                openPreview(
+                  all.map((x) => ({
+                    src: x.startsWith('data:') ? x : thumbPair(x).full,
+                    meta: { filePath: x.startsWith('data:') ? undefined : x }
+                  })),
+                  i
+                );
+              return (
+                <MeasuredThumb
+                  key={i}
+                  src={t.thumb}
+                  fullSrc={t.full}
+                  measureFull
+                  alt={`输出 ${i + 1}`}
+                  title="结果 · 角标=真实分辨率 · 拖出到其他软件直接用 · 右键更多"
+                  draggable
+                  onDragStart={(e) => dragOutNative(e, p, `comfyui-result-${i + 1}`)}
+                  onClick={preview}
+                  onContextMenu={(e) =>
+                    areaMenu(e, [
+                      { label: '复制图片', onClick: () => void copyImage(t.full) },
+                      { label: '放大预览', onClick: preview },
+                      { label: '入资产库', onClick: () => void imageToGallery(p) },
+                      { label: '另存…', onClick: () => void imageSaveAs(p, 'comfyui-result.png') },
+                      { label: '打开文件所在目录', onClick: () => void showInFolder(p) }
+                    ])
+                  }
+                />
+              );
+            })}
           </div>
         )}
         {texts.length > 0 && (
@@ -119,13 +178,7 @@ export function ComfyNode({ id, data }: NodeProps): JSX.Element {
                 {t}
               </div>
             ))}
-            <button
-              className="mb-btn mb-btn-sm mb-btn-ghost nodrag mb-sc-toprompt"
-              title="把全部文本输出导入一个下游提示词节点"
-              onClick={() => makePromptNodeFrom(id, texts.join('\n'))}
-            >
-              → 提示词节点
-            </button>
+            <ToPromptButton onClick={() => makePromptNodeFrom(id, texts.join('\n'))} title="把全部文本输出导入一个下游提示词节点" />
           </div>
         )}
       </NodeShell>

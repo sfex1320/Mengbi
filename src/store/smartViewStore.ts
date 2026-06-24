@@ -8,6 +8,9 @@ import { persist } from 'zustand/middleware';
 
 export type EdgeStyle = 'bezier' | 'straight' | 'step';
 
+/** 连线流动动画：on=始终开 / auto=节点或连线多时自动停（性能降级）/ off=始终关 */
+export type FlowAnimation = 'on' | 'auto' | 'off';
+
 interface SmartViewState {
   /** 连线形状：曲线 / 直线 / 折线 */
   edgeStyle: EdgeStyle;
@@ -23,7 +26,10 @@ interface SmartViewState {
   alignGuides: boolean;
   /** 节点属性面板：true=浮动跟随选中节点（默认）/ false=固定右侧抽屉 */
   inspectorFloat: boolean;
+  /** 连线流动动画：on / auto（默认，大画布自动停）/ off */
+  flowAnimation: FlowAnimation;
   setEdgeStyle: (s: EdgeStyle) => void;
+  setFlowAnimation: (v: FlowAnimation) => void;
   toggleArrows: () => void;
   toggleStatusColor: () => void;
   toggleSnap: () => void;
@@ -42,7 +48,9 @@ export const useSmartViewStore = create<SmartViewState>()(
       snapSize: 16,
       alignGuides: true,
       inspectorFloat: true,
+      flowAnimation: 'auto',
       setEdgeStyle: (edgeStyle) => set({ edgeStyle }),
+      setFlowAnimation: (flowAnimation) => set({ flowAnimation }),
       toggleArrows: () => set((s) => ({ showArrows: !s.showArrows })),
       toggleStatusColor: () => set((s) => ({ statusColorEdges: !s.statusColorEdges })),
       toggleSnap: () => set((s) => ({ snapToGrid: !s.snapToGrid })),

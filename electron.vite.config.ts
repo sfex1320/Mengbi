@@ -2,14 +2,40 @@ import { defineConfig, externalizeDepsPlugin } from 'electron-vite';
 import react from '@vitejs/plugin-react';
 import { viteStaticCopy } from 'vite-plugin-static-copy';
 import { resolve } from 'node:path';
+import { execSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 
 // 用 process.cwd() 而不是 __dirname：electron-vite 通过 bundle-require 加载本配置，
 // 编译后的 __dirname 可能指向临时目录，process.cwd() 永远是用户启动 npm run dev 的项目根。
 const root = process.cwd();
 const r = (p: string): string => resolve(root, p);
 
+// 构建标识（修「打包后新功能没进去、还是旧行为」）：把 git 短哈希 + 构建时间 + 版本号
+// 在构建时注入为全局常量，关于页 / 主进程日志会显示——用户据此一眼确认「正在运行的包
+// 是否就是最新源码构建的」（再不会误以为旧包是新功能缺失）。dev 时这些值即开发会话启动时间。
+function gitHash(): string {
+  try {
+    return execSync('git rev-parse --short HEAD', { cwd: root }).toString().trim();
+  } catch {
+    return 'nogit';
+  }
+}
+function pkgVersion(): string {
+  try {
+    return (JSON.parse(readFileSync(r('package.json'), 'utf8')).version as string) ?? '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
+const buildDefine = {
+  __GIT_HASH__: JSON.stringify(gitHash()),
+  __BUILD_TIME__: JSON.stringify(new Date().toISOString()),
+  __APP_VERSION__: JSON.stringify(pkgVersion())
+};
+
 export default defineConfig({
   main: {
+    define: buildDefine,
     plugins: [externalizeDepsPlugin()],
     build: {
       lib: {
@@ -26,6 +52,7 @@ export default defineConfig({
     }
   },
   preload: {
+    define: buildDefine,
     plugins: [externalizeDepsPlugin()],
     build: {
       lib: {
@@ -39,6 +66,7 @@ export default defineConfig({
     }
   },
   renderer: {
+    define: buildDefine,
     root: '.',
     plugins: [
       react(),

@@ -81,6 +81,48 @@ html[data-idle='true'] .mb-ls-blob {
   visibility: hidden;
 }
 
+/**
+ * 性能模式（设置 → 外观 → 性能；themeStore.perfMode='low' → html data-perf="low"，无需重启）
+ * 与本地大模型推理降效（localLlm 推理中 → html data-busy="true"，推理结束移除）：
+ * 复用 data-idle 同一套「停装饰动画、豁免功能性反馈」策略，但**常驻**（聚焦操作时也生效）。
+ */
+html[data-perf='low'] *,
+html[data-perf='low'] *::before,
+html[data-perf='low'] *::after,
+html[data-busy='true'] *,
+html[data-busy='true'] *::before,
+html[data-busy='true'] *::after {
+  animation-play-state: paused !important;
+}
+html[data-perf='low'] [class*='progress'],
+html[data-perf='low'] [class*='progress'] *,
+html[data-perf='low'] [class*='spinner'],
+html[data-perf='low'] [class*='loading'],
+html[data-perf='low'] [class*='bar-fill'],
+html[data-perf='low'] [class*='busy'],
+html[data-perf='low'] .mb-anim-keep,
+html[data-perf='low'] .mb-anim-keep *,
+html[data-busy='true'] [class*='progress'],
+html[data-busy='true'] [class*='progress'] *,
+html[data-busy='true'] [class*='spinner'],
+html[data-busy='true'] [class*='loading'],
+html[data-busy='true'] [class*='bar-fill'],
+html[data-busy='true'] [class*='busy'],
+html[data-busy='true'] .mb-anim-keep,
+html[data-busy='true'] .mb-anim-keep * {
+  animation-play-state: running !important;
+}
+html[data-perf='low'] .mb-orb,
+html[data-perf='low'] .mb-galaxy-band,
+html[data-perf='low'] .mb-meteor,
+html[data-perf='low'] .mb-ls-blob,
+html[data-busy='true'] .mb-orb,
+html[data-busy='true'] .mb-galaxy-band,
+html[data-busy='true'] .mb-meteor,
+html[data-busy='true'] .mb-ls-blob {
+  visibility: hidden;
+}
+
 /* 无障碍 / 省电：系统开了「减少动态效果」就停掉所有装饰动画（保留进度条/spinner）。
    纯静态背景，零持续 GPU 合成成本。 */
 @media (prefers-reduced-motion: reduce) {
@@ -167,6 +209,35 @@ a:hover {
 }
 ::-webkit-scrollbar-thumb:hover {
   background: var(--mb-text-muted);
+}
+
+/* 长按拖动滚动（grab-scroll，见 src/lib/useDragScroll.ts）+ 明显可见的滑杆。
+   全局定义：提示词库 / 资产库 / 节点模板 / 选图弹窗 / 主功能资产库·提示词库 等卡片列表共用。 */
+.mb-dragscroll {
+  cursor: grab;
+  scrollbar-width: auto;
+}
+.mb-dragscroll.is-dragscroll {
+  cursor: grabbing;
+  user-select: none;
+}
+.mb-dragscroll::-webkit-scrollbar {
+  width: 12px;
+}
+.mb-dragscroll::-webkit-scrollbar-track {
+  background: var(--mb-bg-hover);
+  border-radius: 8px;
+}
+.mb-dragscroll::-webkit-scrollbar-thumb {
+  background: var(--mb-border-strong);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: 8px;
+  min-height: 40px;
+}
+.mb-dragscroll::-webkit-scrollbar-thumb:hover {
+  background: var(--mb-accent);
+  background-clip: padding-box;
 }
 
 ::selection {
@@ -279,6 +350,21 @@ a:hover {
 
 .mb-btn-pill {
   border-radius: var(--mb-radius-pill);
+}
+
+/* ── 键盘焦点可见（无障碍）──
+   纯键盘用户 Tab 到按钮/链接/节点等任何可聚焦元素时看得到焦点环；
+   只在键盘聚焦（:focus-visible）时出现，鼠标点击不显示，不打扰日常使用。
+   Chromium 会自动把 outline 圆角贴合元素自身 border-radius。 */
+:focus-visible {
+  outline: 2px solid var(--mb-accent);
+  outline-offset: 2px;
+}
+/* 输入类已有自带聚焦边框环，避免叠成双环 */
+.mb-input:focus-visible,
+.mb-textarea:focus-visible,
+.mb-select:focus-visible {
+  outline: none;
 }
 
 /* ────────────────────────── 表单 ────────────────────────── */
@@ -891,4 +977,51 @@ select option:disabled {
 .mb-app > aside {
   position: relative;
   z-index: 1;
+}
+
+/* ── 页面级错误边界（ErrorBoundary contained）：只占内容区，侧栏 / 顶栏照常可用 ── */
+.mb-errboundary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  min-height: 300px;
+  padding: 40px;
+}
+.mb-errboundary-card {
+  max-width: 560px;
+  width: 100%;
+  padding: 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.mb-errboundary-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--mb-text-primary);
+}
+.mb-errboundary-desc {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--mb-text-secondary);
+}
+.mb-errboundary-detail {
+  font-size: 12px;
+  font-family: 'JetBrains Mono', Consolas, monospace;
+  color: #f43f5e;
+  background: rgba(244, 63, 94, 0.08);
+  border: 1px solid rgba(244, 63, 94, 0.2);
+  border-radius: 10px;
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 180px;
+  overflow: auto;
+}
+.mb-errboundary-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
 }

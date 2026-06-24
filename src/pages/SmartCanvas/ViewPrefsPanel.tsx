@@ -1,10 +1,16 @@
 import { createPortal } from 'react-dom';
-import { useSmartViewStore, type EdgeStyle } from '@/store/smartViewStore';
+import { useSmartViewStore, type EdgeStyle, type FlowAnimation } from '@/store/smartViewStore';
 
 const EDGE_STYLES: Array<[EdgeStyle, string]> = [
   ['bezier', '曲线'],
   ['straight', '直线'],
   ['step', '折线']
+];
+
+const FLOW_ANIMS: Array<[FlowAnimation, string, string]> = [
+  ['on', '开', '始终显示流动动画'],
+  ['auto', '自动', '节点 > 80 或连线 > 120 时自动停（推荐，大画布防掉帧）'],
+  ['off', '关', '始终不显示流动动画（最省）']
 ];
 
 /** 视图偏好弹窗：连线形状/箭头/状态着色 + 网格吸附 + 对齐参考线。portal 到 body 避免 transform 错位。 */
@@ -27,6 +33,22 @@ export function ViewPrefsPanel({ onClose }: { onClose: () => void }): JSX.Elemen
                 key={s}
                 className={`mb-sc-seg-btn ${v.edgeStyle === s ? 'is-on' : ''}`}
                 onClick={() => v.setEdgeStyle(s)}
+              >
+                {l}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="mb-sc-viewprefs-row">
+          <span>流动动画</span>
+          <div className="mb-sc-seg">
+            {FLOW_ANIMS.map(([val, l, tip]) => (
+              <button
+                key={val}
+                className={`mb-sc-seg-btn ${v.flowAnimation === val ? 'is-on' : ''}`}
+                title={tip}
+                onClick={() => v.setFlowAnimation(val)}
               >
                 {l}
               </button>

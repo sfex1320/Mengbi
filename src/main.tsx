@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import App from './App';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import './styles/global.css';
+import './styles/motion.css';
 
 // 把全局未捕获错误也写到 console，方便 DevTools 一眼看到
 window.addEventListener('error', (e) => {

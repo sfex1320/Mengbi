@@ -20,6 +20,7 @@ const LABELS: Record<string, string> = {
   'api:image:cancel': '取消绘图任务',
   // gallery / album
   'api:gallery:update': '更新图片元数据',
+  'api:gallery:import-files': '导入文件到资产库',
   'api:album:upsert': '保存相册',
   'api:album:delete': '删除相册',
   // settings / plan
@@ -38,9 +39,17 @@ const LABELS: Record<string, string> = {
   'api:storage:show-in-folder': '在文件管理器中打开',
   'api:theme:save': '保存自定义主题',
   'api:export:card': '导出作品卡片',
+  // 视频插帧（RIFE）
+  'api:interp:install-engine': '安装插帧引擎',
+  'api:interp:remove-engine': '删除插帧引擎',
+  'api:interp:run': '视频插帧',
+  'api:interp:cancel': '取消插帧',
   // 异步任务推送
   'image:done': '绘图任务完成',
   'chat:done': '对话流式结束',
+  'video:done': '视频任务完成',
+  'comfyui:run-done': 'ComfyUI 运行完成',
+  'vec:batch-done': '矢量化批量完成',
 };
 
 export function labelForChannel(channel: string): string {

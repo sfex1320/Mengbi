@@ -61,6 +61,8 @@ export interface VTracerParams {
   maxPaths?: number;
   /** 合并相近颜色阈值(后处理) */
   colorMergeDelta?: number;
+  /** 路径拟合模式: 'spline'=曲线(默认,最平滑) | 'polygon'=多边形(硬边/像素风) | 'none'=不简化(忠实但 path 多)。缺省 'spline' = 历史行为 */
+  pathMode?: 'none' | 'polygon' | 'spline';
 }
 
 export interface PotraceParams {
@@ -76,6 +78,10 @@ export interface PotraceParams {
   optCurve?: boolean;
   /** 优化容忍度 */
   optTolerance?: number;
+  /** 描线填充色: 'auto'(默认,按图自动) 或 '#rrggbb' */
+  color?: string;
+  /** 背景色: 'transparent'(默认) 或 '#rrggbb' */
+  background?: string;
 }
 
 export type VecParams = VTracerParams | PotraceParams;

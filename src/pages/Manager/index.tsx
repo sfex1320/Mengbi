@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { toast } from '@/store/toastStore';
@@ -6,8 +6,10 @@ import { useImageParamsStore } from '@/store/imageParamsStore';
 import { useSmartInboxStore } from '@/store/smartInboxStore';
 import { useDeletedMediaStore } from '@/store/deletedMediaStore';
 import { useUIStore } from '@/store/uiStore';
+import { useGalleryStore } from '@/store/galleryStore';
+import { useDragScroll } from '@/lib/useDragScroll';
 import { Modal } from '@/components/Modal';
-import { Lightbox } from '@/components/Lightbox';
+import { Lightbox, type PreviewItem } from '@/components/Lightbox';
 import { openContextMenu, type ContextMenuEntry } from '@/components/ContextMenu';
 import { confirmDialog } from '@/components/ConfirmDialog';
 import {
@@ -20,7 +22,10 @@ import {
   CopyIconShape
 } from '@/components/Icon';
 import { localPathToImageUrl } from '@/lib/imageUrl';
+import { buildShortcutSendMenuItems } from '@/lib/mediaActions';
 import { autoTag } from '@/lib/autoTag';
+import { fileKindOf, FILE_KIND_BADGE, GALLERY_IMPORT_EXTENSIONS } from '@/lib/mediaFile';
+import { captureVideoPoster } from '@/lib/videoPoster';
 import { ImportTargetDialog } from '@/pages/Canvas/ImportTargetDialog';
 import { importImageToCanvas } from '@/pages/Canvas/importToCanvas';
 import { AlbumEditModal } from './AlbumEditModal';
@@ -63,7 +68,27 @@ interface ImageRow {
   rating: number;
   notes: string | null;
   album_ids: string | null;
+  /** 分组（文件夹）名；null = 未分组（资产库首页散图） */
+  group_name?: string | null;
   created_at: string;
+  /** 真实文件字节大小（api:gallery:list 用 statSync 回填；文件被删为 null） */
+  file_size_bytes?: number | null;
+}
+
+/** 资产库分组（文件夹）卡：list-groups 返回 */
+interface GalleryGroup {
+  name: string;
+  count: number;
+  cover: string | null;
+}
+
+/** 字节数 → 人类可读（B / KB / MB / GB）。 */
+function formatBytes(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n) || n <= 0) return '';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
 type Mode = 'prompt' | 'gallery';
@@ -72,12 +97,18 @@ const VIRTUAL_ALL = { id: 0, name: '全部记录', slug: 'all', is_builtin: 1, s
 
 type DateFilter = 'all' | 'today' | 'week' | 'month';
 type SortMode = 'newest' | 'oldest';
+type KindFilter = 'all' | 'image' | 'video' | 'other';
+
+/** 资产库无限滚动每页条数（滚到底再拉一批，直到全部加载完）。 */
+const GALLERY_PAGE = 100;
 
 export default function ManagerPage(): JSX.Element {
   const ui = useUIStore();
-  // 提示词管家已下线：Manager 固定为「图库」视图。用 `as Mode` 保留联合类型（而非收窄成字面量），
-  // 让下方休眠的提示词分支保持类型有效（运行时 mode 恒为 'gallery'，那些分支永不渲染）。
-  const mode = 'gallery' as Mode;
+  // 主内容区长按拖动滚动（资产库 / 提示词库 网格）；输入/可拖图片自动跳过（见 useDragScroll）。
+  const contentRef = useDragScroll<HTMLElement>();
+  // 提示词管家 2026-06-12 复活：资产库 / 提示词 双视图（2026-06-05 下线时只删了切换入口，
+  // 提示词分支与后端通道一直休眠保留）。默认资产库——用户更习惯先看图。
+  const [mode, setMode] = useState<Mode>('gallery');
   const activeSlug = ui.managerSlug;
   const setActiveSlug = (s: string): void => ui.setManagerSlug(s);
   const search = ui.managerSearch;
@@ -88,23 +119,37 @@ export default function ManagerPage(): JSX.Element {
   const setModelFilter = (s: string): void => ui.setManagerModelFilter(s);
   const aspectFilter = ui.managerAspectFilter;
   const setAspectFilter = (s: string): void => ui.setManagerAspectFilter(s);
+  const kindFilter = ui.managerKindFilter;
+  const setKindFilter = (s: KindFilter): void => ui.setManagerKindFilter(s);
   const sortMode = ui.managerSort;
   const setSortMode = (s: SortMode): void => ui.setManagerSort(s);
 
   const [categories, setCategories] = useState<PromptCategory[]>([]);
   const [prompts, setPrompts] = useState<PromptCard[]>([]);
-  const [images, setImages] = useState<ImageRow[]>([]);
-  /** 相册（图库视图侧栏）：列表 + 当前选中（null=全部） + 正在编辑的相册表单 */
+  // 初始即从 App 级缓存取（切回资产库瞬开，不空等 2-3 秒）；默认相册=全部（null）
+  const [images, setImages] = useState<ImageRow[]>(() => (useGalleryStore.getState().getCached(null) as ImageRow[] | undefined) ?? []);
+  const imgReqSeq = useRef(0);
+  // 无限滚动分页：每页 100，滚到底再拉下一批（键集分页，按 id 游标），直到全部加载完
+  const [hasMore, setHasMore] = useState(true);
+  const loadingMoreRef = useRef(false);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  /** 相册（资产库视图侧栏）：列表 + 当前选中（null=全部） + 正在编辑的相册表单 */
   const [albums, setAlbums] = useState<Album[]>([]);
   const [activeAlbumId, setActiveAlbumId] = useState<number | null>(null);
   const [albumEditing, setAlbumEditing] = useState<AlbumInput | null>(null);
+  /**
+   * 资产库「分组（文件夹）」：
+   *   - groups：所有 distinct group_name + 计数 + 封面（首页的文件夹卡）
+   *   - activeGroup：null = 首页（显示文件夹卡 + 未分组散图）；具名 = 进入该文件夹
+   * 与相册互斥：进相册即退出分组、进分组即清相册（两套不同的归类维度）。
+   */
+  const [groups, setGroups] = useState<GalleryGroup[]>([]);
+  const [activeGroup, setActiveGroup] = useState<string | null>(null);
+  /** 面包屑里正在内联改名的草稿（null = 未改名） */
+  const [groupRenaming, setGroupRenaming] = useState<string | null>(null);
   const [editing, setEditing] = useState<Partial<PromptCard> | null>(null);
-  const [previewSrc, setPreviewSrc] = useState<string | null>(null);
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => {
-    setMounted(true);
-  }, []);
-  /** 图库勾选模式 */
+  const [preview, setPreview] = useState<{ items: PreviewItem[]; index: number } | null>(null);
+  /** 资产库勾选模式 */
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   /**
@@ -128,10 +173,11 @@ export default function ManagerPage(): JSX.Element {
   const navigate = useNavigate();
   const imgParams = useImageParamsStore();
 
-  // 打开管家页面时，默认进入图库视图（每次进入都重置一次——用户更习惯先看图）
+  // 打开管家页面时，默认进入资产库视图（每次进入都重置一次——用户更习惯先看图）
   useEffect(() => {
     refreshCategories();
     refreshAlbums();
+    refreshGroups();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -139,18 +185,26 @@ export default function ManagerPage(): JSX.Element {
     if (mode === 'prompt') refreshPrompts();
     else refreshImages();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, activeSlug, activeAlbumId]);
+  }, [mode, activeSlug, activeAlbumId, activeGroup]);
 
-  // 监听生图完成事件，自动刷新图库
+  // 监听 生图完成 + 资产库内容有变（插帧/缩放/放大/矢量化等产物自动入库的广播），自动刷新资产库
   // 依赖 activeAlbumId：切相册（不切 mode）后 refreshImages 闭包会读到旧相册，必须重订阅
   useEffect(() => {
     if (!window.electronAPI?.on) return;
-    const off = window.electronAPI.on('image:done', () => {
-      if (mode === 'gallery') refreshImages();
-    });
-    return off;
+    const refreshIfGallery = (): void => {
+      if (mode === 'gallery') {
+        refreshImages();
+        refreshGroups();
+      }
+    };
+    const offDone = window.electronAPI.on('image:done', refreshIfGallery);
+    const offChanged = window.electronAPI.on('gallery:changed', refreshIfGallery);
+    return () => {
+      offDone();
+      offChanged();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, activeAlbumId]);
+  }, [mode, activeAlbumId, activeGroup]);
 
   async function refreshCategories(): Promise<void> {
     const r = await window.electronAPI.prompt.categoryList();
@@ -164,16 +218,218 @@ export default function ManagerPage(): JSX.Element {
     else toast.error('加载提示词失败', r.error.message);
   }
 
-  async function refreshImages(): Promise<void> {
-    const r = await window.electronAPI.gallery.list({ album_id: activeAlbumId ?? undefined });
-    if (r.ok) setImages(r.data as ImageRow[]);
-    else toast.error('加载图库失败', r.error.message);
+  /**
+   * 分组（文件夹）筛选值：相册激活时不按分组（相册优先）；否则首页只看未分组散图（'__home__'），
+   * 进入某文件夹则看该文件夹。注意：分组与相册互斥（进相册会清 activeGroup）。
+   */
+  function groupFilter(): string | undefined {
+    if (activeAlbumId !== null) return undefined;
+    return activeGroup ?? '__home__';
   }
+
+  /**
+   * 缓存键：仅缓存「首页(null) / 各相册(album id)」——文件夹视图不缓存（多个文件夹共用一个槽会串内容），
+   * 进文件夹直接清空再拉，避免上一个文件夹的图一闪而过。
+   */
+  function galleryCacheKey(): number | null | undefined {
+    if (activeAlbumId !== null) return activeAlbumId;
+    if (activeGroup === null) return null;
+    return undefined; // 文件夹视图：不参与缓存
+  }
+
+  async function refreshImages(): Promise<void> {
+    // 先显缓存（切相册/切回不空等），再后台拉第一页（100 张）并回写缓存
+    const key = galleryCacheKey();
+    const cached = key !== undefined ? (useGalleryStore.getState().getCached(key) as ImageRow[] | undefined) : undefined;
+    if (cached) setImages(cached);
+    else if (key === undefined) setImages([]); // 进文件夹：先清空，避免上个文件夹的图残留闪现
+    // 防超期：快速切相册/文件夹时，旧请求迟到的结果不得覆盖新视图（按序号丢弃过期响应）
+    const seq = ++imgReqSeq.current;
+    const r = await window.electronAPI.gallery.list({
+      album_id: activeAlbumId ?? undefined,
+      group: groupFilter(),
+      limit: GALLERY_PAGE
+    });
+    if (seq !== imgReqSeq.current) return;
+    if (r.ok) {
+      const rows = r.data as ImageRow[];
+      setImages(rows);
+      setHasMore(rows.length >= GALLERY_PAGE); // 满页 → 可能还有，启用无限滚动继续拉
+      if (key !== undefined) useGalleryStore.getState().setCached(key, rows);
+    } else if (!cached) toast.error('加载资产库失败', r.error.message);
+  }
+
+  /** 无限滚动：拉下一批（键集游标 = 当前最小 id），追加去重，直到不满页（全部加载完）。 */
+  async function loadMoreImages(): Promise<void> {
+    if (loadingMoreRef.current || !hasMore || images.length === 0) return;
+    loadingMoreRef.current = true;
+    const beforeId = images.reduce((m, x) => Math.min(m, x.id), Infinity);
+    const seq = imgReqSeq.current;
+    const r = await window.electronAPI.gallery.list({
+      album_id: activeAlbumId ?? undefined,
+      group: groupFilter(),
+      limit: GALLERY_PAGE,
+      before_id: Number.isFinite(beforeId) ? beforeId : undefined
+    });
+    loadingMoreRef.current = false;
+    if (seq !== imgReqSeq.current || !r.ok) return; // 切视图了 / 失败 → 丢弃
+    const rows = r.data as ImageRow[];
+    setHasMore(rows.length >= GALLERY_PAGE);
+    setImages((prev) => {
+      const seen = new Set(prev.map((x) => x.id));
+      const merged = [...prev, ...rows.filter((x) => !seen.has(x.id))];
+      const k = galleryCacheKey();
+      if (k !== undefined) useGalleryStore.getState().setCached(k, merged);
+      return merged;
+    });
+  }
+
+  // ─── 资产库分组（文件夹） ───
+  async function refreshGroups(): Promise<void> {
+    const r = await window.electronAPI.gallery.listGroups();
+    if (r.ok) setGroups(r.data as GalleryGroup[]);
+    // 分组加载失败不打扰（资产库主流程不依赖它）
+  }
+
+  /** 取一个不与现有分组撞名的默认文件夹名（文件夹 1 / 2 / …）。 */
+  function uniqueGroupName(): string {
+    const have = new Set(groups.map((g) => g.name));
+    for (let i = 1; i < 9999; i++) {
+      const n = `文件夹 ${i}`;
+      if (!have.has(n)) return n;
+    }
+    return `文件夹 ${Date.now()}`;
+  }
+
+  /** 把一组图片归入分组 group（null = 移出回首页），物理移动源文件由后端处理。 */
+  async function setImagesGroup(ids: number[], group: string | null): Promise<boolean> {
+    if (ids.length === 0) return false;
+    const r = await window.electronAPI.gallery.setGroup({ imageIds: ids, group });
+    if (!r.ok) {
+      toast.error('分组操作失败', r.error.message);
+      return false;
+    }
+    await refreshGroups();
+    await refreshImages();
+    return true;
+  }
+
+  /** 拖一张卡到另一张卡上 → 成组：目标已在某文件夹则并入，否则新建文件夹把两张一起放进去。 */
+  async function dropCardOnCard(draggedId: number, target: ImageRow): Promise<void> {
+    if (draggedId === target.id) return;
+    if (target.group_name) {
+      if (await setImagesGroup([draggedId], target.group_name)) toast.success(`已加入「${target.group_name}」`);
+    } else {
+      const name = uniqueGroupName();
+      if (await setImagesGroup([draggedId, target.id], name)) toast.success(`已新建文件夹「${name}」`);
+    }
+  }
+
+  /** 收集某分组下的全部 image id（键集翻页直到取尽），用于「改名 / 解散」整组操作。 */
+  async function collectGroupImageIds(name: string): Promise<number[]> {
+    const ids: number[] = [];
+    let before: number | undefined;
+    for (let guard = 0; guard < 200; guard++) {
+      const r = await window.electronAPI.gallery.list({ group: name, limit: 2000, before_id: before });
+      if (!r.ok) break;
+      const rows = r.data as ImageRow[];
+      if (rows.length === 0) break;
+      for (const x of rows) ids.push(x.id);
+      if (rows.length < 2000) break;
+      before = rows.reduce((m, x) => Math.min(m, x.id), Infinity);
+    }
+    return ids;
+  }
+
+  /** 文件夹改名：把整组图片 setGroup 到新名（后端顺带把源文件移到新文件夹）。 */
+  async function renameGroup(oldName: string, newNameRaw: string): Promise<void> {
+    const newName = newNameRaw.trim();
+    setGroupRenaming(null);
+    if (!newName || newName === oldName) return;
+    if (groups.some((g) => g.name === newName)) {
+      toast.error('已存在同名文件夹', '换个名字');
+      return;
+    }
+    const ids = await collectGroupImageIds(oldName);
+    if (await setImagesGroup(ids, newName)) {
+      if (activeGroup === oldName) setActiveGroup(newName);
+      toast.success('文件夹已改名');
+    }
+  }
+
+  /** 解散文件夹：整组移出回首页（源文件移回 ungrouped/）。 */
+  async function dissolveGroup(name: string): Promise<void> {
+    const ok = await confirmDialog({
+      title: '解散文件夹',
+      message: `解散文件夹「${name}」？`,
+      detail: '组内图片会移回资产库首页（散图），不会删除任何图片或文件。',
+      okText: '解散',
+      danger: true
+    });
+    if (!ok) return;
+    const ids = await collectGroupImageIds(name);
+    if (await setImagesGroup(ids, null)) {
+      if (activeGroup === name) setActiveGroup(null);
+      toast.success('文件夹已解散');
+    }
+  }
+
+  /** 进入某文件夹（与相册互斥：清相册 + 退出批量选择）。 */
+  function enterGroup(name: string): void {
+    setActiveAlbumId(null);
+    setActiveGroup(name);
+    exitSelectMode();
+  }
+
+  /** 文件夹卡右键：改名 / 解散。 */
+  function openGroupMenu(e: React.MouseEvent, g: GalleryGroup): void {
+    e.preventDefault();
+    e.stopPropagation();
+    openContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      items: [
+        { label: '打开文件夹', icon: <FolderIcon size={12} />, onClick: () => enterGroup(g.name) },
+        {
+          label: '重命名…',
+          icon: <SparkleIcon size={12} />,
+          onClick: () => {
+            enterGroup(g.name);
+            setGroupRenaming(g.name);
+          }
+        },
+        { separator: true },
+        {
+          label: '解散文件夹',
+          variant: 'danger',
+          icon: <TrashIcon size={12} />,
+          onClick: () => void dissolveGroup(g.name)
+        }
+      ]
+    });
+  }
+
+  // 无限滚动：底部哨兵进入视口（提前 600px）→ 拉下一批，直到全部加载完
+  useEffect(() => {
+    if (mode !== 'gallery' || !hasMore) return;
+    const el = sentinelRef.current;
+    if (!el) return;
+    const ob = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) void loadMoreImages();
+      },
+      { rootMargin: '600px' }
+    );
+    ob.observe(el);
+    return () => ob.disconnect();
+    // loadMoreImages 是每次渲染新建的闭包（捕获当前 images/hasMore）；按 images.length 重建观察者保证不取旧值
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, hasMore, images.length, activeAlbumId]);
 
   async function refreshAlbums(): Promise<void> {
     const r = await window.electronAPI.album.list();
     if (r.ok) setAlbums(r.data as Album[]);
-    // 相册加载失败不打扰（图库主流程不依赖它）
+    // 相册加载失败不打扰（资产库主流程不依赖它）
   }
 
   async function saveAlbum(input: AlbumInput): Promise<void> {
@@ -282,6 +538,40 @@ export default function ManagerPage(): JSX.Element {
     }));
   }
 
+  /** 图片右键「移到文件夹」子菜单：新建文件夹 / 现有文件夹 / 移出（若已在文件夹内）。 */
+  function folderSubmenuItems(im: ImageRow): ContextMenuEntry[] {
+    const items: ContextMenuEntry[] = [
+      {
+        label: '新建文件夹并移入…',
+        icon: <PlusIcon size={11} />,
+        onClick: () => {
+          const name = uniqueGroupName();
+          void setImagesGroup([im.id], name).then((ok) => {
+            if (ok) {
+              enterGroup(name);
+              setGroupRenaming(name);
+            }
+          });
+        }
+      }
+    ];
+    for (const g of groups) {
+      if (g.name === im.group_name) continue;
+      items.push({
+        label: `📁 ${g.name}`,
+        onClick: () => void setImagesGroup([im.id], g.name).then((ok) => ok && toast.success(`已移入「${g.name}」`))
+      });
+    }
+    if (im.group_name) {
+      items.push({ separator: true });
+      items.push({
+        label: '移出文件夹（回首页）',
+        onClick: () => void setImagesGroup([im.id], null).then((ok) => ok && toast.success('已移出文件夹'))
+      });
+    }
+    return items;
+  }
+
   async function deletePrompt(id: number): Promise<void> {
     const ok = await confirmDialog({
       title: '删除提示词',
@@ -300,7 +590,7 @@ export default function ManagerPage(): JSX.Element {
     }
   }
 
-  // ─── 图库批量勾选 ───
+  // ─── 资产库批量勾选 ───
   function toggleSelect(id: number): void {
     setSelectedIds((cur) => {
       const next = new Set(cur);
@@ -337,10 +627,10 @@ export default function ManagerPage(): JSX.Element {
   async function batchDeleteSelected(): Promise<void> {
     if (selectedIds.size === 0) return;
     const ok = await confirmDialog({
-      title: deleteLocalFile ? '批量删除(含本地文件)' : '批量从图库移除',
+      title: deleteLocalFile ? '批量删除(含本地文件)' : '批量从资产库移除',
       message: deleteLocalFile
         ? `物理删除 ${selectedIds.size} 张图的本地文件 + 卡片?`
-        : `从图库移除选中的 ${selectedIds.size} 张图？`,
+        : `从资产库移除选中的 ${selectedIds.size} 张图？`,
       detail: deleteLocalFile
         ? '⚠ 不可逆!磁盘上的源文件会被 unlink,DB 行硬删,不会进回收站。'
         : '仅在数据库打软删除标记，磁盘上的源文件不会删除。',
@@ -379,13 +669,26 @@ export default function ManagerPage(): JSX.Element {
       } else {
         toast.error('部分失败', `成功 ${successfulIds.length} / 失败 ${failed}`);
       }
-      // 跨功能同步：软删也从智能画布结果预览里剔除（仅成功的；用户已从图库移除）
+      // 跨功能同步：软删也从智能画布结果预览里剔除（仅成功的；用户已从资产库移除）
       useDeletedMediaStore
         .getState()
         .markDeleted(successfulIds.map((id) => images.find((x) => x.id === id)?.file_path ?? ''));
     }
     exitSelectMode();
     refreshImages();
+  }
+
+  /** 把选中的图片一键归入一个新文件夹（成组后进入并允许改名）。 */
+  async function batchGroupSelected(): Promise<void> {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    const name = uniqueGroupName();
+    if (await setImagesGroup(ids, name)) {
+      toast.success(`已归入「${name}」`, `${ids.length} 张`);
+      exitSelectMode();
+      enterGroup(name);
+      setGroupRenaming(name);
+    }
   }
 
   /**
@@ -410,8 +713,8 @@ export default function ManagerPage(): JSX.Element {
 
   async function softDeleteImage(id: number): Promise<void> {
     const ok = await confirmDialog({
-      title: '从图库移除',
-      message: '从图库移除这张图？',
+      title: '从资产库移除',
+      message: '从资产库移除这张图？',
       detail: '仅在数据库打软删除标记，磁盘上的源文件不会删除。',
       okText: '移除',
       danger: true
@@ -579,6 +882,12 @@ export default function ManagerPage(): JSX.Element {
         if (!Number.isFinite(t) || t < cutoff) return false;
       }
       if (modelFilter !== 'all' && im.model_used !== modelFilter) return false;
+      if (kindFilter !== 'all') {
+        // 分拣：图片(含 SVG) / 视频 / 其它（PSD/PDF/Office 等文档类）
+        const k = fileKindOf(im.file_path);
+        const bucket = k === 'video' ? 'video' : k === 'image' || k === 'svg' ? 'image' : 'other';
+        if (bucket !== kindFilter) return false;
+      }
       if (aspectFilter !== 'all') {
         const meta = extractMeta(im.params_json);
         if (meta.aspect !== aspectFilter) return false;
@@ -591,13 +900,100 @@ export default function ManagerPage(): JSX.Element {
       return sortMode === 'newest' ? tb - ta : ta - tb;
     });
     return arr;
-  }, [images, search, dateFilter, modelFilter, aspectFilter, sortMode]);
+  }, [images, search, dateFilter, modelFilter, kindFilter, aspectFilter, sortMode]);
+
+  /** 各类型在当前（未按类型过滤）资产里的数量，用于分拣按钮角标。 */
+  const kindCounts = useMemo(() => {
+    const c = { all: images.length, image: 0, video: 0, other: 0 };
+    for (const im of images) {
+      const k = fileKindOf(im.file_path);
+      if (k === 'video') c.video++;
+      else if (k === 'image' || k === 'svg') c.image++;
+      else c.other++;
+    }
+    return c;
+  }, [images]);
+
+  /** 打开统一预览：当前筛选列表全集 + 起始 index（获得 ←→ 切换 + 右键菜单）。
+   *  PSD / PDF / Office 等不可像素预览的收录文件 → 直接用系统默认程序打开。 */
+  function openPreviewAt(target: ImageRow): void {
+    const tk = fileKindOf(target.file_path);
+    if (tk === 'psd' || tk === 'pdf' || tk === 'office') {
+      void window.electronAPI.storage.openPath({ targetPath: target.file_path });
+      return;
+    }
+    // ←→ 导航只在可像素预览的媒体（图/视频/SVG）之间切换，文档类卡片不进列表
+    const mediaRows = filteredImages.filter((im) => {
+      const k = fileKindOf(im.file_path);
+      return k !== 'psd' && k !== 'pdf' && k !== 'office';
+    });
+    const items: PreviewItem[] = mediaRows.map((im) => ({
+      src: localPathToImageUrl(im.file_path),
+      type: fileKindOf(im.file_path) === 'video' ? 'video' : 'image',
+      alt: im.prompt_positive ?? undefined,
+      meta: {
+        prompt: im.prompt_positive ?? undefined,
+        filePath: im.file_path,
+        modelId: im.model_used ?? undefined,
+        createdAt: Number.isFinite(Date.parse(im.created_at)) ? Date.parse(im.created_at) : undefined
+      },
+      extraMenu: [
+        {
+          label: '删除（入回收站）',
+          variant: 'danger',
+          onClick: () => {
+            setPreview(null);
+            void softDeleteImage(im.id);
+          }
+        }
+      ]
+    }));
+    const idx = mediaRows.findIndex((x) => x.id === target.id);
+    setPreview({ items, index: Math.max(0, idx) });
+  }
 
   // 筛选条件变化即清空批量选择：避免「全选当前筛选 → 改筛选 → 批量删除」误删被筛掉的卡片
   useEffect(() => {
     setSelectedIds(new Set());
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dateFilter, modelFilter, aspectFilter]);
+  }, [dateFilter, modelFilter, aspectFilter, kindFilter]);
+
+  /** 多类型文件收录：选文件 → api:gallery:import-files 复制入存储根 + 落库；视频随后抓首帧补封面。 */
+  async function importFilesToGallery(): Promise<void> {
+    const picked = await window.electronAPI.storage.pickFiles({
+      title: '导入文件到资产库',
+      filters: [
+        { name: '可收录文件', extensions: GALLERY_IMPORT_EXTENSIONS },
+        { name: '全部文件', extensions: ['*'] }
+      ]
+    });
+    if (!picked.ok || !picked.data.filePaths.length) return;
+    const r = await window.electronAPI.gallery.importFiles({ paths: picked.data.filePaths });
+    if (!r.ok) {
+      toast.error(r.error.message, r.error.hint);
+      return;
+    }
+    const { imported, skipped } = r.data;
+    if (imported.length) {
+      toast.success(
+        `已收录 ${imported.length} 个文件`,
+        skipped.length ? `跳过 ${skipped.length} 个（如：${skipped[0].reason}）` : undefined
+      );
+    } else {
+      toast.error('没有文件被收录', skipped[0]?.reason);
+    }
+    await refreshImages();
+    // 视频补封面：渲染端抓首帧 → api:video:save-thumbnail（静默，失败不打扰；补完再刷一次显示封面）
+    const vids = imported.filter((x) => x.kind === 'video');
+    if (vids.length) {
+      void Promise.allSettled(
+        vids.map(async (v) => {
+          const du = await captureVideoPoster(localPathToImageUrl(v.filePath));
+          if (du) await window.electronAPI.video.saveThumbnail({ imageId: v.id, dataUri: du });
+        })
+      ).then(() => refreshImages());
+    }
+  }
 
   /** 复制图片到系统剪贴板（PNG blob） */
   async function copyImageToClipboard(filePath: string): Promise<void> {
@@ -710,6 +1106,7 @@ export default function ManagerPage(): JSX.Element {
           icon: <PlusIcon size={12} />,
           onClick: () => sendPromptToSmartCanvas(p.text)
         },
+        ...buildShortcutSendMenuItems({ kind: 'text', text: p.text, name: p.title }),
         {
           label: '编辑',
           onClick: () => setEditing({ ...p, tags: p.tags ?? '[]' })
@@ -760,6 +1157,11 @@ export default function ManagerPage(): JSX.Element {
           icon: <FolderIcon size={12} />,
           children: albumSubmenuItems(im)
         },
+        {
+          label: '移到文件夹…',
+          icon: <FolderIcon size={12} />,
+          children: folderSubmenuItems(im)
+        },
         { separator: true },
         {
           label: '转入工具箱…',
@@ -769,11 +1171,6 @@ export default function ManagerPage(): JSX.Element {
               label: '保真放大（Real-ESRGAN）',
               icon: <SparkleIcon size={11} />,
               onClick: () => void sendToTools(im, 'upscale')
-            },
-            {
-              label: 'AI 修复放大 · HYPIR',
-              icon: <SparkleIcon size={11} />,
-              onClick: () => void sendToTools(im, 'hypir')
             }
           ]
         },
@@ -799,8 +1196,9 @@ export default function ManagerPage(): JSX.Element {
           icon: <FolderIcon size={12} />,
           onClick: () => showInFolder(im.file_path)
         },
+        ...buildShortcutSendMenuItems({ kind: 'image', src: im.file_path }),
         {
-          label: '从图库移除',
+          label: '从资产库移除',
           variant: 'danger',
           icon: <TrashIcon size={12} />,
           onClick: () => softDeleteImage(im.id)
@@ -811,7 +1209,7 @@ export default function ManagerPage(): JSX.Element {
 
   /** 把这张图（本地路径）发送到智能画布的收件箱，跳过去后自动加成图片节点。 */
   function sendToSmartCanvas(im: ImageRow): void {
-    useSmartInboxStore.getState().push([{ src: im.file_path, name: im.prompt_positive?.slice(0, 20) || '图库图' }]);
+    useSmartInboxStore.getState().push([{ src: im.file_path, name: im.prompt_positive?.slice(0, 20) || '资产库图' }]);
     navigate('/smart-canvas');
     toast.success('已发送到智能画布');
   }
@@ -843,10 +1241,10 @@ export default function ManagerPage(): JSX.Element {
     }
   }
 
-  /** 把图库这张图加载为 dataUri，写入 toolsStore.pendingImport + 切到指定 tab，跳到 /tools */
+  /** 把资产库这张图加载为 dataUri，写入 toolsStore.pendingImport + 切到指定 tab，跳到 /tools */
   async function sendToTools(
     im: ImageRow,
-    target: 'upscale' | 'hypir' = 'upscale'
+    target: 'upscale' = 'upscale'
   ): Promise<void> {
     try {
       const url = localPathToImageUrl(im.file_path);
@@ -932,9 +1330,24 @@ export default function ManagerPage(): JSX.Element {
       <aside className="mb-manager-sidebar mb-card mb-marquee-glow">
         <div className="mb-manager-sidebar-head">
           <h2>
-            <GalleryIcon size={18} /> 图库
+            <GalleryIcon size={18} /> {mode === 'prompt' ? '提示词管家' : '资产库'}
           </h2>
           <p>收藏 / 整理 / 复用</p>
+        </div>
+
+        <div className="mb-manager-mode-row">
+          <button
+            className={`mb-manager-mode ${mode === 'gallery' ? 'is-active' : ''}`}
+            onClick={() => setMode('gallery')}
+          >
+            资产库
+          </button>
+          <button
+            className={`mb-manager-mode ${mode === 'prompt' ? 'is-active' : ''}`}
+            onClick={() => setMode('prompt')}
+          >
+            提示词
+          </button>
         </div>
 
         {mode === 'prompt' && (
@@ -955,17 +1368,11 @@ export default function ManagerPage(): JSX.Element {
                 onClick={() => setActiveSlug(cat.slug)}
                 className={`mb-manager-cat ${activeSlug === cat.slug ? 'is-active' : ''}`}
               >
-                {activeSlug === cat.slug && (
-                  mounted ? (
-                    <motion.span
-                      layoutId="manager-cat-active"
-                      className="mb-manager-cat-bg"
-                      transition={{ type: 'spring', stiffness: 400, damping: 30 }}
-                    />
-                  ) : (
-                    <span className="mb-manager-cat-bg" />
-                  )
-                )}
+                {/* 活动分类高亮：用纯 <span>（与资产库视图一致）。
+                    曾用 framer layoutId 共享布局动画做滑动高亮，但它在「离开本页」时
+                    会卡住路由 AnimatePresence 的 exit→新页面整片空白（已在 App.tsx 根治路由切换；
+                    这里也去掉 layoutId，从源头消除该隐患，且与资产库视图保持一致）。 */}
+                {activeSlug === cat.slug && <span className="mb-manager-cat-bg" />}
                 <span style={{ position: 'relative' }}>{cat.name}</span>
               </button>
             ))}
@@ -974,6 +1381,26 @@ export default function ManagerPage(): JSX.Element {
 
         {mode === 'gallery' && (
           <>
+            {/* 类型分拣：图片 / 视频 / 其它（文档类）一键切换，带数量角标 */}
+            <div className="mb-manager-kindbar">
+              {([
+                ['all', '全部', kindCounts.all],
+                ['image', '图片', kindCounts.image],
+                ['video', '视频', kindCounts.video],
+                ['other', '其它', kindCounts.other]
+              ] as Array<[KindFilter, string, number]>).map(([k, label, n]) => (
+                <button
+                  key={k}
+                  type="button"
+                  className={`mb-manager-kindbtn ${kindFilter === k ? 'is-active' : ''}`}
+                  onClick={() => setKindFilter(k)}
+                  title={`只看${label}（${n} 项）`}
+                >
+                  {label}
+                  <span className="mb-manager-kindcount">{n}</span>
+                </button>
+              ))}
+            </div>
             <div className="mb-manager-side-filters">
               <div className="mb-manager-side-filter">
                 <label>日期</label>
@@ -1045,10 +1472,13 @@ export default function ManagerPage(): JSX.Element {
               </div>
               <button
                 type="button"
-                className={`mb-manager-cat ${activeAlbumId === null ? 'is-active' : ''}`}
-                onClick={() => setActiveAlbumId(null)}
+                className={`mb-manager-cat ${activeAlbumId === null && activeGroup === null ? 'is-active' : ''}`}
+                onClick={() => {
+                  setActiveAlbumId(null);
+                  setActiveGroup(null);
+                }}
               >
-                {activeAlbumId === null && <span className="mb-manager-cat-bg" />}
+                {activeAlbumId === null && activeGroup === null && <span className="mb-manager-cat-bg" />}
                 <span style={{ position: 'relative' }}>全部图片</span>
               </button>
               {albums.map((a) => (
@@ -1056,7 +1486,10 @@ export default function ManagerPage(): JSX.Element {
                   key={a.id}
                   type="button"
                   className={`mb-manager-cat ${activeAlbumId === a.id ? 'is-active' : ''}`}
-                  onClick={() => setActiveAlbumId(a.id)}
+                  onClick={() => {
+                    setActiveAlbumId(a.id);
+                    setActiveGroup(null);
+                  }}
                   onContextMenu={(e) => openAlbumMenu(e, a)}
                   title={a.type === 'smart' ? '智能相册：按规则实时匹配（右键编辑/删除）' : '手动相册（右键编辑/删除）'}
                 >
@@ -1092,14 +1525,24 @@ export default function ManagerPage(): JSX.Element {
           {mode === 'gallery' && (
             <div className="mb-gallery-toolbar">
               {!selectMode ? (
-                <button
-                  type="button"
-                  className="mb-btn mb-btn-secondary mb-btn-sm mb-gallery-toolbar-btn"
-                  onClick={() => setSelectMode(true)}
-                  disabled={filteredImages.length === 0}
-                >
-                  ✓ 批量选择
-                </button>
+                <>
+                  <button
+                    type="button"
+                    className="mb-btn mb-btn-secondary mb-btn-sm mb-gallery-toolbar-btn"
+                    onClick={() => setSelectMode(true)}
+                    disabled={filteredImages.length === 0}
+                  >
+                    ✓ 批量选择
+                  </button>
+                  <button
+                    type="button"
+                    className="mb-btn mb-btn-secondary mb-btn-sm mb-gallery-toolbar-btn"
+                    onClick={() => void importFilesToGallery()}
+                    title="收录 图片 / 视频 / SVG / PSD / PDF / Office 文件到资产库（复制进图片存储目录）"
+                  >
+                    <PlusIcon size={12} /> 导入文件
+                  </button>
+                </>
               ) : (
                 <>
                   <span className="mb-gallery-toolbar-count">
@@ -1146,6 +1589,15 @@ export default function ManagerPage(): JSX.Element {
                   </button>
                   <button
                     type="button"
+                    className="mb-btn mb-btn-secondary mb-btn-sm mb-gallery-toolbar-btn"
+                    onClick={() => void batchGroupSelected()}
+                    disabled={selectedIds.size === 0}
+                    title="把选中的图片归入一个新文件夹"
+                  >
+                    <FolderIcon size={12} /> 归入文件夹（{selectedIds.size}）
+                  </button>
+                  <button
+                    type="button"
                     className="mb-btn mb-btn-danger mb-btn-sm mb-gallery-toolbar-btn"
                     onClick={batchDeleteSelected}
                     disabled={selectedIds.size === 0}
@@ -1181,7 +1633,7 @@ export default function ManagerPage(): JSX.Element {
         </div>
       </aside>
 
-      <section className="mb-manager-content mb-card mb-marquee-glow">
+      <section className="mb-manager-content mb-card mb-marquee-glow mb-dragscroll" ref={contentRef}>
         {mode === 'prompt' && (
           <>
             {allTags.length > 0 && (
@@ -1358,11 +1810,83 @@ export default function ManagerPage(): JSX.Element {
 
         {mode === 'gallery' && (
           <>
-            {filteredImages.length === 0 ? (
+            {/* 面包屑地址栏：相册视图不显示；有文件夹或已进入文件夹时显示 */}
+            {activeAlbumId === null && (groups.length > 0 || activeGroup !== null) && (
+              <div className="mb-gallery-crumbs">
+                <button
+                  type="button"
+                  className={`mb-gallery-crumb ${activeGroup === null ? 'is-active' : ''}`}
+                  onClick={() => setActiveGroup(null)}
+                >
+                  🏠 首页
+                </button>
+                {activeGroup !== null && (
+                  <>
+                    <span className="mb-gallery-crumb-sep">›</span>
+                    {groupRenaming === activeGroup ? (
+                      <input
+                        className="mb-gallery-crumb-input"
+                        autoFocus
+                        defaultValue={activeGroup}
+                        onBlur={(e) => void renameGroup(activeGroup, e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                          else if (e.key === 'Escape') setGroupRenaming(null);
+                        }}
+                      />
+                    ) : (
+                      <button
+                        type="button"
+                        className="mb-gallery-crumb is-active"
+                        onDoubleClick={() => setGroupRenaming(activeGroup)}
+                        title="双击重命名文件夹"
+                      >
+                        📁 {activeGroup}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="mb-gallery-crumb-edit"
+                      title="重命名"
+                      onClick={() => setGroupRenaming(activeGroup)}
+                    >
+                      ✎
+                    </button>
+                    <button
+                      type="button"
+                      className="mb-gallery-crumb-edit"
+                      title="解散文件夹"
+                      onClick={() => void dissolveGroup(activeGroup)}
+                    >
+                      <TrashIcon size={12} />
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* 首页：文件夹卡（拖图片到卡上 = 归入该文件夹；右键改名/解散） */}
+            {activeAlbumId === null && activeGroup === null && groups.length > 0 && (
+              <div className="mb-gallery-folders">
+                {groups.map((g) => (
+                  <FolderCard
+                    key={g.name}
+                    group={g}
+                    onOpen={() => enterGroup(g.name)}
+                    onContextMenu={(e) => openGroupMenu(e, g)}
+                    onDropImage={(id) => void setImagesGroup([id], g.name)}
+                  />
+                ))}
+              </div>
+            )}
+
+            {filteredImages.length === 0 &&
+            activeGroup === null &&
+            !(activeAlbumId === null && groups.length > 0) ? (
               <div className="mb-manager-empty">
                 <GalleryIcon size={28} />
                 <div className="mb-manager-empty-title">
-                  {images.length === 0 ? '图库还是空的' : '没有匹配的图片'}
+                  {images.length === 0 ? '资产库还是空的' : '没有匹配的图片'}
                 </div>
                 <div className="mb-manager-empty-desc">
                   {images.length === 0
@@ -1372,7 +1896,14 @@ export default function ManagerPage(): JSX.Element {
               </div>
             ) : (
               <div className="mb-gallery-grid">
-                {/* 大图库时不包 AnimatePresence——它会跟踪 N 张卡片的 exit 动画，
+                {/* 文件夹内：第一张 = 虚线「出组卡」（点击返回首页 / 把卡拖到此处移出本组） */}
+                {activeGroup !== null && (
+                  <ExitGroupCard
+                    onClick={() => setActiveGroup(null)}
+                    onDropImage={(id) => void setImagesGroup([id], null)}
+                  />
+                )}
+                {/* 大资产库时不包 AnimatePresence——它会跟踪 N 张卡片的 exit 动画，
                     在 filter 切换时会让 N 张卡片都重新调度，造成连续掉帧。 */}
                 {filteredImages.length > 80 ? (
                   filteredImages.map((im, i) => (
@@ -1384,10 +1915,11 @@ export default function ManagerPage(): JSX.Element {
                       selectMode={selectMode}
                       selected={selectedIds.has(im.id)}
                       onToggleSelect={() => toggleSelect(im.id)}
-                      onPreview={() => setPreviewSrc(localPathToImageUrl(im.file_path))}
+                      onPreview={() => openPreviewAt(im)}
                       onShowFolder={() => showInFolder(im.file_path)}
                       onDelete={() => softDeleteImage(im.id)}
                       onContextMenu={(e) => showImageMenu(e, im)}
+                      onDropOnCard={(draggedId) => void dropCardOnCard(draggedId, im)}
                     />
                   ))
                 ) : (
@@ -1401,15 +1933,22 @@ export default function ManagerPage(): JSX.Element {
                         selectMode={selectMode}
                         selected={selectedIds.has(im.id)}
                         onToggleSelect={() => toggleSelect(im.id)}
-                        onPreview={() => setPreviewSrc(localPathToImageUrl(im.file_path))}
+                        onPreview={() => openPreviewAt(im)}
                         onShowFolder={() => showInFolder(im.file_path)}
                         onDelete={() => softDeleteImage(im.id)}
                         onContextMenu={(e) => showImageMenu(e, im)}
+                        onDropOnCard={(draggedId) => void dropCardOnCard(draggedId, im)}
                       />
                     ))}
                   </AnimatePresence>
                 )}
               </div>
+            )}
+            {/* 无限滚动哨兵 / 全部加载完提示（资产库全量加载，一次 100 张往下滚动续拉） */}
+            {hasMore ? (
+              <div ref={sentinelRef} className="mb-gallery-loadmore">加载中…（已 {images.length} 张）</div>
+            ) : (
+              images.length > GALLERY_PAGE && <div className="mb-gallery-loadmore is-done">已全部加载 · 共 {images.length} 张</div>
             )}
           </>
         )}
@@ -1504,9 +2043,10 @@ export default function ManagerPage(): JSX.Element {
       </Modal>
 
       <Lightbox
-        open={previewSrc !== null}
-        src={previewSrc ?? ''}
-        onClose={() => setPreviewSrc(null)}
+        open={preview !== null}
+        items={preview?.items}
+        index={preview?.index}
+        onClose={() => setPreview(null)}
       />
 
       <ImportTargetDialog
@@ -1543,7 +2083,7 @@ export default function ManagerPage(): JSX.Element {
 }
 
 // ─────────────────────────────────────────────────────
-// 图库单卡
+// 资产库单卡
 // ─────────────────────────────────────────────────────
 function ImageCard({
   img,
@@ -1555,7 +2095,8 @@ function ImageCard({
   onPreview,
   onShowFolder,
   onDelete,
-  onContextMenu
+  onContextMenu,
+  onDropOnCard
 }: {
   img: ImageRow;
   index: number;
@@ -1567,18 +2108,26 @@ function ImageCard({
   onShowFolder: () => void;
   onDelete: () => void;
   onContextMenu: (e: React.MouseEvent) => void;
+  /** 另一张资产库卡片被拖到本卡上 → 成组（拖动者 id） */
+  onDropOnCard?: (draggedId: number) => void;
 }): JSX.Element {
+  // 资产库卡间拖拽成组：被拖到本卡上时高亮（仅识别内部「gallery-id」载荷，不影响拖出到外部/画布）
+  const [dragOver, setDragOver] = useState(false);
   // 卡片用缩略图（.thumbs/{base}.webp），没有就回退原图；预览 / 操作仍走原图。
   const thumbUrl = localPathToImageUrl(img.thumbnail_path || img.file_path);
+  // 收录类型：视频/PSD/PDF/Office 走类型图标卡或角标（图片与 SVG 直接 <img> 显示）
+  const fileKind = fileKindOf(img.file_path);
   // 尺寸/比例仅从 params_json 推断——原版用 onLoad 读 naturalWidth 来精确化，
-  // 但 N 张图同时触发 setState 会让大图库滚动严重卡顿。元数据兜底够用了。
+  // 但 N 张图同时触发 setState 会让大资产库滚动严重卡顿。元数据兜底够用了。
   const meta = useMemo(() => extractMeta(img.params_json), [img.params_json]);
   const created = formatDateTime(img.created_at);
 
-  const sizeLine = [meta.aspect, meta.size, meta.pixels].filter(Boolean).join(' · ');
+  // 分辨率/比例（来自 params_json）+ 真实文件大小（来自 statSync）——大小备注在分辨率后面
+  const fileSize = formatBytes(img.file_size_bytes);
+  const sizeLine = [meta.aspect, meta.size, meta.pixels, fileSize].filter(Boolean).join(' · ');
 
-  // 大图库（>80 张）关掉入场交错动画，避免一次性启动几百个 motion 轨道导致首次渲染卡死
-  // 入场动画只用透明度（不再用 y/scale 的 transform）：transform + 卡片合成层在大图库 /
+  // 大资产库（>80 张）关掉入场交错动画，避免一次性启动几百个 motion 轨道导致首次渲染卡死
+  // 入场动画只用透明度（不再用 y/scale 的 transform）：transform + 卡片合成层在大资产库 /
   // 全屏时与背景动画叠加易触发 Chromium 重绘错位（卡片错位 + 闪烁）。纯 opacity 稳定得多。
   const enableEnterAnim = totalCount <= 80;
   const motionProps = enableEnterAnim
@@ -1595,9 +2144,27 @@ function ImageCard({
       {...motionProps}
       className={`mb-gallery-card mb-card mb-marquee-glow ${
         selectMode ? 'is-select-mode' : ''
-      } ${selected ? 'is-selected' : ''}`}
+      } ${selected ? 'is-selected' : ''} ${dragOver ? 'is-dragover' : ''}`}
       onContextMenu={onContextMenu}
       onClick={selectMode ? onToggleSelect : undefined}
+      onDragOver={(e) => {
+        if (onDropOnCard && e.dataTransfer.types.includes('application/mengbi-gallery-id')) {
+          e.preventDefault();
+          setDragOver(true);
+        }
+      }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(e) => {
+        if (!onDropOnCard) return;
+        const raw = e.dataTransfer.getData('application/mengbi-gallery-id');
+        setDragOver(false);
+        const id = Number(raw);
+        if (Number.isFinite(id) && id > 0) {
+          e.preventDefault();
+          e.stopPropagation();
+          onDropOnCard(id);
+        }
+      }}
     >
       {selectMode && (
         <span
@@ -1609,6 +2176,18 @@ function ImageCard({
       )}
       <button
         className="mb-gallery-thumb"
+        draggable
+        onDragStart={(e) => {
+          // 应用内统一拖拽载荷（JSON，无编码歧义）：智能画布 / 侧栏快捷方式 / 主功能按钮 都认它。
+          // src 用绝对路径（零拷贝直送快捷方式；智能画布图片节点会自动解析为 mengbi-image:// 显示）。
+          e.dataTransfer.effectAllowed = 'copy';
+          e.dataTransfer.setData(
+            'application/mengbi-sc-node',
+            JSON.stringify({ kind: 'image', src: img.file_path, name: (img.prompt_positive ?? '').slice(0, 20) || '图片' })
+          );
+          // 内部「成组」拖拽载荷：拖到另一张卡 / 文件夹卡 / 出组卡上时识别（不影响拖出到外部/画布）
+          e.dataTransfer.setData('application/mengbi-gallery-id', String(img.id));
+        }}
         onClick={(e) => {
           if (selectMode) {
             e.stopPropagation();
@@ -1617,21 +2196,34 @@ function ImageCard({
           }
           onPreview();
         }}
-        title={selectMode ? '点击切换选中' : '点击放大预览'}
+        title={selectMode ? '点击切换选中' : fileKind === 'video' ? '点击放大播放' : fileKind === 'image' || fileKind === 'svg' ? '点击放大预览' : '点击用系统默认程序打开'}
       >
-        <img
-          src={thumbUrl}
-          alt={img.prompt_positive ?? ''}
-          draggable={false}
-          loading="lazy"
-          decoding="async"
-          // 缩略图加载失败（被删 / 系统休眠）就回退到原图，不让用户看到破图标
-          onError={(e) => {
-            const fallback = localPathToImageUrl(img.file_path);
-            const cur = (e.currentTarget as HTMLImageElement).src;
-            if (cur !== fallback) (e.currentTarget as HTMLImageElement).src = fallback;
-          }}
-        />
+        {fileKind === 'psd' || fileKind === 'pdf' || fileKind === 'office' || (fileKind === 'video' && !img.thumbnail_path) ? (
+          // 不可像素预览的收录文件（或无封面视频）→ 类型图标卡，避免 <img> 裂图
+          <span className="mb-gallery-filecard">
+            <span className="mb-gallery-filecard-icon">
+              {fileKind === 'video' ? FILE_KIND_BADGE.video.icon : FILE_KIND_BADGE[fileKind as 'psd' | 'pdf' | 'office'].icon}
+            </span>
+            <span className="mb-gallery-filecard-label">
+              {fileKind === 'video' ? FILE_KIND_BADGE.video.label : FILE_KIND_BADGE[fileKind as 'psd' | 'pdf' | 'office'].label}
+            </span>
+          </span>
+        ) : (
+          <img
+            src={thumbUrl}
+            alt={img.prompt_positive ?? ''}
+            draggable={false}
+            loading="lazy"
+            decoding="async"
+            // 缩略图加载失败（被删 / 系统休眠）就回退到原图，不让用户看到破图标
+            onError={(e) => {
+              const fallback = localPathToImageUrl(img.file_path);
+              const cur = (e.currentTarget as HTMLImageElement).src;
+              if (cur !== fallback) (e.currentTarget as HTMLImageElement).src = fallback;
+            }}
+          />
+        )}
+        {fileKind === 'video' && img.thumbnail_path && <span className="mb-gallery-kind-badge">🎬</span>}
       </button>
       <div className="mb-gallery-body">
         <p className="mb-gallery-prompt" title={img.prompt_positive ?? ''}>
@@ -1663,6 +2255,101 @@ function ImageCard({
         </div>
       </div>
     </motion.div>
+  );
+}
+
+// ─────────────────────────────────────────────────────
+// 资产库文件夹卡（首页）/ 出组卡（文件夹内第一张）
+// ─────────────────────────────────────────────────────
+/** 读取内部「成组」拖拽载荷里的 image id（无效返回 null）。 */
+function readGalleryDragId(e: React.DragEvent): number | null {
+  const id = Number(e.dataTransfer.getData('application/mengbi-gallery-id'));
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+function FolderCard({
+  group,
+  onOpen,
+  onContextMenu,
+  onDropImage
+}: {
+  group: GalleryGroup;
+  onOpen: () => void;
+  onContextMenu: (e: React.MouseEvent) => void;
+  onDropImage: (imageId: number) => void;
+}): JSX.Element {
+  const [over, setOver] = useState(false);
+  return (
+    <button
+      type="button"
+      className={`mb-gallery-folder mb-card mb-card-interactive ${over ? 'is-over' : ''}`}
+      onClick={onOpen}
+      onContextMenu={onContextMenu}
+      title={`${group.name} · ${group.count} 项（双击/单击打开，把图片拖到此处归入）`}
+      onDragOver={(e) => {
+        if (e.dataTransfer.types.includes('application/mengbi-gallery-id')) {
+          e.preventDefault();
+          setOver(true);
+        }
+      }}
+      onDragLeave={() => setOver(false)}
+      onDrop={(e) => {
+        setOver(false);
+        const id = readGalleryDragId(e);
+        if (id !== null) {
+          e.preventDefault();
+          onDropImage(id);
+        }
+      }}
+    >
+      <span className="mb-gallery-folder-cover">
+        {group.cover ? (
+          <img src={localPathToImageUrl(group.cover)} alt="" draggable={false} loading="lazy" decoding="async" />
+        ) : (
+          <FolderIcon size={30} />
+        )}
+      </span>
+      <span className="mb-gallery-folder-name" title={group.name}>
+        📁 {group.name}
+      </span>
+      <span className="mb-gallery-folder-count">{group.count} 项</span>
+    </button>
+  );
+}
+
+function ExitGroupCard({
+  onClick,
+  onDropImage
+}: {
+  onClick: () => void;
+  onDropImage: (imageId: number) => void;
+}): JSX.Element {
+  const [over, setOver] = useState(false);
+  return (
+    <button
+      type="button"
+      className={`mb-gallery-exitcard ${over ? 'is-over' : ''}`}
+      onClick={onClick}
+      title="返回首页 · 把卡片拖到此处可移出本文件夹"
+      onDragOver={(e) => {
+        if (e.dataTransfer.types.includes('application/mengbi-gallery-id')) {
+          e.preventDefault();
+          setOver(true);
+        }
+      }}
+      onDragLeave={() => setOver(false)}
+      onDrop={(e) => {
+        setOver(false);
+        const id = readGalleryDragId(e);
+        if (id !== null) {
+          e.preventDefault();
+          onDropImage(id);
+        }
+      }}
+    >
+      <span className="mb-gallery-exitcard-icon">⬆</span>
+      <span className="mb-gallery-exitcard-label">移出本组 / 返回首页</span>
+    </button>
   );
 }
 

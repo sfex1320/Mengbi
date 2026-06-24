@@ -1,10 +1,11 @@
 import { z } from 'zod';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { register, ok, err } from './helpers';
+import { register, ok, err, parseModelRef } from './helpers';
 import { getDb } from '../services/db';
 import { decryptString } from '../services/safeStorage';
-import { joinApiUrl } from '../services/apiUrl';
+import { joinApiUrl, httpStatusHint, isContentModeration, moderationHint } from '../services/apiUrl';
+import { applyHeaderOverrides } from './headerOverrides';
 import { makeError } from '@shared/error';
 import { isMockMode } from './mocks/runtime';
 import { logger } from '../services/logger';
@@ -111,30 +112,45 @@ interface TextCfg {
   base_url: string;
   api_key_encrypted: string;
   actualModelId: string;
+  header_overrides_json: string | null;
 }
 
 function findTextConfigByModel(modelDisplayId: string): TextCfg | null {
   const rows = getDb()
     .prepare(`SELECT * FROM api_configs WHERE type = 'text' ORDER BY id`)
     .all() as Array<{
+    provider_name: string | null;
     base_url: string;
     api_key_encrypted: string;
     model_mapping: string;
+    header_overrides_json: string | null;
   }>;
-  for (const r of rows) {
-    let map: Record<string, string> = {};
+  type Row = (typeof rows)[number];
+  // 模型标识可能是复合「中转站 / 名」或旧裸名
+  const { provider, name } = parseModelRef(modelDisplayId);
+  const mapOf = (r: Row): Record<string, string> => {
     try {
-      map = JSON.parse(r.model_mapping || '{}');
+      return JSON.parse(r.model_mapping || '{}');
     } catch {
-      /* ignore */
+      return {};
     }
-    if (map[modelDisplayId]) {
-      return {
-        base_url: r.base_url,
-        api_key_encrypted: r.api_key_encrypted,
-        actualModelId: map[modelDisplayId]
-      };
+  };
+  const build = (r: Row, actual: string): TextCfg => ({
+    base_url: r.base_url,
+    api_key_encrypted: r.api_key_encrypted,
+    actualModelId: actual,
+    header_overrides_json: r.header_overrides_json ?? null
+  });
+  if (provider) {
+    for (const r of rows) {
+      if ((r.provider_name ?? '').trim() !== provider) continue;
+      const v = mapOf(r)[name];
+      if (v) return build(r, v);
     }
+  }
+  for (const r of rows) {
+    const v = mapOf(r)[name];
+    if (v) return build(r, v);
   }
   return null;
 }
@@ -178,10 +194,11 @@ async function runReverseOnce(
   try {
     const res = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`
-      },
+      headers: applyHeaderOverrides(
+        { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        cfg.header_overrides_json,
+        { key: apiKey, model: cfg.actualModelId }
+      ),
       body: JSON.stringify({
         model: cfg.actualModelId,
         stream: false,
@@ -200,7 +217,9 @@ async function runReverseOnce(
     });
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
+      // 内容审核（图片/文本被判敏感，如 MiniMax 1026）≠ 配置问题：给准确提示而非「检查 base_url」
+      const hint = isContentModeration(text) ? moderationHint(res.status) : httpStatusHint(res.status);
+      throw new Error(`HTTP ${res.status}（${hint}）：${text.slice(0, 200)}`);
     }
     const text = await res.text();
     let json: { choices?: Array<{ message?: { content?: string } }> } | null = null;

@@ -5,8 +5,8 @@ import { runWithUpstream, computeUpstream, cancelWork } from '@/lib/smartCanvasR
 import { localPathToImageUrl } from '@/lib/imageUrl';
 import { WORK_TYPE_LABELS, RUN_MODE_LABELS, PROVIDER_LABELS, type WorkNodeData } from '@shared/smartCanvas';
 import { NodeShell } from './NodeShell';
-import { MeasuredThumb } from '../MeasuredThumb';
-import { estimateTextHeight, autoGrowNode, getNodeWidth, fmtDur, areaMenu, copyImage, imageToGallery, imageSaveAs } from '../nodeArea';
+import { MeasuredThumb, thumbPair } from '../MeasuredThumb';
+import { estimateTextHeight, autoGrowNode, getNodeWidth, fmtDur, areaMenu, copyImage, imageToGallery, imageSaveAs, dragOutNative, showInFolder } from '../nodeArea';
 
 const STATUS_TEXT: Record<string, string> = {
   idle: '待运行',
@@ -14,6 +14,8 @@ const STATUS_TEXT: Record<string, string> = {
   success: '成功',
   error: '失败'
 };
+
+const QUALITY_LABELS: Record<string, string> = { standard: '标准', high: '高质量' };
 
 function imgUrl(src: string): string {
   return src.startsWith('data:') ? src : localPathToImageUrl(src);
@@ -39,7 +41,12 @@ export function WorkNode({ id, data }: NodeProps): JSX.Element {
     let need = 150;
     if (up.images.length) need += 96;
     if (upPromptText) need += Math.min(80, 24 + estimateTextHeight(upPromptText, width));
-    if (resultCount) need += 96;
+    if (resultCount) {
+      // 多图结果按「固定卡宽 100px → 当前宽度排几列 → 需要几行」精确撑高（卡片不缩放，节点自适应）；
+      // 计入全部结果行，保证「运行按钮 + 生成图片」都完整展示、不被截断（封顶后整体仍受 maxH 限制）。
+      const cols = Math.max(1, Math.floor((width - 24) / 104));
+      need += Math.ceil(resultCount / cols) * 104 + 8;
+    }
     autoGrowNode(id, need);
   }, [id, up.images.length, upPromptText, resultCount]);
 
@@ -47,7 +54,7 @@ export function WorkNode({ id, data }: NodeProps): JSX.Element {
     <>
       <NodeResizer isVisible minWidth={220} minHeight={140} />
       <NodeShell
-        title="生成"
+        title="生图"
         accent="is-work"
         inputs
         outputs
@@ -66,6 +73,20 @@ export function WorkNode({ id, data }: NodeProps): JSX.Element {
         <div className="mb-sc-work-model" title={backend}>
           {PROVIDER_LABELS[d.provider]}：{backend}
         </div>
+        {d.provider === 'mengbi' && (
+          // 弹窗控制台里调的参数也在卡片上预览一眼（免点进去确认）
+          <div className="mb-sc-work-params" title="当前生成参数（在控制台里调）">
+            {[
+              `比例 ${d.aspect || (d.autoAspect ? `自动→${d.autoAspect}` : '自动')}`,
+              `分辨率 ${d.imageSize || '默认'}`,
+              d.quality ? `质量 ${QUALITY_LABELS[d.quality] ?? d.quality}` : null,
+              `张数 ${d.n}`,
+              `seed ${d.seed ?? '随机'}`
+            ]
+              .filter(Boolean)
+              .join(' · ')}
+          </div>
+        )}
 
         {(up.images.length > 0 || up.prompts.length > 0) && (
           <div className="mb-sc-up">
@@ -73,11 +94,27 @@ export function WorkNode({ id, data }: NodeProps): JSX.Element {
             {up.images.length > 0 && (
               <div className="mb-sc-up-thumbs nodrag">
                 {up.images.slice(0, 4).map((p, i) => (
-                  <img key={i} src={imgUrl(p)} alt={`上游图 ${i + 1}`} draggable={false} onClick={() => openPreview(imgUrl(p))} />
+                  <img
+                    key={i}
+                    src={thumbPair(p).thumb}
+                    alt={`上游图 ${i + 1}`}
+                    loading="lazy"
+                    decoding="async"
+                    draggable={false}
+                    onError={(e) => {
+                      const full = thumbPair(p).full;
+                      if (e.currentTarget.src !== full) e.currentTarget.src = full;
+                    }}
+                    onClick={() => openPreview(imgUrl(p))}
+                  />
                 ))}
               </div>
             )}
-            {firstPrompt && <div className="mb-sc-up-prompt" title={up.prompts.join('\n')}>“{firstPrompt}”</div>}
+            {firstPrompt && (
+              <div className="mb-sc-up-prompt" title={up.prompts.join('\n')}>
+                “{firstPrompt}”{up.prompts.length > 1 ? `（共 ${up.prompts.length} 条 · 逐条生图）` : ''}
+              </div>
+            )}
           </div>
         )}
 
@@ -90,6 +127,11 @@ export function WorkNode({ id, data }: NodeProps): JSX.Element {
               取消
             </button>
           )}
+          {!d.aspect && d.autoAspect && (
+            <span className="mb-sc-work-autoaspect" title="自动比例：跟随首张输入图的比例（含扩图/遮罩区域）">
+              自动比例 {d.autoAspect}
+            </span>
+          )}
         </div>
 
         {d.error && <div className="mb-sc-result-err nodrag">{d.error}</div>}
@@ -97,23 +139,38 @@ export function WorkNode({ id, data }: NodeProps): JSX.Element {
 
         {d.result?.images && d.result.images.length > 0 && (
           <div className="mb-sc-work-thumbs nodrag">
-            {d.result.images.slice(0, 4).map((p, i) => (
-              <MeasuredThumb
-                key={i}
-                src={imgUrl(p)}
-                alt={`结果 ${i + 1}`}
-                title="结果 · 角标=实际分辨率 · 右键复制 / 入图库 / 另存"
-                onClick={() => openPreview(imgUrl(p))}
-                onContextMenu={(e) =>
-                  areaMenu(e, [
-                    { label: '复制图片', onClick: () => void copyImage(imgUrl(p)) },
-                    { label: '放大预览', onClick: () => openPreview(imgUrl(p)) },
-                    { label: '入图库', onClick: () => void imageToGallery(p) },
-                    { label: '另存…', onClick: () => void imageSaveAs(p, 'smart-canvas-result.png') }
-                  ])
-                }
-              />
-            ))}
+            {d.result.images.slice(0, 4).map((p, i) => {
+              const t = thumbPair(p);
+              // 统一预览：本节点全部结果图作为列表，从点击的那张开始（←→ 切换）
+              const all = d.result?.images ?? [];
+              const preview = (): void =>
+                openPreview(
+                  all.map((x) => ({ src: imgUrl(x), meta: { filePath: x.startsWith('data:') ? undefined : x, prompt: d.result?.prompt } })),
+                  i
+                );
+              return (
+                <MeasuredThumb
+                  key={i}
+                  src={t.thumb}
+                  fullSrc={t.full}
+                  measureFull
+                  alt={`结果 ${i + 1}`}
+                  title="结果 · 角标=真实分辨率 · 拖出到其他软件直接用 · 右键更多"
+                  draggable
+                  onDragStart={(e) => dragOutNative(e, p, `mengbi-result-${i + 1}`)}
+                  onClick={preview}
+                  onContextMenu={(e) =>
+                    areaMenu(e, [
+                      { label: '复制图片', onClick: () => void copyImage(t.full) },
+                      { label: '放大预览', onClick: preview },
+                      { label: '入资产库', onClick: () => void imageToGallery(p) },
+                      { label: '另存…', onClick: () => void imageSaveAs(p, 'smart-canvas-result.png') },
+                      { label: '打开文件所在目录', onClick: () => void showInFolder(p) }
+                    ])
+                  }
+                />
+              );
+            })}
           </div>
         )}
       </NodeShell>

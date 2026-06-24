@@ -75,6 +75,7 @@ import {
 import { ONNX_MODELS, findOnnxSpec } from '../services/realesrganOnnxModels';
 import { downloadFromAny } from '../services/netDownloader';
 import { getDb } from '../services/db';
+import { insertProducedMedia } from '../services/producedMedia';
 import { makeError } from '@shared/error';
 
 function getToolsRoot(): string {
@@ -251,6 +252,14 @@ export function registerUpscaleHandlers(): void {
     if (!item) {
       return err(makeError('UNKNOWN', '引擎未返回结果', { severity: 'toast' }));
     }
+    // 软件产物一律入库（引用原位路径，含缩略图；失败只记日志不挡主流程）
+    await insertProducedMedia({
+      filePath: item.outputPath,
+      kind: 'image',
+      notes: `[upscale] ${input.modelName} x${input.scale}`,
+      model: input.modelName,
+      params: { scale: input.scale, backend, output_w: item.outputW, output_h: item.outputH }
+    });
     // 2026-05-28: 不再 eager 编码 dataUri(整张大图 base64 走 IPC 会卡 UI 1-3s)。
     // 渲染进程通过 outputPath 自己用 mengbi-image:// 协议加载;
     // 复制 / 另存为等操作在用户触发时才 lazy fetch → blob,主进程不阻塞。
@@ -304,6 +313,17 @@ export function registerUpscaleHandlers(): void {
           severity: done.cancelled ? 'silent' : 'toast'
         })
       );
+    }
+    // 批量产物逐张入库（每张失败独立容错）
+    for (const it of done.results) {
+      if (!it?.outputPath) continue;
+      await insertProducedMedia({
+        filePath: it.outputPath,
+        kind: 'image',
+        notes: `[upscale] ${input.modelName} x${input.scale}（批量）`,
+        model: input.modelName,
+        params: { scale: input.scale, backend, output_w: it.outputW, output_h: it.outputH }
+      });
     }
     return ok({
       taskId: handle.taskId,

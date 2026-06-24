@@ -29,8 +29,10 @@ import { runPostprocess } from './postprocess';
 import { decideFallback, getFallbackTarget } from './fallback/fallbackManager';
 import { prepareDebugDir, writeDebugBundle } from './debug/debugWriter';
 import { insertVecHistory } from './vecHistory';
+import { insertProducedMedia } from '../producedMedia';
 import { resolveOutputPath } from './outputNaming';
 import { logger } from '../logger';
+import { appendNotification } from '../../ipc/helpers';
 import type {
   VecMode,
   VecParams,
@@ -339,13 +341,18 @@ class BatchQueueImpl {
     );
 
     // ── 3) postprocess(若主引擎成功) ───────────────────────
+    // 用户的后处理参数（仅 vtracer 有 maxPaths/colorMergeDelta；potrace 取到 undefined → 后处理无操作）
+    const postOpts = {
+      maxPaths: (t.params as VTracerParams).maxPaths,
+      colorMergeDelta: (t.params as VTracerParams).colorMergeDelta
+    };
     let postRes: PostprocessResult | null = null;
     if (primaryAttempt.engineResult.ok) {
       t.message = 'SVG 后处理…';
       t.progress = 55;
       this.emitTaskProgress(t);
       try {
-        postRes = runPostprocess(primaryAttempt.engineResult.svg);
+        postRes = runPostprocess(primaryAttempt.engineResult.svg, postOpts);
       } catch (e) {
         logger.warn(`[vec.queue] postprocess threw: ${(e as Error).message}`);
       }
@@ -396,7 +403,7 @@ class BatchQueueImpl {
       actualEngine = fbDecision.target;
       if (fbAttempt.engineResult.ok) {
         try {
-          finalPost = runPostprocess(fbAttempt.engineResult.svg);
+          finalPost = runPostprocess(fbAttempt.engineResult.svg, postOpts);
           fallbackSvg = finalPost.final;
         } catch (e) {
           logger.warn(`[vec.queue] fallback postprocess threw: ${(e as Error).message}`);
@@ -649,6 +656,16 @@ class BatchQueueImpl {
     const tail = t.fellBack ? ` · 已回退 ${t.actualEngine}` : '';
     t.message = `完成 (${(durationMs / 1000).toFixed(1)}s)${tail}`;
     this.persistHistory(t);
+    // 软件产物一律入库：SVG 引用原位路径（vectorize_history 与 images 并行记录，互不影响）
+    if (t.outputPath) {
+      void insertProducedMedia({
+        filePath: t.outputPath,
+        kind: 'svg',
+        notes: `[vec:${t.actualEngine ?? t.requestedMode}] 图像转矢量`,
+        model: t.actualEngine ?? t.requestedMode,
+        params: { mode: t.requestedMode, input: t.inputPath }
+      });
+    }
     this.emitTaskProgress(t);
     this.afterTaskFinished(t);
   }
@@ -774,11 +791,28 @@ class BatchQueueImpl {
     const remaining = pending + running;
     const eta = avg !== null && remaining > 0 ? Math.round((avg * remaining) / 1000) : null;
 
+    const prevStatus: VecBatchStatus = batch.status;
     let status: VecBatchStatus = batch.status;
     if (this.pausedBatches.has(batchId) && status !== 'aborted') status = 'paused';
     else if (status !== 'aborted' && pending + running === 0) status = 'completed';
     else if (status !== 'aborted' && status !== 'paused') status = 'running';
     batch.status = status;
+
+    // 批次「转移到」completed 的那一次 → 进通知中心（emitBatchProgress 被高频调用，转移检测防重复）。
+    // 语音播报也挂在这条通知上（channel 'vec:batch-done'）。
+    if (prevStatus !== 'completed' && status === 'completed' && total > 0) {
+      for (const w of BrowserWindow.getAllWindows()) {
+        if (w.webContents.isDestroyed()) continue;
+        appendNotification(w.webContents, {
+          channel: 'vec:batch-done',
+          kind: failed > 0 ? 'failure' : 'success',
+          message:
+            failed > 0
+              ? `矢量化批量完成：成功 ${succeeded}/${total}，失败 ${failed}`
+              : `矢量化批量完成：${succeeded}/${total} 全部成功`
+        });
+      }
+    }
 
     const payload: VecBatchProgressEvent = {
       batchId,

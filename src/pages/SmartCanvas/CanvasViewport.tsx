@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ReactFlow,
   Background,
@@ -21,6 +21,7 @@ import {
   useSmartKeybindStore,
   useSmartPreviewStore,
   useSmartResultStore,
+  useSmartTextStore,
   comboFromEvent,
   absPosition,
   registerViewCenterProvider,
@@ -28,23 +29,30 @@ import {
   hasNodeClipboard
 } from '@/store/smartCanvasStore';
 import { useSmartViewStore } from '@/store/smartViewStore';
+import { useThemeStore } from '@/store/themeStore';
 import { exportCanvasToFile } from '@/lib/smartCanvasApi';
+import { canConnectKinds, invalidReason } from '@/lib/canvasConnectRules';
 import { runWithUpstream } from '@/lib/smartCanvasRunner';
 import { localPathToImageUrl } from '@/lib/imageUrl';
 import { toast } from '@/store/toastStore';
 import { confirmDialog } from '@/components/ConfirmDialog';
 import { openContextMenu, type ContextMenuEntry } from '@/components/ContextMenu';
-import { makePromptNodeFrom, imageSaveAs, imageToGallery } from './nodeArea';
+import { buildShortcutSendMenuItems } from '@/lib/mediaActions';
+import { makePromptNodeFrom, imageSaveAs, imageToGallery, openVideoPreview, copyText, copyImage } from './nodeArea';
 import { useGalleryPickerStore } from './GalleryPickerDialog';
+import { usePromptMallStudioStore } from './PromptMallStudio';
+import { useStoryboardStudioStore } from './StoryboardStudio';
 import type {
   SmartNodeKind,
+  SmartNodeData,
   ImageNodeData,
   WorkNodeData,
   ComfyNodeData,
   LlmNodeData,
   PromptNodeData,
   AnglePromptNodeData,
-  LightNodeData
+  LightNodeData,
+  PaletteNodeData
 } from '@shared/smartCanvas';
 import { ImageNode } from './nodes/ImageNode';
 import { PromptNode } from './nodes/PromptNode';
@@ -58,8 +66,20 @@ import { ScaleNode } from './nodes/ScaleNode';
 import { RatioNode } from './nodes/RatioNode';
 import { TextNode } from './nodes/TextNode';
 import { LightNode } from './nodes/LightNode';
+import { PaletteNode } from './nodes/PaletteNode';
 import { CompareNode } from './nodes/CompareNode';
 import { VideoNode } from './nodes/VideoNode';
+import { ImageReverseNode } from './nodes/ImageReverseNode';
+import { VideoSourceNode } from './nodes/VideoSourceNode';
+import { VideoReverseNode } from './nodes/VideoReverseNode';
+import { FrameInterpNode } from './nodes/FrameInterpNode';
+import { VideoClipNode } from './nodes/VideoClipNode';
+import { UpscaleNode } from './nodes/UpscaleNode';
+import { VectorizeNode } from './nodes/VectorizeNode';
+import { StoryboardNode } from './nodes/StoryboardNode';
+import { PromptMallNode } from './nodes/PromptMallNode';
+import { LoopNode } from './nodes/LoopNode';
+import { FolderInputNode, FolderOutputNode } from './nodes/FolderNodes';
 import { DeletableEdge } from './DeletableEdge';
 import { CreateMenu } from './CreateMenu';
 import { ArrangePanel } from './ArrangePanel';
@@ -67,62 +87,45 @@ import { ViewPrefsPanel } from './ViewPrefsPanel';
 import { KeybindingsDialog } from './KeybindingsDialog';
 import { NodeSearch, nodeSearchText } from './NodeSearch';
 import { TemplatePanel } from './TemplatePanel';
+import { isVideoFile, electronFilePath } from '@/lib/mediaFile';
 
-// 模块级稳定引用，否则 React Flow 每次渲染都重建节点/连线类型
+// 模块级稳定引用，否则 React Flow 每次渲染都重建节点/连线类型。
+// memo 包装：props（id/data/selected…）不变时跳过节点重渲（性能规范——大画布拖动/缩放的重渲压力主要来自这里）。
 const nodeTypes: NodeTypes = {
-  image: ImageNode,
-  prompt: PromptNode,
-  work: WorkNode,
-  result: ResultNode,
-  group: GroupNode,
-  llm: LlmNode,
-  comfy: ComfyNode,
-  'angle-prompt': AnglePromptNode,
-  scale: ScaleNode,
-  ratio: RatioNode,
-  text: TextNode,
-  light: LightNode,
-  compare: CompareNode,
-  video: VideoNode
+  image: memo(ImageNode),
+  prompt: memo(PromptNode),
+  work: memo(WorkNode),
+  result: memo(ResultNode),
+  group: memo(GroupNode),
+  llm: memo(LlmNode),
+  comfy: memo(ComfyNode),
+  'angle-prompt': memo(AnglePromptNode),
+  scale: memo(ScaleNode),
+  ratio: memo(RatioNode),
+  text: memo(TextNode),
+  light: memo(LightNode),
+  palette: memo(PaletteNode),
+  compare: memo(CompareNode),
+  video: memo(VideoNode),
+  'image-reverse': memo(ImageReverseNode),
+  'video-source': memo(VideoSourceNode),
+  'video-reverse': memo(VideoReverseNode),
+  'frame-interp': memo(FrameInterpNode),
+  'video-clip': memo(VideoClipNode),
+  storyboard: memo(StoryboardNode),
+  'prompt-mall': memo(PromptMallNode),
+  loop: memo(LoopNode),
+  upscale: memo(UpscaleNode),
+  vectorize: memo(VectorizeNode),
+  'folder-input': memo(FolderInputNode),
+  'folder-output': memo(FolderOutputNode)
 };
 const edgeTypes: EdgeTypes = { deletable: DeletableEdge };
 const defaultEdgeOptions = { type: 'deletable' };
 
-// 能产出（可作连线起点）/ 能接收（可作连线终点）的节点类型。
-// result/scale 也是 producer：结果（图/文）、缩放（图）可继续连到下游节点。
-const PRODUCERS = new Set(['image', 'prompt', 'llm', 'work', 'comfy', 'group', 'angle-prompt', 'light', 'result', 'scale', 'video']);
-const CONSUMERS = new Set(['work', 'comfy', 'result', 'llm', 'group', 'angle-prompt', 'light', 'scale', 'ratio', 'compare', 'video']);
-// 只吃图片来源的输入（视角/光源/缩放/比例分析/对比节点）：图片/分组/生成/ComfyUI/结果/缩放 产出的图
-const IMAGE_SOURCES = new Set(['image', 'group', 'work', 'comfy', 'result', 'scale']);
-// 只吃图片来源做输入的节点（视角 / 光源 / 缩放 / 比例分析 / 对比）
-const IMAGE_INPUT_ONLY = new Set(['angle-prompt', 'light', 'scale', 'ratio', 'compare']);
-// 能连进结果节点的来源：生成/ComfyUI/LLM 写运行结果；图片/提示词/分组/缩放/视角/光源=组合「实时预览」
-// （分组连结果 → 预览组内多段提示词/图片如何组合）。result→result 由同类型校验挡掉。
-const RESULT_SOURCES = new Set(['work', 'comfy', 'llm', 'group', 'prompt', 'image', 'scale', 'angle-prompt', 'light', 'video']);
+// 连线规则已抽到 @/lib/canvasConnectRules（单一真相，被 CanvasViewport / agentCatalog / agentBuilder 共用）。
 
-/** 纯类型级连线校验（不依赖具体节点存在；插入连线时新节点尚未建，需用类型判断）。 */
-function canConnectKinds(sk: string | undefined, tk: string | undefined): boolean {
-  if (!sk || !tk) return false;
-  if (!PRODUCERS.has(sk) || !CONSUMERS.has(tk)) return false;
-  if (tk === 'result' && !RESULT_SOURCES.has(sk)) return false;
-  if (IMAGE_INPUT_ONLY.has(tk) && !IMAGE_SOURCES.has(sk)) return false;
-  // 视频节点的产出是视频文件，下游只有「结果」节点能消费（computeUpstream 不收集视频）
-  if (sk === 'video' && tk !== 'result') return false;
-  return true;
-}
-
-/** 非法连线的具体原因（落在节点上但被 isValidConnection 拒绝时给用户解释）。 */
-function invalidReason(sk: string | undefined, tk: string | undefined): string {
-  if (sk && tk && sk === tk) return '不能连到自己';
-  if (sk && !PRODUCERS.has(sk)) return '该节点不能作为输出来源';
-  if (tk && !CONSUMERS.has(tk)) return '图片 / 提示词只能作为输入来源，不能接收输入';
-  if (tk === 'result' && sk && !RESULT_SOURCES.has(sk)) return '结果节点只接 生成 / ComfyUI / LLM 的输出';
-  if (tk && IMAGE_INPUT_ONLY.has(tk) && sk && !IMAGE_SOURCES.has(sk)) return '该节点的输入只接图片来源（图片 / 分组 / 生成 / ComfyUI / 结果 / 缩放）';
-  if (sk === 'video' && tk !== 'result') return '视频节点的输出只能连到「结果」节点';
-  return '这两个节点之间不允许连接';
-}
-
-/** 取节点「最新一张图」（用于右键「预览 / 另存 / 入图库」）。无图返回 undefined。 */
+/** 取节点「最新一张图」（用于右键「预览 / 另存 / 入资产库」）。无图返回 undefined。 */
 function latestImageOf(cur: Node): string | undefined {
   switch (cur.type) {
     case 'image':
@@ -142,6 +145,28 @@ function latestImageOf(cur: Node): string | undefined {
   }
 }
 
+/** 取节点「最新一个视频」（用于右键「放大播放视频」）。无视频返回 undefined。 */
+function latestVideoOf(cur: Node): string | undefined {
+  const d = cur.data as unknown as { videoPath?: string | null; src?: string | null; outputVideo?: string | null };
+  switch (cur.type) {
+    case 'video':
+      return d.videoPath ?? undefined;
+    case 'video-source':
+      return d.src ?? undefined;
+    case 'scale':
+    case 'frame-interp':
+    case 'video-clip':
+      return d.outputVideo ?? undefined;
+    case 'result': {
+      const acc = useSmartResultStore.getState().accum[cur.id] ?? [];
+      const vids = acc.flatMap((r) => r.videos ?? []);
+      return vids.length ? vids[vids.length - 1] : undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
 /** 取节点「文本输出」（用于右键「用文本建提示词节点」）。无文本返回空串。 */
 function textOutputOf(cur: Node): string {
   switch (cur.type) {
@@ -153,37 +178,80 @@ function textOutputOf(cur: Node): string {
       return ((cur.data as unknown as AnglePromptNodeData).generatedPrompt ?? '').trim();
     case 'light':
       return ((cur.data as unknown as LightNodeData).generatedPrompt ?? '').trim();
+    case 'palette':
+      return ((cur.data as unknown as PaletteNodeData).generatedPrompt ?? '').trim();
     case 'comfy':
       return ((cur.data as unknown as ComfyNodeData).result?.texts ?? []).join('\n').trim();
     case 'result': {
       const acc = useSmartResultStore.getState().accum[cur.id] ?? [];
       return acc.flatMap((r) => r.texts ?? []).join('\n').trim();
     }
+    case 'storyboard': {
+      const shots = (cur.data as unknown as { shots?: string[] }).shots ?? [];
+      return shots.map((s, i) => `【分镜 ${i + 1}】${s}`).join('\n\n').trim();
+    }
     default:
       return '';
   }
 }
 
-/** 节点右键菜单的「类型专属操作」（运行 / 选图 / 预览 / 另存 / 入图库 / 建提示词节点），置顶展示。 */
+// 可经 runWithUpstream 直接运行的节点类型（与 runner 的 runOne 分发保持一致）。
+const RUN_TYPES = new Set([
+  'work',
+  'comfy',
+  'llm',
+  'video',
+  'storyboard',
+  'frame-interp',
+  'video-clip',
+  'image-reverse',
+  'video-reverse',
+  'prompt-mall'
+]);
+
+/** 节点右键菜单的「类型专属操作」（运行 / 工作台 / 选图 / 预览 / 复制 / 另存 / 入资产库 / 文本放大 / 建提示词节点），置顶展示。 */
 function nodeTypeActions(cur: Node): ContextMenuEntry[] {
   const items: ContextMenuEntry[] = [];
   const id = cur.id;
-  if (cur.type === 'work' || cur.type === 'comfy' || cur.type === 'llm' || cur.type === 'video') {
+  if (RUN_TYPES.has(cur.type ?? '')) {
     items.push({ label: '运行此节点', onClick: () => void runWithUpstream(id) });
   }
+  // 提示词商城 / 分镜：进一步设置都在工作台弹窗里（卡片只留摘要）
+  if (cur.type === 'prompt-mall') {
+    items.push({ label: '打开提示词商城', onClick: () => usePromptMallStudioStore.getState().open(id) });
+  }
+  if (cur.type === 'storyboard') {
+    items.push({ label: '打开分镜工作台', onClick: () => useStoryboardStudioStore.getState().open(id) });
+  }
   if (cur.type === 'image') {
-    items.push({ label: '从图库选图', onClick: () => useGalleryPickerStore.getState().open(id) });
+    items.push({ label: '从资产库选图', onClick: () => useGalleryPickerStore.getState().open(id) });
   }
   const img = latestImageOf(cur);
   if (img) {
     const u = img.startsWith('data:') ? img : localPathToImageUrl(img);
     items.push({ label: '放大预览', onClick: () => useSmartPreviewStore.getState().open(u) });
-    items.push({ label: '另存…', onClick: () => void imageSaveAs(img, 'smart-canvas.png') });
-    items.push({ label: '入图库', onClick: () => void imageToGallery(img) });
+    items.push({ label: '复制图片', onClick: () => void copyImage(u) });
+    items.push({ label: '另存图片…', onClick: () => void imageSaveAs(img, 'smart-canvas.png') });
+    items.push({ label: '入资产库', onClick: () => void imageToGallery(img) });
+    if (!img.startsWith('data:')) {
+      items.push({ label: '打开文件所在目录', onClick: () => void window.electronAPI.storage.showInFolder(img) });
+    }
+    items.push(...buildShortcutSendMenuItems({ kind: 'image', src: img }));
+  }
+  const vid = latestVideoOf(cur);
+  if (vid) {
+    items.push({ label: '放大播放视频', onClick: () => openVideoPreview([vid]) });
+    if (!vid.startsWith('data:')) {
+      items.push({ label: '打开文件所在目录', onClick: () => void window.electronAPI.storage.showInFolder(vid) });
+    }
+    items.push(...buildShortcutSendMenuItems({ kind: 'video', src: vid }));
   }
   const txt = textOutputOf(cur);
   if (txt) {
+    items.push({ label: '放大查看文本', onClick: () => useSmartTextStore.getState().open(txt, '节点文本') });
+    items.push({ label: '复制文本', onClick: () => void copyText(txt) });
     items.push({ label: '用文本建提示词节点', onClick: () => makePromptNodeFrom(id, txt) });
+    items.push(...buildShortcutSendMenuItems({ kind: 'text', text: txt }));
   }
   return items;
 }
@@ -251,6 +319,13 @@ export function CanvasViewport(): JSX.Element {
   const snapToGrid = useSmartViewStore((s) => s.snapToGrid);
   const snapSize = useSmartViewStore((s) => s.snapSize);
   const alignGuides = useSmartViewStore((s) => s.alignGuides);
+  const flowAnimation = useSmartViewStore((s) => s.flowAnimation);
+  const perfMode = useThemeStore((s) => s.perfMode);
+  // 连线流动动画降级：off=始终停；auto=节点>80 或连线>120 时自动停（大画布掉帧主因之一）；性能模式=低配 时始终停
+  const noFlowAnim =
+    perfMode === 'low' ||
+    flowAnimation === 'off' ||
+    (flowAnimation === 'auto' && (nodes.length > 80 || rawEdges.length > 120));
   const dimFilter = useSmartCanvasUiStore((s) => s.dimFilter);
   const panel = useSmartCanvasUiStore((s) => s.panel);
   const setPanel = useSmartCanvasUiStore((s) => s.setPanel);
@@ -293,8 +368,24 @@ export function CanvasViewport(): JSX.Element {
     });
   }, [nodes, dimFilter]);
 
-  // 拖动中：计算对齐参考线（与其它顶层节点的 左/中/右 · 上/中/下 对齐）
+  // 拖动中：计算对齐参考线（与其它顶层节点的 左/中/右 · 上/中/下 对齐）。
+  // rAF 节流：拖动事件每帧可触发多次，对齐/落点提示每帧最多算一次（大画布拖动不掉帧）。
+  const dragArgRef = useRef<{ e: unknown; node: Node } | null>(null);
+  const dragRafRef = useRef(0);
   const onNodeDrag = useCallback(
+    (e: unknown, node: Node) => {
+      dragArgRef.current = { e, node };
+      if (dragRafRef.current) return;
+      dragRafRef.current = requestAnimationFrame(() => {
+        dragRafRef.current = 0;
+        const a = dragArgRef.current;
+        if (a) processNodeDrag(a.e, a.node);
+      });
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [alignGuides, screenToFlowPosition]
+  );
+  const processNodeDrag = useCallback(
     (_e: unknown, node: Node) => {
       // 拖到另一个节点上 → 在目标节点上显示「上游 / 下游」分区高亮（鼠标落点左半=上游、右半=下游）
       if (node.type !== 'group' && !node.parentId) {
@@ -361,12 +452,28 @@ export function CanvasViewport(): JSX.Element {
   // 分组容器化：拖动结束时，若节点中心落在某分组框内 → 归入该分组；否则移出。
   const onNodeDragStop = useCallback(
     (_e: unknown, node: Node) => {
+      document.querySelector('.mb-sc-root')?.classList.remove('is-node-dragging');
+      // 取消还在排队的拖动帧计算（避免松手后迟到的参考线/落点提示闪现）
+      if (dragRafRef.current) {
+        cancelAnimationFrame(dragRafRef.current);
+        dragRafRef.current = 0;
+      }
       setGuides({});
       setDropHint(null);
-      if (node.type === 'group') return;
       const st = useSmartCanvasStore.getState();
       const cur = st.nodes.find((n) => n.id === node.id);
       if (!cur) return;
+
+      // Alt 拖动复制：原节点回到起点（连线不动），把新副本「拉出来」放到松手处。
+      // 复制操作不参与「落到节点上自动连线」和「落进分组归组」——避免给副本接上不想要的连线。
+      const altDup = altDupRef.current;
+      altDupRef.current = null;
+      if (altDup && altDup.id === node.id) {
+        st.altDragDuplicate(node.id, altDup.pos, { x: cur.position.x, y: cur.position.y });
+        return;
+      }
+
+      if (node.type === 'group') return;
       const dim = (n: Node, dw: number, dh: number): { w: number; h: number } => ({
         w: n.measured?.width ?? (typeof n.width === 'number' ? n.width : dw),
         h: n.measured?.height ?? (typeof n.height === 'number' ? n.height : dh)
@@ -461,9 +568,20 @@ export function CanvasViewport(): JSX.Element {
     [screenToFlowPosition, addNode]
   );
 
-  // 按住 Alt 拖动节点 = 复制：拖动开始即在原位克隆一份（原节点被拖走、副本留在原处）
+  // 「武装」某类型后点现有节点 → 在点击的左/右半区一侧建新节点并自动连线（左=作上游、右=作下游）。
+  // 关键（修「点图片节点会顺带放大图片」）：React Flow 的 onNodeClick 在**冒泡阶段**触发，
+  // 晚于节点内 <img>/<video> 等元素自身的 onClick（事件目标先冒泡），故 onNodeClick 里的
+  // stopPropagation 来不及拦——内层 onClick 已经把图放大了。改在 .react-flow 根上挂**原生捕获**
+  // 监听：武装态下点到节点即 stopPropagation 掐掉内层 onClick + onNodeClick，再自行建邻居连线。
+  // 见下方 useEffect（onArmedNodeClickCapture）。
+
+  // 按住 Alt 拖动节点 = 复制：只在「拖动开始」记下意图 + 起点，真正复制留到「拖动结束」做
+  // （历史 bug：在 dragStart 当场克隆会中途改 nodes 数组 → React Flow 拖动态错乱 + 连线乱跳）。
+  // 同时给根容器挂 is-node-dragging：拖动期间 CSS 降级（停阴影/过渡/连线动画），防节点多时的果冻感。
+  const altDupRef = useRef<{ id: string; pos: { x: number; y: number } } | null>(null);
   const onNodeDragStart = useCallback((event: React.MouseEvent, node: Node) => {
-    if (event.altKey) useSmartCanvasStore.getState().duplicateNodeInPlace(node.id);
+    document.querySelector('.mb-sc-root')?.classList.add('is-node-dragging');
+    altDupRef.current = event.altKey ? { id: node.id, pos: { x: node.position.x, y: node.position.y } } : null;
   }, []);
 
   // 工具栏「武装」后点画布 → 在点击处落位；否则取消选择 + 关菜单。
@@ -507,7 +625,24 @@ export function CanvasViewport(): JSX.Element {
         }
         return;
       }
-      const files = Array.from(event.dataTransfer.files).filter((f) => f.type.startsWith('image/'));
+      const allFiles = Array.from(event.dataTransfer.files);
+      // 1) 视频文件 → 视频上传节点（存本地路径不内联——视频转 dataURI 会撑爆内存/存储）
+      const videoFiles = allFiles.filter(isVideoFile);
+      if (videoFiles.length) {
+        const store = useSmartCanvasStore.getState();
+        let made = 0;
+        videoFiles.forEach((f, i) => {
+          const p = electronFilePath(f);
+          if (!p) return;
+          const id = store.addNode('video-source', { x: pos.x + i * 40, y: pos.y + i * 32 });
+          store.updateNodeData(id, { src: p, name: f.name });
+          made++;
+        });
+        if (made) toast.success(`已创建 ${made} 个视频上传节点`, '拖入视频文件 → 自动建节点');
+        else toast.error('拿不到视频文件路径', '请改用视频上传节点上的「上传本地视频」按钮');
+      }
+      // 2) 图片文件 → 图片节点（多图自动成组）
+      const files = allFiles.filter((f) => f.type.startsWith('image/'));
       if (files.length) {
         void Promise.all(
           files.map(
@@ -525,6 +660,7 @@ export function CanvasViewport(): JSX.Element {
         });
         return;
       }
+      if (videoFiles.length) return;
       const text = event.dataTransfer.getData('text/plain');
       if (text.trim()) {
         const id = useSmartCanvasStore.getState().addNode('prompt', pos);
@@ -554,23 +690,36 @@ export function CanvasViewport(): JSX.Element {
       if (connectionState.isValid) return;
       const from = connectionState.fromNode;
       if (!from) return;
-      // 落在某个节点上但非法 → 解释原因，不弹「创建节点」菜单（只有落空白才弹）
+      // 落在某个节点上（非源节点）→ 整个节点体都作判定区（无需精准对准连接口，加大命中范围）。
+      // 方向由「拖出的端口」决定：从输出口拖出 → from→over（over 作下游，对准它左侧输入口）；
+      // 从输入口拖出 → over→from（over 作上游，对准它右侧输出口）。多输出口端口号 sourceHandle 保留。
       const over = connectionState.toNode;
       if (over && over.id !== from.id) {
         const down = connectionState.fromHandle?.type === 'source';
         const sk = down ? from.type : over.type;
         const tk = down ? over.type : from.type;
-        toast.error('该连接不允许', invalidReason(sk, tk));
+        if (canConnectKinds(sk, tk)) {
+          const source = down ? from.id : over.id;
+          const target = down ? over.id : from.id;
+          const sourceHandle = down ? connectionState.fromHandle?.id ?? 'out' : 'out';
+          const targetHandle = down ? 'in' : connectionState.fromHandle?.id ?? 'in';
+          lastConnectEndRef.current = Date.now(); // 标记刚连过：抑制紧随的 pane click 等副作用
+          useSmartCanvasStore.getState().onConnect({ source, target, sourceHandle, targetHandle });
+          toast.success(down ? '已连为下游' : '已连为上游', '松开在节点区域即可连接，无需对准连接口');
+        } else {
+          toast.error('该连接不允许', invalidReason(sk, tk));
+        }
         return;
       }
       lastConnectEndRef.current = Date.now();
-      // 输入口(target)拖出 → 建上游；输出口(source)拖出 → 建下游
+      // 输入口(target)拖出 → 建上游；输出口(source)拖出 → 建下游（多输出口节点记住具体哪个口）
       const dir = connectionState.fromHandle?.type === 'target' ? 'up' : 'down';
+      const anchorHandle = dir === 'down' ? connectionState.fromHandle?.id ?? undefined : undefined;
       const { x, y } = clientXY(event);
       const p = screenToFlowPosition({ x, y });
       useSmartCanvasUiStore
         .getState()
-        .openCreateMenu({ screenX: x, screenY: y, flowX: p.x, flowY: p.y, anchorId: from.id, dir });
+        .openCreateMenu({ screenX: x, screenY: y, flowX: p.x, flowY: p.y, anchorId: from.id, dir, anchorHandle });
     },
     [screenToFlowPosition]
   );
@@ -589,7 +738,28 @@ export function CanvasViewport(): JSX.Element {
           onClick: () => {
             if (useSmartCanvasStore.getState().groupSelection()) toast.success('已群组并自动排布');
           }
-        }
+        },
+        { label: '复制所选', onClick: () => st.copySelection() },
+        { separator: true },
+        {
+          label: '对齐',
+          children: [
+            { label: '左对齐', onClick: () => st.alignSelected('left') },
+            { label: '水平居中', onClick: () => st.alignSelected('hcenter') },
+            { label: '右对齐', onClick: () => st.alignSelected('right') },
+            { label: '顶对齐', onClick: () => st.alignSelected('top') },
+            { label: '垂直居中', onClick: () => st.alignSelected('vcenter') },
+            { label: '底对齐', onClick: () => st.alignSelected('bottom') }
+          ]
+        },
+        {
+          label: '分布',
+          children: [
+            { label: '水平均分', onClick: () => st.distributeSelected('h') },
+            { label: '垂直均分', onClick: () => st.distributeSelected('v') }
+          ]
+        },
+        { label: '智能排布', onClick: () => st.arrangeSmart(40) }
       ]
     });
     return true;
@@ -613,7 +783,7 @@ export function CanvasViewport(): JSX.Element {
       const selCount = st.nodes.filter((n) => n.selected).length;
       if (cur?.selected && selCount >= 2 && openGroupMenu(e.clientX, e.clientY)) return;
       const items: ContextMenuEntry[] = [];
-      // 类型专属操作置顶（运行 / 选图 / 预览 / 另存 / 入图库 / 建提示词节点）
+      // 类型专属操作置顶（运行 / 选图 / 预览 / 另存 / 入资产库 / 建提示词节点）
       if (cur) {
         const typeActions = nodeTypeActions(cur);
         if (typeActions.length) {
@@ -634,8 +804,17 @@ export function CanvasViewport(): JSX.Element {
             st.selectOnly(node.id);
             st.copySelection();
           }
-        }
+        },
+        { label: '粘贴', onClick: () => st.pasteClipboard() },
+        { label: '选择同类节点', onClick: () => st.selectByType(node.type ?? '') }
       );
+      if (st.edges.some((e) => e.source === node.id || e.target === node.id)) {
+        items.push({ label: '断开所有连线', onClick: () => st.disconnectNode(node.id) });
+      }
+      // 手动调过尺寸的节点：恢复自适应（清 manualSize，让节点重新按内容自动放缩）
+      if ((cur?.data as { manualSize?: boolean } | undefined)?.manualSize) {
+        items.push({ label: '恢复自适应大小', onClick: () => st.updateNodeData(node.id, { manualSize: false } as Partial<SmartNodeData>) });
+      }
       if (cur?.parentId) {
         // 子节点：可靠地移出分组（拖不出大分组时用），移出后即顶层节点可正常删除
         items.push({ label: '移出分组', onClick: () => st.setNodeParent(node.id, null) });
@@ -649,6 +828,50 @@ export function CanvasViewport(): JSX.Element {
     },
     [openGroupMenu]
   );
+
+  // 右键空白画布 → 快捷创建 / 粘贴 / 全选 / 智能排布 / 适应视图
+  const onPaneContextMenu = useCallback(
+    (e: React.MouseEvent | MouseEvent) => {
+      e.preventDefault();
+      const p = screenToFlowPosition({ x: e.clientX, y: e.clientY });
+      const st = useSmartCanvasStore.getState();
+      openContextMenu({
+        x: e.clientX,
+        y: e.clientY,
+        items: [
+          {
+            label: '快捷创建…',
+            onClick: () =>
+              useSmartCanvasUiStore
+                .getState()
+                .openCreateMenu({ screenX: e.clientX, screenY: e.clientY, flowX: p.x, flowY: p.y })
+          },
+          { label: '粘贴', onClick: () => st.pasteClipboard(p) },
+          { separator: true },
+          { label: '全选', onClick: () => st.selectAll() },
+          { label: '智能排布', onClick: () => st.arrangeSmart(40) },
+          { label: '适应视图', onClick: () => void fitView({ duration: 300 }) }
+        ]
+      });
+    },
+    [screenToFlowPosition, fitView]
+  );
+
+  // 右键连线 → 删除连线
+  const onEdgeContextMenu = useCallback((e: React.MouseEvent, edge: Edge) => {
+    e.preventDefault();
+    openContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      items: [
+        {
+          label: '删除连线',
+          variant: 'danger',
+          onClick: () => useSmartCanvasStore.getState().onEdgesChange([{ type: 'remove', id: edge.id }])
+        }
+      ]
+    });
+  }, []);
 
   useEffect(() => {
     function doAction(action: string): void {
@@ -675,6 +898,33 @@ export function CanvasViewport(): JSX.Element {
           break;
         case 'arrange-type':
           arrangeByType(48);
+          break;
+        case 'arrange-smart':
+          useSmartCanvasStore.getState().arrangeSmart(48);
+          break;
+        case 'align-left':
+          useSmartCanvasStore.getState().alignSelected('left');
+          break;
+        case 'align-right':
+          useSmartCanvasStore.getState().alignSelected('right');
+          break;
+        case 'align-top':
+          useSmartCanvasStore.getState().alignSelected('top');
+          break;
+        case 'align-bottom':
+          useSmartCanvasStore.getState().alignSelected('bottom');
+          break;
+        case 'align-hcenter':
+          useSmartCanvasStore.getState().alignSelected('hcenter');
+          break;
+        case 'align-vcenter':
+          useSmartCanvasStore.getState().alignSelected('vcenter');
+          break;
+        case 'distribute-h':
+          useSmartCanvasStore.getState().distributeSelected('h');
+          break;
+        case 'distribute-v':
+          useSmartCanvasStore.getState().distributeSelected('v');
           break;
         case 'group-selection':
           if (!useSmartCanvasStore.getState().groupSelection()) toast.error('先选 2 个及以上的顶层节点再群组');
@@ -715,8 +965,15 @@ export function CanvasViewport(): JSX.Element {
           return;
         }
       }
-      // 方向键微调选中节点（输入框内不抢；Shift = 10px，否则 1px）
-      if (!inEditable() && (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+      // 方向键微调选中节点（输入框内不抢；Shift = 10px，否则 1px）。
+      // 带 Alt/Ctrl/Meta 的方向键放行给下方组合键查找（Alt+方向 = 对齐），不在此微调。
+      if (
+        !inEditable() &&
+        !e.altKey &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight')
+      ) {
         if (!useSmartCanvasStore.getState().nodes.some((n) => n.selected)) return;
         e.preventDefault();
         const step = e.shiftKey ? 10 : 1;
@@ -753,6 +1010,47 @@ export function CanvasViewport(): JSX.Element {
     return () => registerViewCenterProvider(null);
   }, [screenToFlowPosition]);
 
+  // 武装态点节点：捕获阶段拦截（修「点图片/结果等节点会顺带触发其放大」）。
+  // 捕获在内层元素 onClick 之前触发；stopPropagation 后内层 onClick / onNodeClick 都不再跑，
+  // 由本监听自行在左/右半区建邻居并连线（类型不兼容则在点击处直接创建）。
+  useEffect(() => {
+    const el = document.querySelector('.mb-sc-root .react-flow') as HTMLElement | null;
+    if (!el) return;
+    function onArmedNodeClickCapture(e: MouseEvent): void {
+      const ui = useSmartCanvasUiStore.getState();
+      if (!ui.pendingKind) return; // 未武装：放行（正常选中 + 内层点击行为）
+      const nodeEl = (e.target as HTMLElement | null)?.closest('.react-flow__node') as HTMLElement | null;
+      if (!nodeEl) return; // 点空白：交给 onPaneClick 落位
+      e.stopPropagation(); // 掐掉内层 <img>/<video> onClick 与 React Flow 的 onNodeClick
+      e.preventDefault();
+      const id = nodeEl.getAttribute('data-id');
+      const kind = ui.pendingKind;
+      ui.setPendingKind(null);
+      if (!id) return;
+      const st = useSmartCanvasStore.getState();
+      const cur = st.nodes.find((n) => n.id === id);
+      const p = screenToFlowPosition({ x: e.clientX, y: e.clientY });
+      if (!cur || cur.type === 'group') {
+        addNode(kind, p); // 分组容器不参与连线语义：按点画布处理
+        return;
+      }
+      const abs = absPosition(cur, st.nodes);
+      const w = cur.measured?.width ?? (typeof cur.width === 'number' ? cur.width : 220);
+      const onLeft = p.x < abs.x + w / 2;
+      const sk = onLeft ? kind : cur.type;
+      const tk = onLeft ? cur.type : kind;
+      if (canConnectKinds(sk, tk)) {
+        st.addLinkedNode(kind, cur.id, onLeft ? 'left' : 'right');
+        toast.success(onLeft ? '已创建并连为上游' : '已创建并连为下游', '点节点左/右半区 = 建邻居并自动连线');
+      } else {
+        addNode(kind, p);
+        toast.info('已创建节点（未连线）', invalidReason(sk, tk));
+      }
+    }
+    el.addEventListener('click', onArmedNodeClickCapture, true);
+    return () => el.removeEventListener('click', onArmedNodeClickCapture, true);
+  }, [screenToFlowPosition, addNode]);
+
   // 系统剪贴板粘贴：在智能画布里 Ctrl+V →
   //   · 内部节点剪贴板有内容 → 内部节点粘贴（落视图中心，保留原有复制/粘贴）
   //   · 否则系统剪贴板是图片 → 建图片节点；是文本 → 建提示词节点；都落当前视图正中心
@@ -767,6 +1065,24 @@ export function CanvasViewport(): JSX.Element {
       }
       const dt = e.clipboardData;
       if (!dt) return;
+      // 0) 系统剪贴板里的视频文件（资源管理器复制 → 粘贴）→ 视频上传节点（存路径不内联）
+      const vidFiles = Array.from(dt.files).filter(isVideoFile);
+      if (vidFiles.length) {
+        e.preventDefault();
+        const store = useSmartCanvasStore.getState();
+        const center = getSmartViewCenter();
+        let made = 0;
+        vidFiles.forEach((f, i) => {
+          const p = electronFilePath(f);
+          if (!p) return;
+          const id = store.addNode('video-source', { x: center.x - 120 + i * 40, y: center.y - 110 + i * 32 });
+          store.updateNodeData(id, { src: p, name: f.name });
+          made++;
+        });
+        if (made) toast.success(`已粘贴 ${made} 个视频`, '建为视频上传节点');
+        else toast.error('拿不到视频文件路径', '请改用视频上传节点上的「上传本地视频」按钮');
+        return;
+      }
       // 1) 系统剪贴板里的图片（截图/复制图片）→ 图片节点
       const imgItem = Array.from(dt.items).find(
         (it) => it.kind === 'file' && it.type.startsWith('image/')
@@ -806,9 +1122,10 @@ export function CanvasViewport(): JSX.Element {
   return (
     <>
       <ReactFlow
-        className={pendingKind ? 'mb-sc-armed' : undefined}
+        className={[pendingKind ? 'mb-sc-armed' : '', noFlowAnim ? 'mb-sc-noflow' : ''].filter(Boolean).join(' ') || undefined}
         nodes={displayNodes}
         edges={edges}
+        onlyRenderVisibleElements
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         defaultEdgeOptions={defaultEdgeOptions}
@@ -822,6 +1139,10 @@ export function CanvasViewport(): JSX.Element {
         onNodeDragStop={onNodeDragStop}
         onSelectionContextMenu={onSelectionContextMenu}
         onNodeContextMenu={onNodeContextMenu}
+        onPaneContextMenu={onPaneContextMenu}
+        onEdgeContextMenu={onEdgeContextMenu}
+        onSelectionStart={() => useSmartCanvasUiStore.getState().setBoxSelecting(true)}
+        onSelectionEnd={() => useSmartCanvasUiStore.getState().setBoxSelecting(false)}
         isValidConnection={isValidConnection}
         snapToGrid={snapToGrid}
         snapGrid={[snapSize, snapSize]}
@@ -833,7 +1154,11 @@ export function CanvasViewport(): JSX.Element {
           e.dataTransfer.dropEffect = 'copy';
         }}
         defaultViewport={viewport}
-        onMoveEnd={(_e, vp) => setViewport(vp)}
+        onMoveStart={() => document.querySelector('.mb-sc-root')?.classList.add('is-panning')}
+        onMoveEnd={(_e, vp) => {
+          document.querySelector('.mb-sc-root')?.classList.remove('is-panning');
+          setViewport(vp);
+        }}
         deleteKeyCode={['Delete', 'Backspace']}
         selectionKeyCode={['Control', 'Meta']}
         multiSelectionKeyCode={['Shift']}
@@ -842,7 +1167,7 @@ export function CanvasViewport(): JSX.Element {
         panOnDrag
         selectNodesOnDrag={false}
         zoomOnDoubleClick={false}
-        connectionRadius={40}
+        connectionRadius={60}
         nodesDraggable
         nodesConnectable
         elementsSelectable

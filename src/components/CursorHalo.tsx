@@ -7,7 +7,7 @@ import { useCursorHaloStore } from '@/store/cursorHaloStore';
  * 位置通过 transform 跟随，不重排不重绘。
  *
  * 替代旧的 .mb-marquee-glow ——后者每张卡都有 conic-gradient + blur(28px) + 60fps 旋转，
- * 设置页 / 图库这类多卡片页面会让 GPU 持续高占用。
+ * 设置页 / 资产库这类多卡片页面会让 GPU 持续高占用。
  *
  * 不主动监听 mousemove —— 用 mouseover / mouseout 的 bubble 即可定位 .mb-card，
  * 进入后用 pointermove 微更新位置（事件密度被浏览器 rAF 节流，足够顺）。

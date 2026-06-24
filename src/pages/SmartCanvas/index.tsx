@@ -1,19 +1,24 @@
 import { useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { ReactFlowProvider, useReactFlow } from '@xyflow/react';
-import { useSmartCanvasStore, useSmartPreviewStore } from '@/store/smartCanvasStore';
+import { useSmartCanvasStore, useSmartPreviewStore, useSmartTextStore } from '@/store/smartCanvasStore';
 import { useSmartDocsStore } from '@/store/smartDocsStore';
 import { useSmartInboxStore } from '@/store/smartInboxStore';
 import { toast } from '@/store/toastStore';
 import { migrateLegacyIfNeeded } from '@/lib/smartDocStorage';
-import { routeImageDone, routeComfyDone, routeChatChunk, routeChatDone, routeVideoDone, routeVideoProgress, pruneDeletedImages } from '@/lib/smartCanvasRunner';
-import { useDeletedMediaStore } from '@/store/deletedMediaStore';
 import { Lightbox } from '@/components/Lightbox';
 import { CanvasToolbar } from './CanvasToolbar';
 import { CanvasWorkspace } from './CanvasWorkspace';
 import { CanvasLauncher } from './CanvasLauncher';
 import { SmartTextViewer } from './SmartTextViewer';
-import { GalleryPickerDialog } from './GalleryPickerDialog';
+import { GalleryPickerDialog, useGalleryPickerStore } from './GalleryPickerDialog';
+import { PromptPickerDialog, usePromptPickerStore } from './PromptPickerDialog';
+import { SmartGalleryPanel, useSmartGalleryPanelStore } from './SmartGalleryPanel';
+import { AgentPanel, useAgentPanelStore } from './AgentPanel';
+import { ImageEditorModal, useImageEditorStore } from './ImageEditorModal';
+import { PromptMallStudio, usePromptMallStudioStore } from './PromptMallStudio';
+import { StoryboardStudio, useStoryboardStudioStore } from './StoryboardStudio';
+import { VideoClipStudio, useVideoClipStudioStore } from './VideoClipStudio';
 import './SmartCanvas.css';
 
 /**
@@ -73,7 +78,8 @@ function SmartInboxBridge(): null {
 /** 智能画布（AI 创作节点画布）：进入先到「选择画布」启动页，打开某画布后进入工作区。 */
 export default function SmartCanvasPage(): JSX.Element {
   const activeDocId = useSmartDocsStore((s) => s.activeDocId);
-  const previewSrc = useSmartPreviewStore((s) => s.src);
+  const previewItems = useSmartPreviewStore((s) => s.items);
+  const previewIndex = useSmartPreviewStore((s) => s.index);
   const closePreview = useSmartPreviewStore((s) => s.close);
 
   // 旧单文档一次性迁移成卡片。注意：不再在进入时 setActive(null) ——
@@ -82,44 +88,25 @@ export default function SmartCanvasPage(): JSX.Element {
     migrateLegacyIfNeeded();
   }, []);
 
-  // 工作节点的真实生成走 api:image:generate，结果经 image:done 路由回对应节点
+  // 离开智能画布时复位所有弹窗 / 浮层单例（它们是模块级 store，open 态会跨路由残留）：
+  // 防止残留的弹窗 / 遮罩 portal 跨页面盖住别的功能页、阻断交互（白屏式「所有功能无法使用」的常见成因）。
   useEffect(() => {
-    const off = window.electronAPI.on('image:done', (payload) => routeImageDone(payload));
-    return off;
-  }, []);
-
-  // ComfyUI 节点的运行结果经 comfyui:run-done 路由回对应节点
-  useEffect(() => {
-    const off = window.electronAPI.on('comfyui:run-done', (payload) => routeComfyDone(payload));
-    return off;
-  }, []);
-
-  // 视频节点：异步生成进度 / 完成 经 video:progress / video:done 路由回对应节点
-  useEffect(() => {
-    const offProg = window.electronAPI.on('video:progress', (payload) => routeVideoProgress(payload));
-    const offDone = window.electronAPI.on('video:done', (payload) => routeVideoDone(payload));
     return () => {
-      offProg();
-      offDone();
+      usePromptPickerStore.getState().close();
+      useGalleryPickerStore.getState().close();
+      useSmartGalleryPanelStore.getState().close();
+      useAgentPanelStore.getState().close();
+      useImageEditorStore.getState().close();
+      usePromptMallStudioStore.getState().close();
+      useStoryboardStudioStore.getState().close();
+      useVideoClipStudioStore.getState().close();
+      useSmartPreviewStore.getState().close();
+      useSmartTextStore.getState().close();
     };
   }, []);
 
-  // LLM 节点流式聊天：chat:chunk / chat:done 路由回对应节点
-  useEffect(() => {
-    const offChunk = window.electronAPI.on('chat:chunk', (payload) => routeChatChunk(payload));
-    const offDone = window.electronAPI.on('chat:done', (payload) => routeChatDone(payload));
-    return () => {
-      offChunk();
-      offDone();
-    };
-  }, []);
-
-  // 图库删除某些图 → 从智能画布的结果预览里同步剔除（跨功能同步，渲染端总线）
-  useEffect(() => {
-    return useDeletedMediaStore.subscribe((s, prev) => {
-      if (s.seq !== prev.seq) pruneDeletedImages(s.lastDeleted);
-    });
-  }, []);
+  // 任务推送监听（image:done / comfyui:run-done / video:* / chat:* / 资产库删除同步）
+  // 已上移到 App 级全局注册（registerSmartRunnerListeners）——切页任务不丢路由，本页只展示状态。
 
   return (
     <ReactFlowProvider>
@@ -140,9 +127,20 @@ export default function SmartCanvasPage(): JSX.Element {
           </>
         )}
       </motion.div>
-      <Lightbox open={!!previewSrc} src={previewSrc ?? ''} onClose={closePreview} />
+      <Lightbox open={previewItems.length > 0} items={previewItems} index={previewIndex} onClose={closePreview} />
       <SmartTextViewer />
       <GalleryPickerDialog />
+      <PromptPickerDialog />
+      {/* 提示词商城 / 分镜 工作台弹窗（节点卡精简，进一步设置在弹窗里；portal 到 body） */}
+      <PromptMallStudio />
+      <StoryboardStudio />
+      <VideoClipStudio />
+      {/* 便携资产库（非模态中心悬浮窗）：portal 到 body，躲开路由级 transform */}
+      <SmartGalleryPanel />
+      {/* AI 智能体（一句话 → 自动建图 / 生成）：portal 到 body */}
+      <AgentPanel />
+      {/* 图片节点就地编辑器（扩图 / 画笔 / 裁切 / 蒙版 / 调色）：portal 到 body */}
+      <ImageEditorModal />
     </ReactFlowProvider>
   );
 }

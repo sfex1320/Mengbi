@@ -1,12 +1,12 @@
 /**
- * ComfyUI 进程生命周期：仿 ai-platform/sidecarManager，但启动**用户配置的命令/目录**
- * （不是便携 Python）。判定"是否在运行"一律以**服务地址可达**为准，不靠进程名。
+ * ComfyUI 进程生命周期：启动**用户配置的命令/目录**（不是便携 Python）。
+ * 判定"是否在运行"一律以**服务地址可达**为准，不靠进程名。
  * 绝不开机自启——只有用户在编排器里点「启动」才 spawn。
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { logger } from '../logger';
-import { killProcessTree } from '../ai-platform/processKill';
+import { killProcessTree } from '../processKill';
 import { getSystemStats } from './client';
 
 interface LaunchConfig {

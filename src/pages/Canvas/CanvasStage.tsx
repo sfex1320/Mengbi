@@ -711,7 +711,7 @@ function CanvasImage({
     im.onload = () => setImg(im);
     im.onerror = () => {
       // 静默隐藏图层会让用户分不清「故意隐藏」还是「加载失败」；至少留日志便于排查
-      // （不弹 toast：源目录被移动时可能整批失败，会造成 toast 风暴；图库的孤儿检测已专门处理该场景）
+      // （不弹 toast：源目录被移动时可能整批失败，会造成 toast 风暴；资产库的孤儿检测已专门处理该场景）
       console.warn('[canvas] 图层图片加载失败', src);
       setImg(null);
     };

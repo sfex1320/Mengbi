@@ -49,9 +49,19 @@
 
 .mb-modal-header h3 {
   margin: 0;
+  /* 占满左侧剩余空间，把 headerActions + 关闭按钮一起推到右侧 */
+  margin-right: auto;
   font-size: 17px;
   font-weight: 600;
   letter-spacing: -0.01em;
+}
+
+/* 标题栏右侧操作区（如顶部的保存 / 取消），紧贴关闭按钮左边 */
+.mb-modal-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: 10px;
 }
 
 .mb-modal-close {

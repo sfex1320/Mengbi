@@ -22,7 +22,7 @@ const imageKindSchema = z
   .enum(['openai', 'grsai', 'apimart', 'gemini', 'openai-compat', 'openai-responses', 'comfyui'])
   .nullable();
 
-const videoKindSchema = z.enum(['kling', 'sora', 'unified']).nullable();
+const videoKindSchema = z.enum(['kling', 'sora', 'unified', 'seedance', 'veo', 'runway', 'fal', 'custom']).nullable();
 
 const apiConfigInputSchema = z.object({
   id: z.number().int().optional(),
@@ -63,6 +63,23 @@ const apiConfigInputSchema = z.object({
       },
       { message: '必须是合法 JSON 对象，或留空' }
     ),
+  // 高级自定义请求头：null / 空字符串 = 不覆盖；否则必须是合法 JSON 对象顶层（header 名 → 值）。
+  header_overrides_json: z
+    .string()
+    .nullable()
+    .refine(
+      (v) => {
+        if (v == null || v.trim() === '') return true;
+        try {
+          const parsed = JSON.parse(v);
+          return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed);
+        } catch {
+          return false;
+        }
+      },
+      { message: '自定义请求头必须是合法 JSON 对象，或留空' }
+    )
+    .optional(),
   // ComfyUI workflow JSON：仅 image_kind='comfyui' 时使用；空 / null = 未配
   comfyui_workflow_json: z
     .string()
@@ -101,7 +118,26 @@ export const TestConnectionSchema = z.object({
   base_url: z.string().url(),
   api_key_plain: z.string().min(1),
   type: z.enum(['image', 'text', 'video']),
-  model_id: z.string().optional()
+  model_id: z.string().optional(),
+  header_overrides_json: z.string().nullable().optional()
+});
+
+export const TestProtocolSchema = z.object({
+  base_url: z.string().url(),
+  api_key_plain: z.string().min(1),
+  type: z.enum(['image', 'text', 'video']),
+  model_id: z.string().min(1),
+  official_kind: z.string().nullable().optional(),
+  image_kind: z.string().nullable().optional(),
+  body_overrides_json: z.string().nullable().optional(),
+  header_overrides_json: z.string().nullable().optional()
+});
+
+/** 一键修复：把请求体/请求头覆盖片段合并进某绘画模型配置。 */
+export const ApplyOverridesSchema = z.object({
+  modelId: z.string().min(1),
+  bodyMerge: z.record(z.unknown()).optional(),
+  headerMerge: z.record(z.unknown()).optional()
 });
 
 export const PlanUpsertSchema = z.object({
@@ -123,6 +159,23 @@ export const ChatSendSchema = z.object({
   forceWebSearch: z.boolean().optional()
 });
 
+/**
+ * 无状态（ephemeral）聊天：不落 conversations / messages 表，不污染生图页对话列表。
+ * 每次发送都带「当前 modelId + 完整消息序列」，模型永远跟随节点当前选择（避免会话冻结旧模型）。
+ * 智能画布 LLM 节点专用；走与 api:chat:send 相同的 chat:chunk / chat:done 推送通道。
+ */
+export const ChatSendEphemeralSchema = z.object({
+  planId: z.number().int(),
+  modelId: z.string().min(1),
+  /** 完整消息序列（含本轮新 user 消息，末条应为 user） */
+  messages: z
+    .array(z.object({ role: z.enum(['user', 'assistant']), content: z.string().max(50_000) }))
+    .min(1)
+    .max(400),
+  attachedImages: z.array(z.string()).max(16).optional(),
+  forceWebSearch: z.boolean().optional()
+});
+
 export const ImageGenerateSchema = z.object({
   modelId: z.string().min(1),
   positivePrompt: z.string().min(1).max(20_000),
@@ -131,15 +184,143 @@ export const ImageGenerateSchema = z.object({
   referenceImages: z.array(z.string()).max(16).optional()
 });
 
-// AI 视频生成（异步任务）。params 自由透传：mode/duration/resolution/aspect/seed/image/imageTail/size 等
+// 统一视频生成请求（adapter 路径，如 seedance/custom）。
+const VideoRequestSchema = z
+  .object({
+    providerId: z.string(),
+    modelId: z.string(),
+    mode: z.enum([
+      'text_to_video',
+      'image_to_video',
+      'first_last_frame',
+      'reference_images',
+      'reference_video',
+      'reference_audio',
+      'continuous'
+    ]),
+    prompt: z.string().max(20_000),
+    negativePrompt: z.string().max(20_000).optional(),
+    duration: z.number(),
+    aspectRatio: z.string(),
+    resolution: z.string(),
+    seed: z.number().nullable().optional(),
+    generateAudio: z.boolean().optional(),
+    returnLastFrame: z.boolean().optional(),
+    images: z
+      .array(z.object({ url: z.string(), role: z.enum(['first_frame', 'last_frame', 'reference_image']) }))
+      .optional(),
+    imageUrls: z.array(z.string()).optional(),
+    videoUrls: z.array(z.string()).optional(),
+    audioUrls: z.array(z.string()).optional(),
+    advanced: z.record(z.string(), z.unknown()).optional()
+  })
+  .passthrough();
+
+// AI 视频生成（异步任务）。legacy 路径走 params 自由透传；adapter 路径走 request。
 export const VideoGenerateSchema = z.object({
   modelId: z.string().min(1),
   prompt: z.string().max(20_000),
   negativePrompt: z.string().max(20_000).optional(),
-  params: z.record(z.string(), z.unknown())
+  params: z.record(z.string(), z.unknown()),
+  request: VideoRequestSchema.optional()
 });
 
 export const VideoCancelSchema = z.string().min(1);
+
+// 视频缩放/补帧（主进程 ffmpeg 重编码）：本地路径 / http(s) URL → 目标宽高（任一为空则按比例自适应）
+// + 可选 fps（minterpolate 运动补偿插帧，24fps 模型产出可补到 30/60，解决「视频不流畅」）。
+export const VideoScaleSchema = z
+  .object({
+    inputPath: z.string().min(1),
+    width: z.number().int().positive().max(8192).nullable().optional(),
+    height: z.number().int().positive().max(8192).nullable().optional(),
+    fps: z.number().int().min(25).max(120).nullable().optional()
+  })
+  .refine((v) => (v.width ?? 0) > 0 || (v.height ?? 0) > 0 || (v.fps ?? 0) > 0, {
+    message: '请指定目标宽/高或补帧帧率'
+  });
+
+// 视频编辑（主进程 ffmpeg 重编码）：裁切 / 基础调色 / 声音处理 / 合并。
+// inputs = 本地路径或 http(s) URL（不接 data:）；merge 需 ≥2 个，其余取 inputs[0]。
+const VideoClipSegmentSchema = z.object({
+  src: z.string().min(1),
+  trimStart: z.number().min(0).max(86_400),
+  trimEnd: z.number().min(0).max(86_400),
+  speed: z.number().min(0.5).max(2),
+  volume: z.number().min(0).max(4),
+  muted: z.boolean(),
+  fadeIn: z.number().min(0).max(30),
+  fadeOut: z.number().min(0).max(30),
+  transition: z.enum(['none', 'fade', 'fadeblack', 'dissolve', 'wipeleft', 'slideright']),
+  transitionDur: z.number().min(0).max(10)
+});
+const VideoClipTextSchema = z.object({
+  text: z.string().max(500),
+  start: z.number().min(0).max(86_400),
+  end: z.number().min(0).max(86_400),
+  x: z.number().min(0).max(1),
+  y: z.number().min(0).max(1),
+  fontSize: z.number().int().min(8).max(400),
+  color: z.string().max(20)
+});
+
+export const VideoEditSchema = z
+  .object({
+    op: z.enum(['trim', 'color', 'audio', 'merge', 'clip']),
+    inputs: z.array(z.string().min(1)).min(1).max(40),
+    clientTag: z.string().max(120).optional(),
+    // op='clip'（时间轴剪辑）：每个 input 对应一个 segment（同序）
+    segments: z.array(VideoClipSegmentSchema).max(40).optional(),
+    texts: z.array(VideoClipTextSchema).max(40).optional(),
+    fps: z.number().int().min(1).max(120).nullable().optional(),
+    // trim：起止秒（end 为空 = 到结尾）
+    start: z.number().min(0).max(86_400).nullable().optional(),
+    end: z.number().min(0).max(86_400).nullable().optional(),
+    // color：ffmpeg eq + hue（默认值 = 不变）
+    brightness: z.number().min(-1).max(1).nullable().optional(),
+    contrast: z.number().min(0).max(3).nullable().optional(),
+    saturation: z.number().min(0).max(3).nullable().optional(),
+    gamma: z.number().min(0.1).max(3).nullable().optional(),
+    hue: z.number().min(-180).max(180).nullable().optional(),
+    // audio：静音 / 音量倍数 / 淡入淡出秒
+    audioMode: z.enum(['keep', 'mute', 'volume', 'fade']).nullable().optional(),
+    volume: z.number().min(0).max(4).nullable().optional(),
+    fadeIn: z.number().min(0).max(30).nullable().optional(),
+    fadeOut: z.number().min(0).max(30).nullable().optional()
+  })
+  .refine((v) => (v.op !== 'merge' ? v.inputs.length >= 1 : v.inputs.length >= 2), {
+    message: '合并需要至少 2 个视频'
+  });
+
+// ── 视频插帧（本地 RIFE ncnn Vulkan 引擎）──
+export const InterpEngineInstallSchema = z
+  .object({ source: z.enum(['auto', 'github', 'mirror']).optional() })
+  .nullish();
+
+export const InterpRunSchema = z.object({
+  inputPath: z
+    .string()
+    .min(1)
+    .refine((s) => !s.startsWith('data:'), { message: '插帧只支持本地视频文件或公网 URL' }),
+  targetFps: z.number().int().min(12).max(120),
+  // 模型目录名白名单字符，防目录穿越
+  model: z.string().regex(/^[A-Za-z0-9._\-]+$/).optional(),
+  outputDir: z.string().optional(),
+  clientTag: z.string().max(64).optional()
+});
+
+export const InterpCancelSchema = z.object({ taskId: z.string().optional() });
+
+// 视频素材上传（本地图片/视频/音频 → 供应商 uploadEndpoint → 公网 URL）。
+export const VideoUploadAssetSchema = z
+  .object({
+    modelId: z.string().min(1),
+    filePath: z.string().optional(),
+    dataUri: z.string().optional(),
+    filename: z.string().optional(),
+    kind: z.enum(['image', 'video', 'audio'])
+  })
+  .refine((v) => !!v.filePath || !!v.dataUri, { message: '需提供 filePath 或 dataUri' });
 
 export const VideoSaveThumbSchema = z.object({
   imageId: z.number().int(),
@@ -153,7 +334,7 @@ export const ThemeSaveSchema = z.object({
 });
 
 // ─────────────────────────────────────────────────────
-// 放大引擎（Real-ESRGAN ncnn Vulkan + HYPIR 占位）
+// 放大引擎（Real-ESRGAN ncnn Vulkan）
 // ─────────────────────────────────────────────────────
 
 /** Real-ESRGAN ncnn 二进制内置的模型名（archive 解出来即有） */
@@ -187,38 +368,7 @@ export const UpscaleImportLocalModelFilesSchema = z.object({
   filePaths: z.array(z.string().min(1)).min(1).max(20)
 });
 
-// ─────────────────────────────────────────────────────
-// HYPIR Portable
-// ─────────────────────────────────────────────────────
-
-export const HypirSetPortablePathSchema = z.object({
-  /** 留空 = 清回默认（userData/engines/HYPIR_Portable） */
-  path: z.string().max(1024)
-});
-
-export const HypirSubmitTaskSchema = z.object({
-  /** 绝对路径或相对 portable/input 路径 */
-  inputPath: z.string().min(1),
-  outputPath: z.string().max(512).optional(),
-  scale: z.number().int().min(2).max(10).default(4), // 2026-05-29: max(8) → max(10),放开 6/8/10
-  prompt: z.string().max(2000).optional(),
-  negativePrompt: z.string().max(2000).optional(),
-  seed: z.number().int().optional(),
-  tileSize: z.number().int().min(128).max(2048).optional(),
-  device: z.enum(['cuda', 'cpu']).optional(),
-  intensity: z.enum(['conservative', 'standard', 'strong']).default('conservative'),
-  highlightProtection: z.boolean().optional(),
-  disablePostsharpen: z.boolean().optional(),
-  /** HYPIR 修复深度（控制 model_t = coeff_t）；50–400，默认 200。
-   *  改值会触发服务端 ~30s 重加载模型，UI 应有提示。 */
-  restorationDepth: z.number().int().min(50).max(400).optional()
-});
-
-export const HypirTaskIdSchema = z.object({
-  taskId: z.string().min(1)
-});
-
-// SUPIR schemas 已于 2026-05-29 砍除(显存需求过大,常见配置带不动)
+// HYPIR / SUPIR schemas 已于 2026-05-29 / 2026-06-18 整体砍除
 
 export const UpscaleModelInstallSchema = z.object({
   modelName: z.string().min(1).max(120).regex(/^[A-Za-z0-9._\-]+$/),
@@ -315,7 +465,9 @@ export const ComfyuiRunSingleSchema = z
     controlValues: z.record(z.string(), z.unknown()).optional(),
     controls: z.array(z.unknown()).optional(),
     bindings: z.array(z.unknown()).optional(),
-    outputNodeIds: z.array(z.string().min(1)).max(500).optional()
+    outputNodeIds: z.array(z.string().min(1)).max(500).optional(),
+    // true=输出图不进资产库（提示词商城缩略图生成走 ComfyUI 时用）
+    skipGallery: z.boolean().optional()
   })
   .refine((v) => !!v.workflowId || !!v.workflowJson, {
     message: '需要 workflowId 或 workflowJson'

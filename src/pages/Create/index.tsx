@@ -13,14 +13,18 @@ import {
   GalleryIcon,
   FolderIcon
 } from '@/components/Icon';
-import { Lightbox } from '@/components/Lightbox';
+import { Lightbox, type PreviewItem } from '@/components/Lightbox';
 import { ImportTargetDialog } from '@/pages/Canvas/ImportTargetDialog';
 import { importImageToCanvas, type ImportSource } from '@/pages/Canvas/importToCanvas';
 import { openContextMenu } from '@/components/ContextMenu';
 import { confirmDialog } from '@/components/ConfirmDialog';
 import { LoraSelector } from '@/components/LoraSelector';
-import { detectFamily, FAMILIES, getFamilyById, type ImageFamily } from '@shared/imageModelFamilies';
+import { AspectGlyph } from '@/pages/SmartCanvas/nodeControls';
+import { SearchableModelSelect } from '@/pages/SmartCanvas/nodePanel/consoleControls';
+import { detectFamily, FAMILIES, getFamilyById, mapGptTierSize, type ImageFamily } from '@shared/imageModelFamilies';
 import { localPathToImageUrl, thumbUrlFromOriginalPath } from '@/lib/imageUrl';
+import { buildShortcutSendMenuItems } from '@/lib/mediaActions';
+import { modelRefValue, resolveModelRef, parseModelRef } from '@/lib/modelMapping';
 import './Create.css';
 
 /**
@@ -45,7 +49,10 @@ const ASPECTS: Array<{ value: string; label: string; tags: Array<'GI2' | 'NB'> }
   { value: '3:2', label: '3:2', tags: ['GI2', 'NB'] },
   { value: '9:16', label: '9:16', tags: ['GI2', 'NB'] },
   { value: '16:9', label: '16:9', tags: ['GI2', 'NB'] },
+  { value: '2:1', label: '2:1', tags: ['GI2'] },         // GI2 连续比例（长:短=2 ≤ 3）
+  { value: '1:2', label: '1:2', tags: ['GI2'] },         // GI2 连续比例（短:长=2 ≤ 3）
   { value: '21:9', label: '21:9', tags: ['GI2', 'NB'] }, // GI2 文档说"接近上限不建议超过"
+  { value: '9:21', label: '9:21', tags: ['GI2'] },       // GI2 21:9 的竖版镜像（≈2.33 ≤ 3）
   { value: '1:3', label: '1:3', tags: ['GI2'] },         // GI2 最小比例 1:3
   { value: '3:1', label: '3:1', tags: ['GI2'] },         // GI2 最大比例 3:1
   { value: '1:4', label: '1:4', tags: ['NB'] },
@@ -96,7 +103,7 @@ const IMAGE_SIZES = [
 ];
 
 const QUALITIES = [
-  { value: '', label: '默认' },
+  { value: '', label: '自动（按分辨率智能选）' },
   { value: 'standard', label: 'standard（快）' },
   { value: 'high', label: 'high（细节多）' }
 ];
@@ -154,7 +161,8 @@ function GeneratorForm(): JSX.Element {
   const params = useImageParamsStore();
   const navigate = useNavigate();
 
-  // ComfyUI（image_kind='comfyui'）在「本地大模型」页独立管理，此处剔除
+  // ComfyUI（image_kind='comfyui'）在「本地大模型」页独立管理，此处剔除。
+  // value=复合标识「中转站 / 模型名」（同名不同中转站可区分、存储即此值）；label 同样带前缀。
   const imageModels = useMemo(
     () =>
       configs
@@ -164,24 +172,22 @@ function GeneratorForm(): JSX.Element {
             c.type === 'image' &&
             c.image_kind !== 'comfyui'
         )
-        .flatMap((c) => Object.keys(c.model_mapping ?? {})),
+        .flatMap((c) => {
+          const prov = (c.provider_name ?? '').trim();
+          return Object.keys(c.model_mapping ?? {}).map((name) => ({
+            ref: modelRefValue(prov, name),
+            label: prov ? `${prov} / ${name}` : name
+          }));
+        }),
     [configs, activePlanId]
   );
 
-  // 当前选中显示名 → 真实模型 ID → family。auto-detect 加 user override。
-  const currentImageConfig = useMemo(
-    () =>
-      configs.find(
-        (c) =>
-          c.plan_id === activePlanId &&
-          c.type === 'image' &&
-          c.image_kind !== 'comfyui' &&
-          (c.model_mapping ?? {})[params.imageModelId] !== undefined
-      ),
+  // 当前选中复合标识 → 配置 + 真实模型 ID → family（向后兼容旧裸名）。auto-detect 加 user override。
+  const resolvedImage = useMemo(
+    () => resolveModelRef(configs, 'image', params.imageModelId, activePlanId),
     [configs, activePlanId, params.imageModelId]
   );
-  const actualModelId =
-    currentImageConfig?.model_mapping?.[params.imageModelId] ?? params.imageModelId;
+  const actualModelId = resolvedImage?.actualId ?? parseModelRef(params.imageModelId).name;
   const detectedFamily = useMemo(
     () => detectFamily(actualModelId),
     [actualModelId]
@@ -213,7 +219,7 @@ function GeneratorForm(): JSX.Element {
   const [hDraft, setHDraft] = useState(String(params.customH));
   // 最近三个任务（按时间倒序）——支持并发跑，所以同时能有 3 条 running
   const [latestThree, setLatestThree] = useState<QueueItem[]>([]);
-  const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+  const [preview, setPreview] = useState<{ items: PreviewItem[]; index: number } | null>(null);
   const [importDialog, setImportDialog] = useState<{
     open: boolean;
     source: { width: number; height: number; name?: string } | null;
@@ -228,20 +234,62 @@ function GeneratorForm(): JSX.Element {
 
   /** 单个任务的第一张图本地路径（用于卡片缩略图） */
   function taskFirstImagePath(task: QueueItem): string | null {
-    if (!task.result_paths) return null;
+    return taskImagePaths(task)[0] ?? null;
+  }
+
+  /** 单个任务的全部结果图路径。 */
+  function taskImagePaths(task: QueueItem): string[] {
+    if (!task.result_paths) return [];
     try {
       const arr = JSON.parse(task.result_paths) as string[];
-      return arr[0] ?? null;
+      return Array.isArray(arr) ? arr.filter(Boolean) : [];
     } catch {
-      return null;
+      return [];
     }
+  }
+
+  /** 统一预览：最新 3 个任务的全部结果图组成列表（←→ 可跨任务翻看），从点击的那张开始。 */
+  function openTaskPreview(task: QueueItem, filePath: string): void {
+    const items: PreviewItem[] = [];
+    let index = 0;
+    for (const t of latestThree) {
+      for (const p of taskImagePaths(t)) {
+        if (t.id === task.id && p === filePath) index = items.length;
+        items.push({
+          src: localPathToImageUrl(p),
+          meta: {
+            prompt: t.positive_prompt,
+            filePath: p,
+            modelId: t.model_id,
+            createdAt: t.created_at && Number.isFinite(Date.parse(t.created_at)) ? Date.parse(t.created_at) : undefined
+          }
+        });
+      }
+    }
+    if (items.length) setPreview({ items, index });
   }
 
   useEffect(() => {
     if (imageModels.length > 0 && !params.imageModelId) {
-      params.setImageModelId(imageModels[0]);
+      params.setImageModelId(imageModels[0].ref);
     }
   }, [imageModels, params.imageModelId]);
+
+  // 参考图补量真实宽高：比例「自动」时 buildParams 用首张参考图的真实比例反推尺寸（含扩图后的尺寸），
+  // 某些加入路径没量到 width/height 会退回 16:9 → 这里异步补量，保证「自动」始终跟随上传的第一张图。
+  useEffect(() => {
+    params.refs.forEach((r, i) => {
+      if ((r.width && r.height) || !r.dataUri) return;
+      const img = new window.Image();
+      img.onload = () => {
+        if (img.naturalWidth && img.naturalHeight) {
+          params.updateRefAt(i, { width: img.naturalWidth, height: img.naturalHeight });
+        }
+      };
+      img.src = r.dataUri;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.refs]);
 
   useEffect(() => {
     if (!window.electronAPI?.on) return;
@@ -258,7 +306,7 @@ function GeneratorForm(): JSX.Element {
       refreshLatest();
       if (v.error) toast.error('生图失败', v.error);
       else if (v.cancelled) toast.info('已取消');
-      else toast.success('生图完成', `任务 #${v.taskId} · 已自动归入图库`);
+      else toast.success('生图完成', `任务 #${v.taskId} · 已自动归入资产库`);
     });
     const offProgress = window.electronAPI.on('image:progress', (payload) => {
       const v = payload as { imageKind?: string | null };
@@ -274,9 +322,17 @@ function GeneratorForm(): JSX.Element {
   async function refreshLatest(): Promise<void> {
     const r = await window.electronAPI.image.queue();
     if (r.ok) {
-      const arr = (r.data as QueueItem[]).filter(
-        (t) => (t as QueueItem & { image_kind?: string | null }).image_kind !== 'comfyui'
-      );
+      const arr = (r.data as QueueItem[]).filter((t) => {
+        const item = t as QueueItem & { image_kind?: string | null; params?: string };
+        if (item.image_kind === 'comfyui') return false;
+        // 智能画布的生成不在生图主面板展示（两条并行线，互不污染数据集）
+        try {
+          if (item.params && (JSON.parse(item.params) as { source?: string })?.source === 'smart-canvas') return false;
+        } catch {
+          /* params 不是合法 JSON：当作生图页任务保留 */
+        }
+        return true;
+      });
       setLatestThree(arr.slice(0, 3));
     }
   }
@@ -391,7 +447,7 @@ function GeneratorForm(): JSX.Element {
       items: [
         {
           label: '放大预览',
-          onClick: () => setPreviewSrc(localPathToImageUrl(filePath))
+          onClick: () => openTaskPreview(task, filePath)
         },
         {
           label: '复制图片到剪贴板',
@@ -435,14 +491,10 @@ function GeneratorForm(): JSX.Element {
               label: '保真放大（Real-ESRGAN）',
               icon: <SparkleIcon size={11} />,
               onClick: () => void sendTaskToTools(filePath, 'upscale')
-            },
-            {
-              label: 'AI 修复放大 · HYPIR',
-              icon: <SparkleIcon size={11} />,
-              onClick: () => void sendTaskToTools(filePath, 'hypir')
             }
           ]
         },
+        ...buildShortcutSendMenuItems({ kind: 'image', src: filePath }),
         { separator: true },
         {
           label: '用此提示词再来一张',
@@ -466,7 +518,7 @@ function GeneratorForm(): JSX.Element {
           onClick: () => void openTaskFolder(task)
         },
         {
-          label: '从图库删除（软删除）',
+          label: '从资产库删除（软删除）',
           variant: 'danger',
           onClick: () => void deleteTaskImage(filePath)
         }
@@ -529,7 +581,7 @@ function GeneratorForm(): JSX.Element {
   /** 软删除：通过 task.result_paths 找到对应 images 记录并打 deleted_at */
   async function deleteTaskImage(filePath: string): Promise<void> {
     const ok = await confirmDialog({
-      title: '从图库移除该图？',
+      title: '从资产库移除该图？',
       message: '会软删除（30 天内可在回收站恢复），上游已扣的费用不可退。',
       okText: '移除',
       danger: true
@@ -537,14 +589,14 @@ function GeneratorForm(): JSX.Element {
     if (!ok) return;
     const list = await window.electronAPI.gallery.list({});
     if (!list.ok) {
-      toast.error('查询图库失败', list.error.message);
+      toast.error('查询资产库失败', list.error.message);
       return;
     }
     // gallery.list 在 IPC 类型上是 unknown[]，运行时是 images 表的行
     const rows = list.data as Array<{ id: number; file_path: string }>;
     const hit = rows.find((im) => im.file_path === filePath);
     if (!hit) {
-      toast.error('图库里没找到这张图');
+      toast.error('资产库里没找到这张图');
       return;
     }
     const r = await window.electronAPI.gallery.update({
@@ -558,7 +610,7 @@ function GeneratorForm(): JSX.Element {
   /** 把当前任务这张图发到 /tools，可指定目标 tab；工具箱面板自动消费 pendingImport */
   async function sendTaskToTools(
     filePath: string,
-    target: 'upscale' | 'hypir' = 'upscale'
+    target: 'upscale' = 'upscale'
   ): Promise<void> {
     try {
       const url = localPathToImageUrl(filePath);
@@ -640,19 +692,15 @@ function GeneratorForm(): JSX.Element {
         <h2>
           <SparkleIcon size={18} /> 绘图参数
         </h2>
-        <select
-          className="mb-chat-model-select"
-          value={params.imageModelId}
-          onChange={(e) => params.setImageModelId(e.target.value)}
-          style={{ maxWidth: 200 }}
-        >
-          {imageModels.length === 0 && <option value="">未配置绘画模型</option>}
-          {imageModels.map((m) => (
-            <option key={m} value={m}>
-              {m}
-            </option>
-          ))}
-        </select>
+        <div className="mb-gen-header-model">
+          <SearchableModelSelect
+            value={params.imageModelId}
+            options={imageModels.map((m) => ({ value: m.ref, label: m.label }))}
+            placeholder={imageModels.length === 0 ? '未配置绘画模型' : '（选择绘画模型）'}
+            onChange={(v) => params.setImageModelId(v)}
+            onManage={() => navigate('/settings')}
+          />
+        </div>
       </div>
 
       {imageModels.length > 0 && (
@@ -713,6 +761,7 @@ function GeneratorForm(): JSX.Element {
                   whileTap={{ scale: 0.94 }}
                   title={a.value === 'auto' ? '由模型自行决定' : `${family.label} 兼容`}
                 >
+                  {a.value !== 'auto' ? <AspectGlyph ratio={a.value} size={15} className="mb-gen-aspect-glyph" /> : null}
                   <span className="mb-gen-aspect-label">{a.label}</span>
                 </motion.button>
               ))}
@@ -727,6 +776,7 @@ function GeneratorForm(): JSX.Element {
                   min={256}
                   max={4096}
                   step={16}
+                  onFocus={(e) => e.currentTarget.select()}
                   onChange={(e) => setWDraft(e.target.value)}
                   onBlur={commitW}
                   onKeyDown={(e) => {
@@ -750,6 +800,7 @@ function GeneratorForm(): JSX.Element {
                   min={256}
                   max={4096}
                   step={16}
+                  onFocus={(e) => e.currentTarget.select()}
                   onChange={(e) => setHDraft(e.target.value)}
                   onBlur={commitH}
                   onKeyDown={(e) => {
@@ -827,6 +878,20 @@ function GeneratorForm(): JSX.Element {
                     </option>
                   ))}
               </select>
+              {(() => {
+                // GPT Image 2 选 1K/2K → 实际发安全枚举尺寸；比例被吸附时提示实际生成尺寸
+                if (family.id !== 'gpt-image-2') return null;
+                const aspectStr = params.aspect === 'auto' ? '1:1' : params.aspect;
+                const mapped = mapGptTierSize(params.imageSize, aspectStr);
+                if (!mapped) return null;
+                return (
+                  <div className="mb-gen-tier-hint">
+                    {mapped.exact
+                      ? `将以 ${mapped.w}×${mapped.h} 生成`
+                      : `${params.imageSize} 档不支持 ${aspectStr}，将以最接近的 ${mapped.w}×${mapped.h} 生成`}
+                  </div>
+                );
+              })()}
             </div>
           )}
           {params.sizeMode === 'aspect' && family.supportedTiers.length === 0 && (
@@ -889,7 +954,7 @@ function GeneratorForm(): JSX.Element {
                     <button
                       type="button"
                       className="mb-gen-task-thumb"
-                      onClick={() => setPreviewSrc(localPathToImageUrl(filePath))}
+                      onClick={() => openTaskPreview(task, filePath)}
                       onContextMenu={(e) => showTaskImageMenu(e, filePath, task)}
                       title="左键放大预览 · 右键复制 / 置入参考"
                     >
@@ -941,7 +1006,7 @@ function GeneratorForm(): JSX.Element {
                     <button
                       className="mb-btn mb-btn-secondary mb-btn-sm"
                       onClick={() => navigate('/manager')}
-                      title="去图库查看"
+                      title="去资产库查看"
                     >
                       <GalleryIcon size={12} />
                     </button>
@@ -962,9 +1027,10 @@ function GeneratorForm(): JSX.Element {
       </div>
 
       <Lightbox
-        open={previewSrc !== null}
-        src={previewSrc ?? ''}
-        onClose={() => setPreviewSrc(null)}
+        open={preview !== null}
+        items={preview?.items}
+        index={preview?.index}
+        onClose={() => setPreview(null)}
       />
 
       <ImportTargetDialog

@@ -5,7 +5,7 @@
 
 import { useCanvasStore } from '@/store/canvasStore';
 import { useInpaintMaskStore } from '@/store/inpaintMaskStore';
-import { makeOutpaintMask } from './maskEngine';
+import { makeOutpaintMask, maskHasCoverage } from './maskEngine';
 
 export const MAX_CANVAS_SIZE = 4096;
 
@@ -38,10 +38,19 @@ export function applyOutpaint(
     return { ok: false, message: '没有变化' };
   }
   useCanvasStore.getState().expandCanvas(offsetX, offsetY, newW, newH);
-  const color = useInpaintMaskStore.getState().color;
+  const maskStore = useInpaintMaskStore.getState();
+  const color = maskStore.color;
+  // 基础蒙版：新扩出的边 = 待填充区、原图区 = 保留区
   const mask = makeOutpaintMask(newW, newH, { x: offsetX, y: offsetY, w: oldW, h: oldH }, color);
-  useInpaintMaskStore.getState().replaceCanvas(mask);
-  useInpaintMaskStore.getState().setVisible(true);
+  // 已有蒙版（之前涂的 / 上一次扩图留下的待填充区）→ 叠回原图区，
+  // 让「之前已是待填充的区域」继续保持待填充，只把这次新扩的边并入；
+  // 而不是把旧蒙版区当成「保留区」抹掉（即用户要的「别把蒙版部分转化成画板部分」）。
+  const existing = maskStore.canvas;
+  if (existing && maskStore.visible && maskHasCoverage(existing)) {
+    mask.getContext('2d')!.drawImage(existing, offsetX, offsetY, oldW, oldH);
+  }
+  maskStore.replaceCanvas(mask);
+  maskStore.setVisible(true);
   return { ok: true };
 }
 

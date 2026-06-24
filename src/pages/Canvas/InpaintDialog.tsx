@@ -11,6 +11,7 @@ import {
 } from './canvasEngine/maskEngine';
 import { exportProjectAsPNG, blobToDataUri } from './canvasEngine/exportPNG';
 import { localPathToImageUrl } from '@/lib/imageUrl';
+import { modelRefValue } from '@/lib/modelMapping';
 import { autoSnapshot } from '@/store/snapshotStore';
 import { toast } from '@/store/toastStore';
 
@@ -37,15 +38,22 @@ export function InpaintDialog({ onClose }: { onClose: () => void }): JSX.Element
   const maskCanvas = useInpaintMaskStore((s) => s.canvas);
   const lastImageModelId = useImageParamsStore((s) => s.imageModelId);
 
+  // value=复合标识「中转站 / 名」（与生图页/智能画布一致，区分同名模型在不同中转站）
   const imageModels = useMemo(
     () =>
       configs
         .filter((c) => c.plan_id === activePlanId && c.type === 'image' && c.image_kind !== 'comfyui')
-        .flatMap((c) => Object.keys(c.model_mapping ?? {})),
+        .flatMap((c) => {
+          const prov = (c.provider_name ?? '').trim();
+          return Object.keys(c.model_mapping ?? {}).map((name) => ({
+            ref: modelRefValue(prov, name),
+            label: prov ? `${prov} / ${name}` : name
+          }));
+        }),
     [configs, activePlanId]
   );
 
-  const [modelId, setModelId] = useState(lastImageModelId || imageModels[0] || '');
+  const [modelId, setModelId] = useState(lastImageModelId || imageModels[0]?.ref || '');
   const [prompt, setPrompt] = useState('');
   const [negative, setNegative] = useState('');
   const [strength, setStrength] = useState(0.8);
@@ -177,8 +185,8 @@ export function InpaintDialog({ onClose }: { onClose: () => void }): JSX.Element
           >
             {imageModels.length === 0 && <option value="">（无可用绘画模型）</option>}
             {imageModels.map((m) => (
-              <option key={m} value={m}>
-                {m}
+              <option key={m.ref} value={m.ref}>
+                {m.label}
               </option>
             ))}
           </select>

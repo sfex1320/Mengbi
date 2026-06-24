@@ -1,8 +1,8 @@
 /**
  * 工具箱通用 IPC（矢量化 + 文件落盘 + 入库）。
  *
- * Note：放大引擎已独立到 electron/ipc/upscale.ts（Real-ESRGAN ncnn Vulkan）
- *       与 electron/ipc/hypir.ts（HYPIR 占位），本文件不再涉及任何 ONNX 推理逻辑。
+ * Note：放大引擎已独立到 electron/ipc/upscale.ts（Real-ESRGAN ncnn Vulkan）；
+ *       本文件不再涉及任何 ONNX 推理逻辑。
  */
 
 import { z } from 'zod';
@@ -10,6 +10,7 @@ import { app } from 'electron';
 import fs from 'node:fs/promises';
 import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { register, ok, err } from './helpers';
 import { getDb } from '../services/db';
 import { logger } from '../services/logger';
@@ -97,7 +98,30 @@ export function registerToolsHandlers(): void {
     }
   );
 
-  // 把工具产出导入图库——落盘 + INSERT INTO images
+  // 智能画布资产落盘：把图片节点里的大 base64 写到 userData/canvas-assets/<sha1>.<ext>，返回磁盘路径
+  // （renderer 用 mengbi-image:// 渲染）。按内容 hash 去重，避免同图重复落盘。
+  // 用途：智能画布持久化前把图片 base64 外置，避免撑爆 localStorage 配额导致丢改动。
+  register(
+    'api:storage:save-canvas-asset',
+    z.object({ dataUri: z.string().min(10) }),
+    async (input) => {
+      const decoded = dataUriToBuffer(input.dataUri);
+      if (!decoded) return err(makeError('VALIDATION_FAILED', '输入不是合法 dataUri', { severity: 'silent' }));
+      const ext = MIME_TO_EXT[decoded.mime] ?? 'png';
+      const dir = path.join(app.getPath('userData'), 'canvas-assets');
+      try {
+        await fs.mkdir(dir, { recursive: true });
+        const hash = crypto.createHash('sha1').update(decoded.buf).digest('hex');
+        const final = path.join(dir, `${hash}.${ext}`);
+        if (!existsSync(final)) await fs.writeFile(final, decoded.buf);
+        return ok({ filePath: final });
+      } catch (e) {
+        return err(makeError('FILE_PERMISSION', `画布资产写入失败：${(e as Error).message}`, { severity: 'silent' }));
+      }
+    }
+  );
+
+  // 把工具产出导入资产库——落盘 + INSERT INTO images
   register(
     'api:gallery:import-from-buffer',
     z.object({
@@ -164,6 +188,90 @@ export function registerToolsHandlers(): void {
           makeError('DB_ERROR', `落库失败：${(e as Error).message}`, { severity: 'toast' })
         );
       }
+    }
+  );
+
+  // 资产库多类型收录（2026-06-12）：图片 / 视频 / SVG / PSD / PDF / Office 按本地路径批量导入资产库。
+  // 复制进 image_storage_path/{date}/，图片即刻生成缩略图；SVG 由 Chromium 原生显示（缩略图留空用原文件）；
+  // 视频封面由渲染端导入后抓帧补（api:video:save-thumbnail）；PSD/PDF/Office 在前端渲染为类型图标卡。
+  register(
+    'api:gallery:import-files',
+    z.object({ paths: z.array(z.string().min(1)).min(1).max(200) }),
+    async (input) => {
+      const IMPORT_EXT_KIND: Record<string, 'image' | 'svg' | 'video' | 'psd' | 'pdf' | 'office'> = {
+        '.png': 'image', '.jpg': 'image', '.jpeg': 'image', '.webp': 'image', '.gif': 'image', '.bmp': 'image',
+        '.svg': 'svg',
+        '.mp4': 'video', '.mov': 'video', '.webm': 'video', '.mkv': 'video', '.m4v': 'video', '.avi': 'video',
+        '.psd': 'psd', '.psb': 'psd',
+        '.pdf': 'pdf',
+        '.doc': 'office', '.docx': 'office', '.xls': 'office', '.xlsx': 'office', '.ppt': 'office', '.pptx': 'office'
+      };
+      const img = getDb()
+        .prepare(`SELECT value FROM settings WHERE key='image_storage_path'`)
+        .get() as { value: string } | undefined;
+      const root = img?.value && img.value.trim() ? img.value : path.join(app.getPath('userData'), 'images');
+      const date = new Date().toISOString().slice(0, 10);
+      const dir = path.join(root, date);
+      try {
+        mkdirSync(dir, { recursive: true });
+      } catch (e) {
+        return err(
+          makeError('FILE_PERMISSION', `无法创建目录：${(e as Error).message}`, { severity: 'toast' })
+        );
+      }
+      const imported: Array<{ id: number; filePath: string; kind: string }> = [];
+      const skipped: Array<{ path: string; reason: string }> = [];
+      let seq = 0;
+      for (const src of input.paths) {
+        const ext = path.extname(src).toLowerCase();
+        const kind = IMPORT_EXT_KIND[ext];
+        if (!kind) {
+          skipped.push({ path: src, reason: `暂不支持的类型 ${ext || '（无扩展名）'}` });
+          continue;
+        }
+        if (!existsSync(src)) {
+          skipped.push({ path: src, reason: '文件不存在' });
+          continue;
+        }
+        const base = path
+          .basename(src, path.extname(src))
+          .replace(/[\\/:*?"<>|]/g, '_')
+          .slice(0, 80);
+        const dest = path.join(dir, `import-${Date.now()}-${seq++}-${base}${ext}`);
+        try {
+          await fs.copyFile(src, dest);
+        } catch (e) {
+          skipped.push({ path: src, reason: `复制失败：${(e as Error).message}` });
+          continue;
+        }
+        let thumbPath: string | null = null;
+        if (kind === 'image') {
+          try {
+            thumbPath = await ensureThumbnail(dest);
+          } catch (e) {
+            logger.warn(`[tools] import thumb failed for ${dest}: ${(e as Error).message}`);
+          }
+        }
+        try {
+          const result = getDb()
+            .prepare(
+              `INSERT INTO images(task_id, file_path, thumbnail_path, prompt_positive, prompt_negative, model_used, params_json, notes, created_at)
+               VALUES(NULL, ?, ?, ?, NULL, NULL, ?, ?, ?)`
+            )
+            .run(
+              dest,
+              thumbPath,
+              path.basename(src),
+              JSON.stringify({ import_kind: kind, source: src }),
+              `[import:${kind}]`,
+              new Date().toISOString()
+            );
+          imported.push({ id: Number(result.lastInsertRowid), filePath: dest, kind });
+        } catch (e) {
+          skipped.push({ path: src, reason: `落库失败：${(e as Error).message}` });
+        }
+      }
+      return ok({ imported, skipped });
     }
   );
 }

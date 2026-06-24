@@ -3,11 +3,9 @@ import { motion } from 'framer-motion';
 import { useToolsStore, type ToolsTab } from '@/store/toolsStore';
 import { useSettingsStore } from '@/store/settingsStore';
 import { useToolsEngineStore } from '@/store/toolsEngineStore';
-import { ToolboxIcon, ZapIcon, AiBrushIcon, FolderIcon, PencilIcon } from '@/components/Icon';
+import { ToolboxIcon, ZapIcon, FolderIcon, PencilIcon } from '@/components/Icon';
 import { RealESRGANPanel } from './RealESRGANPanel';
-import { HypirPanel } from './HypirPanel';
 import { VecPanel } from './VecPanel';
-import { CleanupBar } from './CleanupBar';
 import './Tools.css';
 
 const TABS: Array<{ key: ToolsTab; label: string; desc: string; icon: typeof ToolboxIcon }> = [
@@ -16,12 +14,6 @@ const TABS: Array<{ key: ToolsTab; label: string; desc: string; icon: typeof Too
     label: '保真放大',
     desc: '保真放大：速度快，适合日常图片高清化，尽量保持原图真实（Real-ESRGAN ncnn Vulkan）',
     icon: ZapIcon
-  },
-  {
-    key: 'hypir',
-    label: 'AI 修复（HYPIR）',
-    desc: 'SD2.1 基础，适合严重退化 / 模糊照片救命，速度较快（HYPIR，独立 Python 引擎，端口 7865）',
-    icon: AiBrushIcon
   },
   {
     key: 'vectorize',
@@ -65,8 +57,6 @@ export default function ToolsPage(): JSX.Element {
             <span>工具箱</span>
             <span className="mb-tools-header-tagline">本地处理，零数据上传</span>
           </div>
-          {/* 一键清理栏:紧贴"输出 pill"左侧,内联节省竖向空间 */}
-          <CleanupBar />
           <div
             className="mb-tools-output-pill"
             title="工具箱所有产出（单图 / 批量都一样）都落到这里。改设置 → 工具箱 → 工具箱保存路径"
@@ -103,13 +93,10 @@ export default function ToolsPage(): JSX.Element {
           })}
         </nav>
 
-        {/* ── 三个面板全部 mount，靠 hidden 控制可见 ──────────── */}
+        {/* ── 面板全部 mount，靠 hidden 控制可见 ──────────── */}
         <div className="mb-tools-body-multi">
           <div className="mb-tools-body-slot" hidden={activeTab !== 'upscale'}>
             <RealESRGANPanel />
-          </div>
-          <div className="mb-tools-body-slot" hidden={activeTab !== 'hypir'}>
-            <HypirPanel />
           </div>
           <div className="mb-tools-body-slot" hidden={activeTab !== 'vectorize'}>
             <VecPanel />

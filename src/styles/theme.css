@@ -25,7 +25,9 @@
   /* 字重：UI 默认中粗（Segoe UI 等会真切变 Medium）。中文常用字体（微软雅黑）只有 400/700，
      靠 --mb-faux-bold-width 的描边「假性加粗」补一刀，让中文也明显变粗。两者都可在此微调。 */
   --mb-font-weight-base: 500;
-  --mb-faux-bold-width: 0.014em;
+  /* 假性加粗描边：0.014em 在纯黑底上会把近白文字"撑胖"→ 边缘光晕(halation)、刺眼。
+     降到 0.009em 仍保留中文可见的加粗，又显著减轻深色背景下的晃眼。 */
+  --mb-faux-bold-width: 0.009em;
   --mb-text-h1: 26px;
   --mb-text-h2: 18px;
   --mb-text-body: 15px;
@@ -51,15 +53,16 @@
     radial-gradient(ellipse 70% 50% at 100% 100%, rgba(251, 146, 60, 0.1), transparent 55%),
     linear-gradient(180deg, #0a0b10 0%, #0e0f17 100%);
   --mb-bg-card: rgba(28, 28, 36, 0.55);
-  /* 不透明卡片底色：用于图库/提示词等"密集卡片 + 背后有动画背景"的场景，
+  /* 不透明卡片底色：用于资产库/提示词等"密集卡片 + 背后有动画背景"的场景，
      避免 backdrop-filter 每帧重采样动态背景导致的闪烁。 */
   --mb-bg-card-solid: #181820;
   --mb-bg-card-hover: rgba(40, 40, 50, 0.65);
   --mb-bg-hover: rgba(255, 255, 255, 0.05);
   --mb-bg-active: rgba(255, 255, 255, 0.08);
-  --mb-text-primary: #f5f5f7;
-  --mb-text-secondary: rgba(245, 245, 247, 0.9);
-  --mb-text-muted: rgba(245, 245, 247, 0.7);
+  /* 柔白（非纯白）—— 纯 #f5f5f7 在近黑底上 halation 刺眼，降到 #e8e9ee 仍清晰但不晃眼 */
+  --mb-text-primary: #e8e9ee;
+  --mb-text-secondary: rgba(240, 241, 246, 0.82);
+  --mb-text-muted: rgba(240, 241, 246, 0.62);
   --mb-text-on-accent: #ffffff;
   --mb-border: rgba(255, 255, 255, 0.08);
   --mb-border-soft: rgba(255, 255, 255, 0.04);
@@ -100,9 +103,10 @@
   --mb-bg-card-hover: rgba(36, 36, 46, 0.72);
   --mb-bg-hover: rgba(255, 255, 255, 0.05);
   --mb-bg-active: rgba(255, 255, 255, 0.08);
-  --mb-text-primary: #f5f5f7;
-  --mb-text-secondary: rgba(245, 245, 247, 0.72);
-  --mb-text-muted: rgba(245, 245, 247, 0.48);
+  /* 柔白：deep-quiet 是默认"黑底"主题，纯白文字最易晃眼 → 降到 #e8e9ee */
+  --mb-text-primary: #e8e9ee;
+  --mb-text-secondary: rgba(240, 241, 246, 0.72);
+  --mb-text-muted: rgba(240, 241, 246, 0.48);
   --mb-border: rgba(255, 255, 255, 0.08);
   --mb-border-soft: rgba(255, 255, 255, 0.04);
   --mb-border-strong: rgba(255, 255, 255, 0.16);

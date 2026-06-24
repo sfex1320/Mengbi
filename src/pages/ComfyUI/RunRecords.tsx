@@ -135,7 +135,7 @@ export function RunRecords(): JSX.Element {
     const r = await window.electronAPI.comfyui.resultsToGallery({ runIds: ids });
     setBusy(false);
     if (!r.ok) toast.error(r.error.message);
-    else toast.success('已加入图库', `${r.data.added} 张`);
+    else toast.success('已加入资产库', `${r.data.added} 张`);
   }
 
   async function delSelected(): Promise<void> {
@@ -154,13 +154,13 @@ export function RunRecords(): JSX.Element {
     return f?.path ? localPathToImageUrl(f.path) : null;
   }
 
-  // 单条记录的图库/导出（按钮区只有多选版，右键补单条快捷）
+  // 单条记录的资产库/导出（按钮区只有多选版，右键补单条快捷）
   async function toGalleryOne(runId: string): Promise<void> {
     setBusy(true);
     const r = await window.electronAPI.comfyui.resultsToGallery({ runIds: [runId] });
     setBusy(false);
     if (!r.ok) toast.error(r.error.message);
-    else toast.success('已加入图库', `${r.data.added} 张`);
+    else toast.success('已加入资产库', `${r.data.added} 张`);
   }
   async function exportOne(runId: string): Promise<void> {
     const dir = await window.electronAPI.storage.selectFolder();
@@ -177,7 +177,7 @@ export function RunRecords(): JSX.Element {
     const items = [
       { label: '重跑', onClick: () => void rerun(r.runId) },
       { label: '恢复参数到面板', onClick: () => void restore(r.runId) },
-      { label: '加入图库', onClick: () => void toGalleryOne(r.runId) },
+      { label: '加入资产库', onClick: () => void toGalleryOne(r.runId) },
       { label: '复制到文件夹…', onClick: () => void exportOne(r.runId) }
     ];
     const imgPaths = (r.outputFiles ?? [])
@@ -223,7 +223,7 @@ export function RunRecords(): JSX.Element {
             复制到文件夹
           </button>
           <button className="mb-btn mb-btn-sm" onClick={() => void toGallery()} disabled={busy}>
-            加入图库
+            加入资产库
           </button>
           <button className="mb-btn mb-btn-sm mb-btn-danger" onClick={() => void delSelected()} disabled={busy}>
             删除选中

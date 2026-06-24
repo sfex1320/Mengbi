@@ -11,7 +11,8 @@
   z-index: 8;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  /* auto：用户把窗口缩到比内容小（尺寸记忆）时内部滚动而非裁切 */
+  overflow: auto;
   background: var(--mb-bg-card-solid, var(--mb-bg-base)) !important;
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
@@ -44,28 +45,111 @@
   grid-template-columns: 232px 468px 248px;
 }
 
-/* ── 长条形控制台（生成节点）：字段块横向铺开 + 换行，整体宽 > 高 ── */
+/* ── 长条形控制台（生成节点）：字段块横向铺开 + 换行，整体宽 > 高 ──
+   自适应铁律：固定尺寸态（用户拖过窗口）下 width:100% 铺满窗口 → 拖得越宽，字段块一行排越多、行数越少。
+   仅 autoSize 初始态给一个稳定默认宽度（让 max-content 有依据，不至于把所有字段挤成超长一行）。 */
 .mb-np-bar {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-start;
   gap: 11px 14px;
   padding: 12px 14px;
-  /* 更宽 → 字段块一行能放更多 → 行数更少 → 整体更矮（长条形） */
-  max-width: 1060px;
+  width: 100%;
+  box-sizing: border-box;
+}
+.mb-np-window.is-autosize .mb-np-bar {
+  width: clamp(680px, 64vw, 1100px);
 }
 .mb-np-bf {
   display: flex;
   flex-direction: column;
+  justify-content: flex-start;
   gap: 4px;
   min-width: 0;
+}
+
+/* 绘画模型按钮组（替代下拉）：按文件名长度自适应、往下换行；带中转站前缀 */
+.mb-np-modelgrid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-content: flex-start;
+}
+.mb-np-modelbtn {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  min-height: 28px;
+  max-width: 100%;
+  padding: 4px 11px;
+  border-radius: 8px;
+  border: 1px solid var(--mb-border-soft);
+  background: var(--mb-bg-hover);
+  color: var(--mb-text-primary);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+.mb-np-modelbtn:hover {
+  border-color: var(--mb-accent);
+}
+.mb-np-modelbtn.is-active {
+  background: var(--mb-accent);
+  border-color: var(--mb-accent);
+  color: #fff;
+}
+/* 中转站 / 官方名前缀：小一号、淡一点，与模型名区分 */
+.mb-np-modelbtn-prov {
+  font-size: 10.5px;
+  opacity: 0.62;
+  flex-shrink: 0;
+}
+/* 模型名完整显示（不再省略号截断）：按钮宽度随模型名自适应、往下换行，长名也能看全。 */
+.mb-np-modelbtn-name {
+  white-space: nowrap;
+}
+.mb-np-modelbtn.is-active .mb-np-modelbtn-prov {
+  opacity: 0.85;
+}
+.mb-np-modelgrid-empty {
+  font-size: 11.5px;
+  color: var(--mb-text-muted);
+}
+.mb-np-modelgrid-foot {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+.mb-np-modelgrid-fam {
+  font-size: 10.5px;
+  color: var(--mb-text-muted);
+  border: 1px solid var(--mb-border-soft);
+  border-radius: 6px;
+  padding: 1px 6px;
+}
+.mb-np-modelgrid-link {
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 11px;
+  color: var(--mb-accent);
+  cursor: pointer;
+}
+.mb-np-modelgrid-link:hover {
+  text-decoration: underline;
 }
 .mb-np-bf > .mb-np-flabel {
   white-space: nowrap;
 }
 .mb-np-bf-model {
-  flex: 1 1 188px;
+  /* 不再 flex-grow 撑满（原 1 1 188 会把模型块拉宽、留出大片空白，把
+     生成类型/运行方式/执行后端 推远）；改为按内容宽、≥188，后续字段紧贴前挪。 */
+  flex: 0 0 auto;
   min-width: 188px;
+  max-width: 300px;
 }
 .mb-np-bf-seed {
   min-width: 150px;
@@ -771,6 +855,9 @@
   display: inline-flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
+  /* 统一按钮高度 → 带副标(分辨率 px)与不带副标的选项不再一高一矮 */
+  min-height: 34px;
   line-height: 1.1;
   border: none;
   background: none;
@@ -797,6 +884,12 @@
   font-size: 9px;
   font-style: normal;
   opacity: 0.85;
+}
+.mb-np-seg-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 1px;
 }
 .mb-np-stepper {
   display: inline-flex;
@@ -874,6 +967,14 @@
   font-size: 12.5px;
   cursor: pointer;
   text-align: left;
+  transition: border-color 140ms var(--mb-ease), box-shadow 140ms var(--mb-ease);
+}
+.mb-np-modelsel-field:hover {
+  border-color: var(--mb-border-strong);
+}
+.mb-np-modelsel-field.is-open {
+  border-color: var(--mb-accent);
+  box-shadow: 0 0 0 3px var(--mb-accent-soft, rgba(232, 115, 74, 0.18));
 }
 .mb-np-modelsel-cur {
   flex: 1;
@@ -913,6 +1014,22 @@
   box-shadow: 0 14px 34px -10px rgba(0, 0, 0, 0.4);
   overflow: hidden;
 }
+/* 节点式按钮下拉：弹层比触发器宽，容纳自适应宽度的模型按钮网格 */
+.mb-np-modelsel-pop-grid {
+  right: auto;
+  /* 加宽：让按钮一行排多个（原 460px 太窄，长「中转站 / 名」按钮被逼成一行一个）。
+     宽度随内容自适应（max-content），夹在 [360, min(820,92vw)]；行多了纵向滚动，但行数已大幅减少。 */
+  width: max-content;
+  min-width: 360px;
+  max-width: min(940px, 94vw);
+  max-height: min(620px, 76vh);
+}
+.mb-np-modelgrid-pop {
+  overflow-y: auto;
+  padding: 8px;
+  /* 拉取模型多时尽量多显示再滚动（原 244px 太矮，下方模型像被「省略」掉了） */
+  max-height: min(560px, 68vh);
+}
 .mb-np-modelsel-search {
   display: flex;
   gap: 6px;
@@ -921,6 +1038,15 @@
 }
 .mb-np-modelsel-search .mb-input {
   flex: 1;
+}
+.mb-np-modelsel-count {
+  flex: 1;
+  align-self: center;
+  font-size: 11.5px;
+  color: var(--mb-text-muted);
+}
+.mb-np-modelsel-refresh {
+  flex-shrink: 0;
 }
 .mb-np-modelsel-list {
   overflow: auto;
@@ -945,6 +1071,7 @@
 .mb-np-modelsel-opt.is-active {
   color: var(--mb-accent);
   font-weight: 700;
+  background: var(--mb-accent-soft, var(--mb-bg-hover));
 }
 .mb-np-modelsel-empty {
   padding: 10px;
@@ -993,4 +1120,189 @@
 }
 .mb-np-resize:hover {
   opacity: 1;
+}
+/* 恢复默认大小（autoSize 面板被用户拖过后出现，铁律 20） */
+.mb-np-resize-reset {
+  position: absolute;
+  right: 20px;
+  bottom: 2px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--mb-text-muted);
+  font-size: 13px;
+  cursor: pointer;
+  z-index: 8;
+}
+.mb-np-resize-reset:hover {
+  color: var(--mb-accent);
+  background: var(--mb-bg-hover, rgba(127, 127, 127, 0.12));
+}
+
+/* ── 视频控制台（NodeVideoConsole）── */
+.mb-np-window.mb-np-video {
+  min-width: 520px;
+}
+.mb-np-vchecks {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.mb-np-vmat-zone {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px 14px 0;
+}
+
+/* 视频控制台：标题副标签 + 带内边距的下半身（素材/提示词/运行）→ 内容不顶边 */
+.mb-np-header-sub {
+  font-size: 12px;
+  color: var(--mb-text-muted);
+  white-space: nowrap;
+}
+.mb-np-vbody {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 14px 14px;
+}
+/* 卡片上的紧凑运行行（共享 VideoRunControls compact）。
+   关键：去掉 .mb-np-bar-run 的 `flex:1 1 100%`（flex-basis:100% 会让运行行索要整列高度 →
+   flex 列过约束 → 把上方摘要行一起压缩到重叠）。卡片里运行行只占自身高度。 */
+.mb-np-video-run.is-compact {
+  margin-top: 6px;
+  flex: 0 0 auto;
+}
+.mb-np-video-run.is-compact .mb-np-run {
+  height: 30px;
+  padding: 0 14px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+/* ───────────────────────── 镜头节点控制台（NodeCameraConsole）───────────────────────── */
+/* 镜头/光源控制台主体：固定尺寸态铺满窗口（拖宽 → 下方各选项网格 auto-fill 自动加列、行数变少、横向铺开）。
+   仅 autoSize 初始态给稳定默认宽度。这是「相机机型拖宽后仍 2 行」的根因修复（原先写死 680px 上限）。 */
+.mb-np-cam {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 10px 14px 14px;
+  width: 100%;
+  box-sizing: border-box;
+}
+.mb-np-window.is-autosize .mb-np-cam {
+  width: clamp(460px, 52vw, 880px);
+}
+.mb-np-cam-top {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+.mb-np-cam-left {
+  flex: 0 0 auto;
+  width: 190px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mb-np-cam-stage {
+  width: 190px;
+  height: 168px;
+  border-radius: 12px;
+  overflow: hidden;
+}
+.mb-np-cam-plane {
+  width: 132px;
+  height: 132px;
+}
+.mb-np-cam-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 3;
+}
+.mb-np-cam-fields {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.mb-np-cam-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.mb-np-cam-angles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px 16px;
+}
+.mb-np-cam-slider {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.mb-np-cam-slider-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--mb-text-secondary);
+}
+.mb-np-cam-slider-hint {
+  color: var(--mb-accent);
+  font-weight: 600;
+}
+.mb-np-cam-reset {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: var(--mb-text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+}
+.mb-np-cam-reset:hover {
+  color: var(--mb-accent);
+}
+.mb-np-cam-mode {
+  width: 100%;
+}
+.mb-np-cam-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.mb-np-cam-prompt-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mb-np-cam-prompt {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--mb-text-primary);
+  background: var(--mb-bg-hover);
+  border: 1px solid var(--mb-border);
+  border-radius: 10px;
+  padding: 9px 11px;
+  max-height: 140px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+.mb-np-cam-prompt-actions {
+  display: flex;
+  gap: 8px;
 }

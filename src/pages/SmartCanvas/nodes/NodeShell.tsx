@@ -11,8 +11,21 @@ import {
   ScaleNodeIcon,
   RatioNodeIcon,
   LightNodeIcon,
+  PaletteNodeIcon,
   CompareNodeIcon,
-  VideoNodeIcon
+  VideoNodeIcon,
+  ImageReverseNodeIcon,
+  VideoSourceNodeIcon,
+  VideoReverseNodeIcon,
+  FrameInterpNodeIcon,
+  VideoClipNodeIcon,
+  StoryboardNodeIcon,
+  PromptMallNodeIcon,
+  LoopNodeIcon,
+  UpscaleNodeIcon,
+  VectorizeNodeIcon,
+  FolderInputNodeIcon,
+  FolderOutputNodeIcon
 } from '../icons';
 
 type IconC = (p: { size?: number }) => JSX.Element;
@@ -29,8 +42,21 @@ const ACCENT_ICON: Record<string, IconC> = {
   'is-scale': ScaleNodeIcon,
   'is-ratio': RatioNodeIcon,
   'is-light': LightNodeIcon,
+  'is-palette': PaletteNodeIcon,
   'is-compare': CompareNodeIcon,
-  'is-video': VideoNodeIcon
+  'is-video': VideoNodeIcon,
+  'is-image-reverse': ImageReverseNodeIcon,
+  'is-video-source': VideoSourceNodeIcon,
+  'is-video-reverse': VideoReverseNodeIcon,
+  'is-frame-interp': FrameInterpNodeIcon,
+  'is-video-clip': VideoClipNodeIcon,
+  'is-storyboard': StoryboardNodeIcon,
+  'is-prompt-mall': PromptMallNodeIcon,
+  'is-loop': LoopNodeIcon,
+  'is-upscale': UpscaleNodeIcon,
+  'is-vectorize': VectorizeNodeIcon,
+  'is-folder-input': FolderInputNodeIcon,
+  'is-folder-output': FolderOutputNodeIcon
 };
 
 /**
@@ -51,7 +77,8 @@ export function NodeShell({
   title: string;
   accent: string;
   inputs?: boolean;
-  outputs?: boolean;
+  /** true=单输出口（id='out'，现状）；数组=多输出口（轨道上下分段，title 悬停提示）——首个多输出口节点：智能分镜（分镜/转场） */
+  outputs?: boolean | Array<{ id: string; title: string }>;
   /** 可调尺寸节点：撑满 React Flow 节点框 */
   fill?: boolean;
   onDelete?: () => void;
@@ -66,7 +93,14 @@ export function NodeShell({
     <div className={`mb-sc-nodewrap ${fill ? 'is-fill' : ''}`}>
       <div className={`mb-sc-node ${accent} ${fill ? 'is-fill' : ''}`}>
         {inputs && (
-          <Handle id="in" type="target" position={Position.Left} isConnectableStart className="mb-sc-handle mb-sc-handle-in" />
+          <Handle
+            id="in"
+            type="target"
+            position={Position.Left}
+            isConnectableStart
+            title="输入连接口：把上游节点拖到这里接入"
+            className="mb-sc-handle mb-sc-handle-in"
+          />
         )}
         {/* 卡内标题栏：左=图标+名，右=节点自有控件(headRight) + 删除 × */}
         <div className="mb-sc-node-head">
@@ -84,7 +118,26 @@ export function NodeShell({
           </div>
         </div>
         <div className="mb-sc-node-body">{children}</div>
-        {outputs && <Handle id="out" type="source" position={Position.Right} className="mb-sc-handle mb-sc-handle-out" />}
+        {Array.isArray(outputs)
+          ? outputs.map((o, i) => (
+              <Handle
+                key={o.id}
+                id={o.id}
+                type="source"
+                position={Position.Right}
+                title={o.title}
+                className={`mb-sc-handle mb-sc-handle-out is-split is-split-${i}`}
+              />
+            ))
+          : outputs && (
+              <Handle
+                id="out"
+                type="source"
+                position={Position.Right}
+                title="输出连接口：从这里拖出连到下游节点"
+                className="mb-sc-handle mb-sc-handle-out"
+              />
+            )}
       </div>
     </div>
   );

@@ -1,18 +1,14 @@
 /**
- * InputCard —— 左侧输入卡(v3 重设计)。
+ * InputCard —— 左侧输入卡(v3 重设计 + 2026-06-18 高精度增强)。
  *
  * 板块顺序:
  *   1. Dropzone (主视觉,大块拖拽区)
  *   2. 待处理文件列表(若有)
- *   3. 折叠区:高级参数(按当前模式呈现 mode-specific 表单)
- *   4. 折叠区:输出选项(目录 / 命名 / 重名)
- *   5. 识别提示条(浅色,底部,可忽略)
- *   6. 主操作:开始矢量化按钮
- *
- * 与上一版分散控件相比:
- *   - 输出选项默认折叠(大多数用户不改)
- *   - 高级参数按模式动态切换(VTracer 看 colorPrecision,Potrace 看 threshold)
- *   - 识别提示在底部小条,不和 dropzone 抢眼
+ *   3. 行业预设(Logo / 线稿 / 插画 / 照片,一键套 mode + 全参数)
+ *   4. 折叠区:高级参数(按当前模式呈现 mode-specific 全量表单:基础 + 进阶)
+ *   5. 折叠区:预处理 · 先保真放大(复用 Real-ESRGAN,小图/糊图先放大再描)
+ *   6. 折叠区:输出选项(目录 / 命名 / 重名)
+ *   7. 主操作:开始矢量化按钮
  */
 import { useState, useEffect, useRef, useCallback, type ChangeEvent } from 'react';
 import { useVecStore } from '@/store/vecStore';
@@ -21,23 +17,32 @@ import { toast } from '@/store/toastStore';
 import { UploadIcon, FolderIcon, XIcon } from '@/components/Icon';
 import { Collapsible } from '@/components/Collapsible';
 import { ImageTypeHint } from './components/ImageTypeHint';
+import { VEC_PRESETS, type VecPreset } from './vecPresets';
 import type {
   VecMode,
   VecParams,
   VTracerParams,
-  PotraceParams
+  PotraceParams,
+  UpscaleEngineStatus
 } from '@/types/ipc';
 
 const IMAGE_EXT = /\.(png|jpe?g|webp|bmp|gif|tiff?)$/i;
 
+/** 放大前置参数（传给 onSubmit / VecPanel 编排） */
+export interface UpscalePre {
+  modelName: string;
+  scale: 2 | 3 | 4;
+}
+
 interface Props {
-  onSubmit: (params: VecParams) => void | Promise<void>;
+  onSubmit: (params: VecParams, upscale?: UpscalePre) => void | Promise<void>;
   submitting: boolean;
 }
 
 export function InputCard({ onSubmit, submitting }: Props): JSX.Element {
   const { prefs } = useSettingsStore();
   const selectedMode = useVecStore((s) => s.selectedMode);
+  const setSelectedMode = useVecStore((s) => s.setSelectedMode);
   const pendingInputs = useVecStore((s) => s.pendingInputs);
   const addPendingInputs = useVecStore((s) => s.addPendingInputs);
   const clearPendingInputs = useVecStore((s) => s.clearPendingInputs);
@@ -60,6 +65,38 @@ export function InputCard({ onSubmit, submitting }: Props): JSX.Element {
       setParams({});
     }
   }, [selectedMode]);
+
+  /** 套用行业预设：先对齐 prevMode.current 阻止「切模式即清空」effect，再原子写 mode + params */
+  const applyPreset = useCallback(
+    (preset: VecPreset) => {
+      prevMode.current = preset.mode;
+      setSelectedMode(preset.mode);
+      setParams(structuredClone(preset.params) as VecParams);
+      toast.success('已套用预设', preset.label);
+    },
+    [setSelectedMode]
+  );
+
+  // ── 放大前置（复用 Real-ESRGAN）──
+  const [upStatus, setUpStatus] = useState<UpscaleEngineStatus | null>(null);
+  const [upBefore, setUpBefore] = useState(false);
+  const [upModel, setUpModel] = useState('');
+  const [upScale, setUpScale] = useState<2 | 3 | 4>(4);
+
+  useEffect(() => {
+    void window.electronAPI.upscale
+      .status()
+      .then((r) => {
+        if (!r.ok) return;
+        setUpStatus(r.data);
+        const names = r.data.models.map((m) => m.name);
+        const pref = names.find((n) => /x4plus/i.test(n) && !/anime/i.test(n)) ?? names[0] ?? '';
+        setUpModel((cur) => cur || pref);
+      })
+      .catch(() => {});
+  }, []);
+
+  const upInstalled = !!upStatus?.installed && (upStatus?.models.length ?? 0) > 0;
 
   const detectFirstImage = useCallback(
     (paths: string[]) => {
@@ -152,7 +189,25 @@ export function InputCard({ onSubmit, submitting }: Props): JSX.Element {
       {/* 2. 识别提示(只在有文件后才出) */}
       {pendingInputs.length > 0 && <ImageTypeHint />}
 
-      {/* 3. 折叠:高级参数 */}
+      {/* 3. 行业预设 */}
+      <div className="mb-vec-presets">
+        <span className="mb-vec-presets-label">预设</span>
+        <div className="mb-vec-presets-row">
+          {VEC_PRESETS.map((p) => (
+            <button
+              key={p.id}
+              type="button"
+              className="mb-vec-preset-pill"
+              title={p.desc}
+              onClick={() => applyPreset(p)}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* 4. 折叠:高级参数 */}
       <Collapsible
         title={`高级参数 · ${modeLabel(selectedMode)}`}
         badge={Object.keys(params as Record<string, unknown>).length > 0 ? '已自定义' : '默认'}
@@ -160,7 +215,59 @@ export function InputCard({ onSubmit, submitting }: Props): JSX.Element {
         <ModeParamsEditor mode={selectedMode} params={params} onChange={setParams} />
       </Collapsible>
 
-      {/* 4. 折叠:输出选项 */}
+      {/* 5. 折叠:预处理 · 先保真放大 */}
+      <Collapsible
+        title="预处理 · 先保真放大"
+        badge={upBefore && upInstalled ? `${upScale}× ${upModel || ''}`.trim() : '关闭'}
+      >
+        <div className="mb-vec-upscale">
+          {!upInstalled ? (
+            <div className="mb-vec-upscale-missing">
+              需先到「工具箱 · 保真放大」安装 Real-ESRGAN 引擎后才能用。先放大再矢量化能让小图 / 糊图的描线更准更顺。
+            </div>
+          ) : (
+            <>
+              <label className="mb-vec-param-row">
+                <span className="mb-vec-param-label">先放大再矢量化</span>
+                <input
+                  type="checkbox"
+                  checked={upBefore}
+                  onChange={(e) => setUpBefore(e.target.checked)}
+                />
+                <span className="mb-vec-param-hint">小图 / 糊图先放大，描线更准更顺（耗时累加）</span>
+              </label>
+              {upBefore && (
+                <>
+                  <label className="mb-vec-param-row">
+                    <span className="mb-vec-param-label">放大模型</span>
+                    <select value={upModel} onChange={(e) => setUpModel(e.target.value)}>
+                      {upStatus!.models.map((m) => (
+                        <option key={m.name} value={m.name}>
+                          {m.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="mb-vec-param-row">
+                    <span className="mb-vec-param-label">倍率</span>
+                    <SegButtons
+                      options={[
+                        { v: 2, label: '2×' },
+                        { v: 3, label: '3×' },
+                        { v: 4, label: '4×' }
+                      ]}
+                      value={upScale}
+                      onChange={(v) => setUpScale(v as 2 | 3 | 4)}
+                    />
+                  </div>
+                </>
+              )}
+            </>
+          )}
+        </div>
+      </Collapsible>
+
+      {/* 6. 折叠:输出选项 */}
       <Collapsible title="输出选项" badge={namingLabel(naming) + ' · ' + conflictLabel(onConflict)}>
         <div className="mb-vec-output-opts">
           <label className="mb-vec-opt-row">
@@ -203,12 +310,17 @@ export function InputCard({ onSubmit, submitting }: Props): JSX.Element {
         </div>
       </Collapsible>
 
-      {/* 5. 提交按钮 */}
+      {/* 7. 提交按钮 */}
       <div className="mb-vec-submit-bar">
         <button
           type="button"
           className="mb-btn mb-btn-primary mb-vec-submit-btn"
-          onClick={() => void onSubmit(params)}
+          onClick={() =>
+            void onSubmit(
+              params,
+              upBefore && upInstalled && upModel ? { modelName: upModel, scale: upScale } : undefined
+            )
+          }
           disabled={!canSubmit}
         >
           {submitting
@@ -288,6 +400,7 @@ function ModeParamsEditor({
     const p = params as VTracerParams;
     return (
       <div className="mb-vec-params">
+        {/* 基础 */}
         <ParamSlider
           label="颜色精度"
           min={1}
@@ -314,6 +427,102 @@ function ModeParamsEditor({
           value={p.cornerThreshold ?? 60}
           onChange={(v) => patch('cornerThreshold', v)}
           hint="低值=尖角 / 高值=圆滑 (默认 60°)"
+        />
+
+        <div className="mb-vec-param-group-label">进阶</div>
+
+        <SegRow
+          label="路径模式"
+          options={[
+            { v: 'spline', label: '曲线' },
+            { v: 'polygon', label: '多边形' },
+            { v: 'none', label: '不简化' }
+          ]}
+          value={p.pathMode ?? 'spline'}
+          onChange={(v) => patch('pathMode', v)}
+          hint="曲线最平滑 / 多边形=硬边像素风 / 不简化=最忠实但 path 多"
+        />
+        <SegRow
+          label="色彩模式"
+          options={[
+            { v: 'color', label: '彩色' },
+            { v: 'binary', label: '二值' }
+          ]}
+          value={p.colorMode ?? 'color'}
+          onChange={(v) => patch('colorMode', v)}
+        />
+        <SegRow
+          label="渐变方法"
+          options={[
+            { v: 'stacked', label: '堆叠' },
+            { v: 'cutout', label: '镂空' }
+          ]}
+          value={p.hierarchical ?? 'stacked'}
+          onChange={(v) => patch('hierarchical', v)}
+          hint="色簇叠加方式"
+        />
+        <ParamSlider
+          label="渐变阈值"
+          min={0}
+          max={128}
+          step={1}
+          value={p.layerDifference ?? 16}
+          onChange={(v) => patch('layerDifference', v)}
+          hint="色层合并阈值 (默认 16)"
+        />
+        <ParamSlider
+          label="分段长度"
+          min={0}
+          max={50}
+          step={0.5}
+          value={p.lengthThreshold ?? 4}
+          onChange={(v) => patch('lengthThreshold', v)}
+          hint="最短分段 (默认 4)"
+        />
+        <ParamSlider
+          label="平滑迭代"
+          min={1}
+          max={50}
+          step={1}
+          value={p.maxIterations ?? 10}
+          onChange={(v) => patch('maxIterations', v)}
+          hint="曲线平滑迭代次数 (默认 10)"
+        />
+        <ParamSlider
+          label="拼接阈值"
+          min={0}
+          max={180}
+          step={1}
+          value={p.spliceThreshold ?? 45}
+          onChange={(v) => patch('spliceThreshold', v)}
+          hint="路径拼接误差 (默认 45)"
+        />
+        <ParamSlider
+          label="路径精度"
+          min={0}
+          max={10}
+          step={1}
+          value={p.pathPrecision ?? 5}
+          onChange={(v) => patch('pathPrecision', v)}
+          hint="坐标小数位 (默认 5)"
+        />
+        <ParamSlider
+          label="最大路径数"
+          min={0}
+          max={20000}
+          step={500}
+          value={p.maxPaths ?? 0}
+          onChange={(v) => patch('maxPaths', v === 0 ? undefined : v)}
+          hint="后处理裁剪:0=不限,否则只保留最长的 N 条"
+        />
+        <ParamSlider
+          label="合并相近色"
+          min={0}
+          max={64}
+          step={1}
+          value={p.colorMergeDelta ?? 0}
+          onChange={(v) => patch('colorMergeDelta', v)}
+          hint="后处理:合并色差小于此值的相邻色,0=不合并"
         />
       </div>
     );
@@ -349,6 +558,50 @@ function ModeParamsEditor({
           />
           <span className="mb-vec-param-hint">勾选=黑色为前景 (默认)</span>
         </label>
+
+        <div className="mb-vec-param-group-label">进阶</div>
+
+        <ParamSlider
+          label="曲线张力"
+          min={0}
+          max={1.34}
+          step={0.01}
+          value={p.alphaMax ?? 1.0}
+          onChange={(v) => patch('alphaMax', v)}
+          hint="越大越圆滑 (默认 1.0)"
+        />
+        <ParamSlider
+          label="优化容忍"
+          min={0}
+          max={2}
+          step={0.05}
+          value={p.optTolerance ?? 0.2}
+          onChange={(v) => patch('optTolerance', v)}
+          hint="曲线优化容忍度 (默认 0.2)"
+        />
+        <label className="mb-vec-param-row">
+          <span>曲线优化</span>
+          <input
+            type="checkbox"
+            checked={p.optCurve ?? true}
+            onChange={(e) => patch('optCurve', e.target.checked)}
+          />
+          <span className="mb-vec-param-hint">关闭=直线段更多</span>
+        </label>
+        <ParamText
+          label="描线颜色"
+          value={(p.color ?? '') === 'auto' ? '' : p.color ?? ''}
+          placeholder="auto（按图自动）"
+          onChange={(v) => patch('color', v.trim() === '' ? undefined : v.trim())}
+          hint="留空=auto;可填 #1e88e5"
+        />
+        <ParamText
+          label="背景颜色"
+          value={(p.background ?? '') === 'transparent' ? '' : p.background ?? ''}
+          placeholder="transparent（透明）"
+          onChange={(v) => patch('background', v.trim() === '' ? undefined : v.trim())}
+          hint="留空=透明;可填 #ffffff"
+        />
       </div>
     );
   }
@@ -382,6 +635,82 @@ function ParamSlider({
       <span className="mb-vec-param-val">{value}</span>
       {hint && <span className="mb-vec-param-hint">{hint}</span>}
     </label>
+  );
+}
+
+function ParamText({
+  label,
+  value,
+  placeholder,
+  onChange,
+  hint
+}: {
+  label: string;
+  value: string;
+  placeholder?: string;
+  onChange: (v: string) => void;
+  hint?: string;
+}): JSX.Element {
+  return (
+    <label className="mb-vec-param-row">
+      <span className="mb-vec-param-label">{label}</span>
+      <input
+        type="text"
+        className="mb-vec-param-text"
+        value={value}
+        placeholder={placeholder}
+        spellCheck={false}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      {hint && <span className="mb-vec-param-hint">{hint}</span>}
+    </label>
+  );
+}
+
+function SegRow<T extends string>({
+  label,
+  options,
+  value,
+  onChange,
+  hint
+}: {
+  label: string;
+  options: { v: T; label: string }[];
+  value: T;
+  onChange: (v: T) => void;
+  hint?: string;
+}): JSX.Element {
+  return (
+    <div className="mb-vec-param-row">
+      <span className="mb-vec-param-label">{label}</span>
+      <SegButtons options={options} value={value} onChange={onChange} />
+      {hint && <span className="mb-vec-param-hint">{hint}</span>}
+    </div>
+  );
+}
+
+function SegButtons<T extends string | number>({
+  options,
+  value,
+  onChange
+}: {
+  options: { v: T; label: string }[];
+  value: T;
+  onChange: (v: T) => void;
+}): JSX.Element {
+  return (
+    <div className="mb-vec-seg">
+      {options.map((o) => (
+        <button
+          key={String(o.v)}
+          type="button"
+          className={`mb-vec-seg-btn ${value === o.v ? 'is-active' : ''}`}
+          onClick={() => onChange(o.v)}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
   );
 }
 

@@ -20,9 +20,6 @@ const PUSH_CHANNELS: ReadonlySet<PushChannel> = new Set<PushChannel>([
   'upscale:done',
   'upscale:install-progress',
   'upscale:onnx-download-progress',
-  'hypir:progress',
-  // 通用 AI 平台底座（安装脚本进度）
-  'ai-feature:install-progress',
   // 图像转矢量 v2
   'vec:progress',
   'vec:batch-progress',
@@ -35,7 +32,12 @@ const PUSH_CHANNELS: ReadonlySet<PushChannel> = new Set<PushChannel>([
   'comfyui:queue',
   // AI 视频生成（异步进度 / 完成）
   'video:progress',
-  'video:done'
+  'video:done',
+  // 视频插帧（RIFE）
+  'interp:progress',
+  'interp:install-progress',
+  // 资产库内容有变（产物自动入库后广播，Manager/便携资产库刷新用）
+  'gallery:changed'
 ]);
 
 function invoke<T>(channel: string, payload?: unknown): Promise<T> {
@@ -46,7 +48,9 @@ const api: ElectronAPI = {
   settings: {
     get: () => invoke('api:settings:get'),
     save: (input) => invoke('api:settings:save', input),
-    testConnection: (input) => invoke('api:settings:test-connection', input)
+    testConnection: (input) => invoke('api:settings:test-connection', input),
+    testProtocol: (input) => invoke('api:settings:test-protocol', input),
+    applyOverrides: (input) => invoke('api:settings:apply-overrides', input)
   },
   plan: {
     list: () => invoke('api:plan:list'),
@@ -57,6 +61,7 @@ const api: ElectronAPI = {
   },
   chat: {
     send: (input) => invoke('api:chat:send', input),
+    sendEphemeral: (input) => invoke('api:chat:send-ephemeral', input),
     cancel: (messageId) => invoke('api:chat:cancel', messageId),
     create: (input) => invoke('api:chat:create', input),
     list: () => invoke('api:chat:list'),
@@ -75,17 +80,30 @@ const api: ElectronAPI = {
   video: {
     generate: (input) => invoke('api:video:generate', input),
     cancel: (taskId) => invoke('api:video:cancel', taskId),
-    saveThumbnail: (input) => invoke('api:video:save-thumbnail', input)
+    saveThumbnail: (input) => invoke('api:video:save-thumbnail', input),
+    uploadAsset: (input) => invoke('api:video:upload-asset', input),
+    scale: (input) => invoke('api:video:scale', input),
+    edit: (input) => invoke('api:video:edit', input)
+  },
+  interp: {
+    status: () => invoke('api:interp:status'),
+    installEngine: (input) => invoke('api:interp:install-engine', input ?? {}),
+    removeEngine: () => invoke('api:interp:remove-engine'),
+    run: (input) => invoke('api:interp:run', input),
+    cancel: (input) => invoke('api:interp:cancel', input ?? {})
   },
   gallery: {
     list: (input) => invoke('api:gallery:list', input),
     detail: (id) => invoke('api:gallery:detail', id),
     update: (input) => invoke('api:gallery:update', input),
     importFromBuffer: (input) => invoke('api:gallery:import-from-buffer', input),
+    importFiles: (input) => invoke('api:gallery:import-files', input),
     probeMissingFiles: (input) => invoke('api:gallery:probe-missing-files', input),
-    batchDeleteWithFiles: (input) => invoke('api:gallery:batch-delete-with-files', input)
+    batchDeleteWithFiles: (input) => invoke('api:gallery:batch-delete-with-files', input),
+    listGroups: () => invoke('api:gallery:list-groups'),
+    setGroup: (input) => invoke('api:gallery:set-group', input)
   },
-  // 提示词卡片：UI 已下线（提示词管家移除），后端通道保留为休眠态（同保留 DB 表）
+  // 提示词卡片：提示词管家 UI 2026-06-12 复活（/manager 提示词视图 + 画布提示词库弹窗共用）
   prompt: {
     list: (input) => invoke('api:prompt:list', input),
     upsert: (input) => invoke('api:prompt:upsert', input),
@@ -115,9 +133,23 @@ const api: ElectronAPI = {
     showInFolder: (filePath) => invoke('api:storage:show-in-folder', filePath),
     openPath: (input) => invoke('api:storage:open-path', input),
     saveTempImage: (input) => invoke('api:storage:save-temp-image', input),
+    saveTempText: (input) => invoke('api:storage:save-temp-text', input),
+    pathInfo: (input) => invoke('api:storage:path-info', input),
     saveAs: (input) => invoke('api:storage:save-as', input),
+    saveCanvasAsset: (input) => invoke('api:storage:save-canvas-asset', input),
+    listImages: (input) => invoke('api:storage:list-images', input),
+    copyInto: (input) => invoke('api:storage:copy-into', input),
     openUrl: (url) => invoke('api:storage:open-url', url),
-    scanLoras: () => invoke('api:storage:scan-loras')
+    scanLoras: () => invoke('api:storage:scan-loras'),
+    openConfigFolder: () => invoke('api:storage:open-config-folder')
+  },
+  web: {
+    pagePreview: (input) => invoke('api:web:page-preview', input)
+  },
+  shortcuts: {
+    launchExe: (input) => invoke('api:shortcuts:launch-exe', input),
+    getFileIcon: (input) => invoke('api:shortcuts:get-file-icon', input),
+    openWith: (input) => invoke('api:shortcuts:open-with', input)
   },
   llm: {
     status: () => invoke('api:llm:status'),
@@ -159,43 +191,20 @@ const api: ElectronAPI = {
     onnxUnload: () => invoke('api:upscale:onnx-unload'),
     onnxPrewarm: (input) => invoke('api:upscale:onnx-prewarm', input)
   },
-  hypir: {
-    check: (input) => invoke('api:hypir:check', input),
-    probe: () => invoke('api:hypir:probe'),
-    setPortablePath: (input) => invoke('api:hypir:set-portable-path', input),
-    bootstrap: () => invoke('api:hypir:bootstrap'),
-    startServer: () => invoke('api:hypir:start-server'),
-    stopServer: () => invoke('api:hypir:stop-server'),
-    serverStatus: () => invoke('api:hypir:server-status'),
-    submitTask: (input) => invoke('api:hypir:submit-task', input),
-    taskStatus: (input) => invoke('api:hypir:task-status', input),
-    cancelTask: (input) => invoke('api:hypir:cancel-task', input),
-    unloadModel: () => invoke('api:hypir:unload-model')
-  },
-  aiFeature: {
-    list: () => invoke('api:ai-feature:list'),
-    status: (input) => invoke('api:ai-feature:status', input),
-    probe: (input) => invoke('api:ai-feature:probe', input),
-    start: (input) => invoke('api:ai-feature:start', input),
-    stop: (input) => invoke('api:ai-feature:stop', input),
-    serverStatus: (input) => invoke('api:ai-feature:server-status', input),
-    unloadModel: (input) => invoke('api:ai-feature:unload-model', input),
-    bootstrap: () => invoke('api:ai-feature:bootstrap'),
-    setPortablePath: (input) => invoke('api:ai-feature:set-portable-path', input),
-    install: (input) => invoke('api:ai-feature:install', input),
-    cancelInstall: (input) => invoke('api:ai-feature:cancel-install', input),
-    cleanupAll: (input) => invoke('api:ai-feature:cleanup-all', input)
-  },
-  aiModel: {
-    list: () => invoke('api:ai-model:list'),
-    get: (input) => invoke('api:ai-model:get', input),
-    listForFeature: (input) => invoke('api:ai-model:list-for-feature', input)
-  },
   config: {
     export: (input) => invoke('api:config:export', input),
     preview: (input) => invoke('api:config:preview', input),
     import: (input) => invoke('api:config:import', input),
-    pickImportFile: () => invoke('api:config:pick-import-file')
+    pickImportFile: () => invoke('api:config:pick-import-file'),
+    exportImages: (input) => invoke('api:image-io:export', input),
+    scanImageDir: (input) => invoke('api:image-io:scan', input),
+    importImages: (input) => invoke('api:image-io:import', input)
+  },
+  template: {
+    list: () => invoke('api:template:list'),
+    save: (input) => invoke('api:template:save', input),
+    remove: (input) => invoke('api:template:remove', input),
+    rename: (input) => invoke('api:template:rename', input)
   },
   ps: {
     status: () => invoke('api:ps:status'),
@@ -242,6 +251,7 @@ const api: ElectronAPI = {
     maximizeToggle: () => invoke('api:window:maximize-toggle'),
     close: () => invoke('api:window:close'),
     state: () => invoke('api:window:state'),
+    flash: () => invoke('api:window:flash'),
     // 整窗界面缩放：webFrame 同步缩放当前渲染帧（1=100%）。setZoom 在 [0.5, 2.0] 内 clamp 并返回实际系数。
     getZoom: () => webFrame.getZoomFactor(),
     setZoom: (factor: number) => {

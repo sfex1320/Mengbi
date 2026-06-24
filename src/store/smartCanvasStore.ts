@@ -18,8 +18,18 @@ import {
   type Viewport
 } from '@xyflow/react';
 import type { SmartNodeKind, SmartNodeData, WorkResult } from '@shared/smartCanvas';
-import { buildAnglePrompt } from '@/lib/anglePrompt';
+import type { PreviewItem } from '@/components/Lightbox';
+import { buildCameraPrompt } from '@/lib/cameraPrompt';
 import { buildLightPrompt } from '@/lib/lightPrompt';
+import { loadVideoNodeDefaults } from '@/lib/videoNodeDefaults';
+
+/** 新节点初始 data：默认值 + （视频节点）继承上次成功提交的参数（模型/模式/时长/画幅/分辨率）。 */
+function dataForNewNode(kind: SmartNodeKind): Record<string, unknown> {
+  const base = { ...(defaultNodeData(kind) as object) } as Record<string, unknown>;
+  if (kind === 'video') Object.assign(base, loadVideoNodeDefaults() ?? {});
+  base.createdAt = Date.now();
+  return base;
+}
 
 function rid(): string {
   try {
@@ -47,6 +57,37 @@ function nodeH(n: Node): number {
 /** 可被排布的节点：顶层、非分组（分组容器与其子节点保持原样）。 */
 function movableNodes(nodes: Node[]): Node[] {
   return nodes.filter((n) => !n.parentId && n.type !== 'group');
+}
+
+/** 自动落位防重叠：期望位置若与现有顶层节点重叠，沿 y 轴向下顺延到第一个空位。
+ *  用于 拖到节点上自动连线 / 武装态点节点建邻居 / 自动结果节点 等「程序决定位置」的场景，
+ *  避免多次自动落位叠在同一坐标上。x 不动（保持上下游列对齐），只往下找空行。 */
+function findFreePosition(
+  desired: { x: number; y: number },
+  w: number,
+  h: number,
+  nodes: Node[],
+  excludeId?: string
+): { x: number; y: number } {
+  const MARGIN = 28;
+  const rects = movableNodes(nodes)
+    .filter((n) => n.id !== excludeId)
+    .map((n) => ({ x: n.position.x, y: n.position.y, w: nodeW(n), h: nodeH(n) }));
+  let y = desired.y;
+  for (let i = 0; i < 100; i++) {
+    const hitRect = rects.find(
+      (r) =>
+        !(
+          desired.x + w + MARGIN <= r.x ||
+          r.x + r.w + MARGIN <= desired.x ||
+          y + h + MARGIN <= r.y ||
+          r.y + r.h + MARGIN <= y
+        )
+    );
+    if (!hitRect) break;
+    y = hitRect.y + hitRect.h + MARGIN;
+  }
+  return { x: desired.x, y };
 }
 
 /** 拓扑序（上游先于下游）。排布时按此顺序铺开，保留「生成 → 结果」这类先后流向。环上节点附末尾。 */
@@ -148,6 +189,61 @@ function sanitizeTemplateNode(n: Node): Node {
     }
   }
   if (n.type === 'result') data.result = null;
+  if (n.type === 'prompt-mall') {
+    data.status = 'idle';
+    data.assembled = undefined;
+    data.logs = [];
+    data.error = null;
+  }
+  if (n.type === 'loop') {
+    data.status = 'idle';
+    data.currentIndex = undefined;
+    data.doneCount = 0;
+    data.failCount = 0;
+    data.outPrompt = undefined;
+    data.outSize = undefined;
+    data.outImage = undefined;
+    data.logs = [];
+    data.error = null;
+  }
+  if (n.type === 'folder-output') {
+    data.savedCount = 0;
+    data.failCount = 0;
+    data.seq = 1;
+    data.logs = [];
+  }
+  if (n.type === 'frame-interp') {
+    data.status = 'idle';
+    data.outputVideo = null;
+    data.progress = undefined;
+    data.phase = undefined;
+    data.error = null;
+    data.taskId = undefined;
+  }
+  if (n.type === 'video-clip') {
+    data.status = 'idle';
+    data.outputVideo = null;
+    data.progress = undefined;
+    data.error = null;
+  }
+  if (n.type === 'upscale') {
+    data.status = 'idle';
+    data.outputImage = null;
+    data.error = null;
+    data.logs = [];
+    data.outW = undefined;
+    data.outH = undefined;
+    data.durationMs = undefined;
+  }
+  if (n.type === 'vectorize') {
+    data.status = 'idle';
+    data.outputSvgPath = null;
+    data.error = null;
+    data.logs = [];
+    data.progress = undefined;
+    data.batchId = undefined;
+    data.taskId = undefined;
+  }
   return { ...n, data };
 }
 
@@ -168,8 +264,8 @@ export function defaultNodeData(kind: SmartNodeKind): SmartNodeData {
         seed: null,
         n: 1,
         aspect: '1:1',
-        imageSize: '2K',
-        quality: '',
+        imageSize: '4K',
+        quality: 'high',
         strength: 0.6,
         inputRefs: [],
         status: 'idle',
@@ -206,14 +302,21 @@ export function defaultNodeData(kind: SmartNodeKind): SmartNodeData {
         logs: [],
         error: null
       };
-    case 'angle-prompt':
-      return {
+    case 'angle-prompt': {
+      const base = {
+        camMode: 'photo' as const,
         horizontalAngle: 0,
         verticalAngle: 0,
         distance: 4,
-        appendConsistencyInstruction: true,
-        generatedPrompt: buildAnglePrompt(0, 0, 4, true)
+        cameraType: 'none' as const,
+        aperture: 'none' as const,
+        movement: 'none' as const,
+        focal: 'none' as const,
+        composition: 'none' as const,
+        appendConsistencyInstruction: true
       };
+      return { ...base, generatedPrompt: buildCameraPrompt(base) };
+    }
     case 'scale':
       return {
         mode: 'longest',
@@ -227,44 +330,132 @@ export function defaultNodeData(kind: SmartNodeKind): SmartNodeData {
         format: 'png'
       };
     case 'ratio':
-      return {};
+      return { sizeMode: 'preset', aspect: '1:1', tier: '2K', customW: 1024, customH: 1024, emit: 'both' };
     case 'text':
       return { text: '双击编辑文字', fontFamily: '', fontSize: 22, color: '', bold: false, italic: false, align: 'left' };
     case 'light': {
-      const base = { azimuth: 35, elevation: 55, intensity: 60, warmth: 30, occlusion: 'none' as const, effect: 'none' as const, appendConsistencyInstruction: true };
+      const base = { azimuth: 35, elevation: 55, intensity: 60, warmth: 30, occlusion: 'none' as const, effect: 'none' as const, sourceType: 'none' as const, appendConsistencyInstruction: true };
       return { ...base, generatedPrompt: buildLightPrompt(base) };
     }
+    case 'palette':
+      return {
+        mode: 'extract',
+        count: 6,
+        colors: [],
+        baseHex: '#E8734A',
+        scheme: 'complementary',
+        promptIncludeValues: true,
+        generatedPrompt: ''
+      };
     case 'compare':
       return { slider: 50 };
     case 'video':
       return {
         modelId: '',
         prompt: '',
-        mode: 'text-to-video',
+        mode: 'text_to_video',
         duration: '5',
-        aspect: '16:9',
+        aspect: 'adaptive',
         resolution: '720p',
         seed: null,
+        generateAudio: false,
+        returnLastFrame: true,
         status: 'idle'
       };
+    case 'image-reverse':
+      return { modelId: '', reverseType: 'description', status: 'idle', resultText: '', logs: [], error: null };
+    case 'video-source':
+      return {};
+    case 'video-reverse':
+      return { modelId: '', reverseType: 'description', frameCount: 6, status: 'idle', resultText: '', logs: [], error: null };
+    case 'frame-interp':
+      return { targetFps: 60, status: 'idle', outputVideo: null, error: null };
+    case 'video-clip':
+      return {
+        segments: [],
+        texts: [],
+        brightness: 0,
+        contrast: 1,
+        saturation: 1,
+        gamma: 1,
+        hue: 0,
+        fps: 30,
+        status: 'idle',
+        outputVideo: null,
+        error: null
+      };
+    case 'storyboard':
+      return { modelId: '', input: '', shotCount: 4, style: '', story: '', shots: [], status: 'idle', logs: [], error: null };
+    case 'prompt-mall':
+      return {
+        cart: [],
+        groups: [{ id: 'g1', name: '组 1' }],
+        activeGroup: 'g1',
+        exclusive: true,
+        lang: 'zh',
+        modelId: '',
+        optimize: true,
+        status: 'idle',
+        logs: [],
+        error: null
+      };
+    case 'loop':
+      return {
+        sourceType: 'images',
+        count: 3,
+        rangeFrom: 1,
+        rangeTo: 5,
+        rangeStep: 1,
+        rangeAs: 'text',
+        rangeOtherEdge: 1024,
+        promptLines: '',
+        sizeLines: '',
+        images: [],
+        batchSize: 1,
+        stopOnError: false,
+        status: 'idle',
+        logs: [],
+        error: null
+      };
+    case 'upscale':
+      return { modelName: '', scale: 4, format: 'png', status: 'idle', outputImage: null, logs: [], error: null };
+    case 'vectorize':
+      return { vmode: 'vtracer', status: 'idle', outputSvgPath: null, logs: [], error: null };
+    case 'folder-input':
+      return { dir: '', files: [], error: null };
+    case 'folder-output':
+      return { dir: '', nameRule: 'original', prefix: 'output', seq: 1, enabled: true, savedCount: 0, failCount: 0, logs: [], error: null };
   }
 }
 
 const DEFAULT_SIZE: Record<SmartNodeKind, { width: number; height?: number }> = {
   image: { width: 220, height: 200 },
   group: { width: 360, height: 280 },
-  prompt: { width: 250, height: 240 },
+  prompt: { width: 270, height: 560 },
   work: { width: 268 },
   result: { width: 250 },
   llm: { width: 262 },
   comfy: { width: 268 },
-  'angle-prompt': { width: 300, height: 470 },
+  'angle-prompt': { width: 264, height: 320 },
   scale: { width: 240, height: 240 },
-  ratio: { width: 240, height: 240 },
+  ratio: { width: 260, height: 360 },
   text: { width: 260, height: 120 },
   light: { width: 300, height: 470 },
+  palette: { width: 300, height: 420 },
   compare: { width: 300, height: 340 },
-  video: { width: 300, height: 380 }
+  video: { width: 268, height: 230 },
+  'image-reverse': { width: 262 },
+  'video-source': { width: 240, height: 220 },
+  'video-reverse': { width: 262 },
+  'frame-interp': { width: 262 },
+  'video-clip': { width: 480, height: 220 },
+  storyboard: { width: 290, height: 300 },
+  'prompt-mall': { width: 300, height: 330 },
+  loop: { width: 300, height: 380 },
+  upscale: { width: 262 },
+  vectorize: { width: 262 },
+  'folder-input': { width: 260, height: 200 },
+  'folder-output': { width: 270, height: 240 }
 };
 
 interface SmartCanvasState {
@@ -312,6 +503,10 @@ interface SmartCanvasState {
   deselectAll: () => void;
   /** 只选中某个节点（节点搜索跳转后高亮用） */
   selectOnly: (id: string) => void;
+  /** 选中所有与某节点同类型的节点（右键「选择同类节点」用） */
+  selectByType: (type: string) => void;
+  /** 断开某节点的所有连线（右键「断开所有连线」用，一次进撤销栈） */
+  disconnectNode: (id: string) => void;
   /** 撤销 / 重做（结构性改动 + 拖动手势进栈；文本编辑走 beginEdit/commitEdit 进栈） */
   undo: () => void;
   redo: () => void;
@@ -330,11 +525,16 @@ interface SmartCanvasState {
   insertNodes: (nodes: Node[], edges: Edge[], pos: { x: number; y: number }) => void;
   /** 在某条连线上插入新节点：删掉原连线，改连「上游→新节点→下游」。返回新节点 id。 */
   insertNodeOnEdge: (kind: SmartNodeKind, pos: { x: number; y: number }, edgeId: string) => string;
-  /** 原地复制一个节点（Alt 拖动复制用）：克隆该节点（分组则连同子节点 + 内部连线）在原位、新 id、不选中。 */
+  /** 原地复制一个节点（右键 / 快捷键复制用）：克隆该节点（分组则连同子节点 + 内部连线）在原位、新 id、不选中。 */
   duplicateNodeInPlace: (id: string) => void;
+  /** Alt 拖动复制（拖动结束时调用）：原节点回到 originPos（连线全部保留不动），
+   *  副本放到 copyPos（= 拖到的位置，新 id、仅克隆内部连线、不连任何现有节点）= 把新副本「拉出来」。 */
+  altDragDuplicate: (id: string, originPos: { x: number; y: number }, copyPos: { x: number; y: number }) => void;
   /** 自动连线 + 吸附：在 source→target 间加连线（若同向尚无连线），同时把 movedId 移到 newPos。一次进撤销栈。
    *  用于「把一个节点拖到另一个节点上」自动建立上下游关系（方向 / 合法性由调用方决定）。 */
   linkAndMove: (source: string, target: string, movedId: string, newPos: { x: number; y: number }) => void;
+  /** 武装态点现有节点左/右半区 → 在该侧建新节点并自动连线（左=作上游、右=作下游），落位防重叠。返回新节点 id。 */
+  addLinkedNode: (kind: SmartNodeKind, anchorId: string, side: 'left' | 'right') => string;
   /** 若 work/comfy 节点下游尚无「结果」节点，自动在其右侧创建一个并连上（生成时调用，避免结果无处显示）。 */
   ensureResultNode: (sourceId: string) => void;
   load: (nodes: Node[], edges: Edge[], viewport?: Viewport) => void;
@@ -371,7 +571,20 @@ export const useSmartCanvasStore = create<SmartCanvasState>()((set, get) => ({
         _interacting = true;
       }
       if (ends) _interacting = false;
-      return { nodes: applyNodeChanges(changes, s.nodes), _past, _future, _interacting };
+      // 手动缩放检测：拖 NodeResizer → dimensions 变化带 resizing=true → 标记 manualSize（自适应让位手动）
+      const manualIds = new Set<string>();
+      for (const c of changes) {
+        if (c.type === 'dimensions' && (c as { resizing?: boolean }).resizing) manualIds.add((c as { id: string }).id);
+      }
+      let nodes = applyNodeChanges(changes, s.nodes);
+      if (manualIds.size) {
+        nodes = nodes.map((n) =>
+          manualIds.has(n.id) && !(n.data as { manualSize?: boolean })?.manualSize
+            ? { ...n, data: { ...n.data, manualSize: true } }
+            : n
+        );
+      }
+      return { nodes, _past, _future, _interacting };
     }),
   onEdgesChange: (changes) => set((s) => ({ edges: applyEdgeChanges(changes, s.edges) })),
   onConnect: (conn) =>
@@ -395,7 +608,7 @@ export const useSmartCanvasStore = create<SmartCanvasState>()((set, get) => ({
       id,
       type: kind,
       position: pos,
-      data: { ...(defaultNodeData(kind) as object), createdAt: Date.now() } as unknown as Record<string, unknown>,
+      data: dataForNewNode(kind),
       width: size.width,
       selected: true, // 新建即选中 → 右侧检查器立刻显示其属性
       ...(size.height ? { height: size.height } : {})
@@ -821,6 +1034,16 @@ export const useSmartCanvasStore = create<SmartCanvasState>()((set, get) => ({
   selectOnly: (id) =>
     set((s) => ({ nodes: s.nodes.map((n) => (n.selected !== (n.id === id) ? { ...n, selected: n.id === id } : n)) })),
 
+  selectByType: (type) =>
+    set((s) => ({ nodes: s.nodes.map((n) => (n.selected !== (n.type === type) ? { ...n, selected: n.type === type } : n)) })),
+
+  disconnectNode: (id) =>
+    set((s) => {
+      const next = s.edges.filter((e) => e.source !== id && e.target !== id);
+      if (next.length === s.edges.length) return {};
+      return { edges: next, _past: pushSnap(s._past, { nodes: s.nodes, edges: s.edges }), _future: [] };
+    }),
+
   undo: () =>
     set((s) => {
       if (!s._past.length) return {};
@@ -930,9 +1153,53 @@ export const useSmartCanvasStore = create<SmartCanvasState>()((set, get) => ({
       const exists = s.edges.some((e) => e.source === source && e.target === target);
       const conn: Connection = { source, target, sourceHandle: 'out', targetHandle: 'in' };
       const edges = exists ? s.edges : addEdge({ ...conn, type: 'deletable' }, s.edges);
-      const nodes = s.nodes.map((n) => (n.id === movedId ? { ...n, position: newPos } : n));
+      // 落位防重叠：连第二、三个节点时期望位置常被先连的节点占住，往下顺延到空位
+      const moved = s.nodes.find((n) => n.id === movedId);
+      const free = moved
+        ? findFreePosition(newPos, nodeW(moved), nodeH(moved), s.nodes, movedId)
+        : newPos;
+      const nodes = s.nodes.map((n) => (n.id === movedId ? { ...n, position: free } : n));
       return { ...commitHistory(s._past, s.nodes, s.edges), edges, nodes };
     }),
+
+  addLinkedNode: (kind, anchorId, side) => {
+    const id = rid();
+    set((s) => {
+      const anchor = s.nodes.find((n) => n.id === anchorId);
+      if (!anchor) return {};
+      const abs = absPosition(anchor, s.nodes);
+      const aw = nodeW(anchor);
+      const size = DEFAULT_SIZE[kind];
+      const w = size.width ?? 220;
+      const h = size.height ?? 120;
+      const GAP = 64;
+      const desired =
+        side === 'left' ? { x: abs.x - w - GAP, y: abs.y } : { x: abs.x + aw + GAP, y: abs.y };
+      const pos = findFreePosition(desired, w, h, s.nodes);
+      const node: Node = {
+        id,
+        type: kind,
+        position: pos,
+        data: dataForNewNode(kind),
+        width: size.width,
+        selected: true,
+        ...(size.height ? { height: size.height } : {})
+      };
+      // 左半区 = 新节点作上游（新 → 锚点）；右半区 = 作下游（锚点 → 新）
+      const conn: Connection =
+        side === 'left'
+          ? { source: id, target: anchorId, sourceHandle: 'out', targetHandle: 'in' }
+          : { source: anchorId, target: id, sourceHandle: 'out', targetHandle: 'in' };
+      const cleared = s.nodes.map((n) => (n.selected ? { ...n, selected: false } : n));
+      return {
+        ...commitHistory(s._past, s.nodes, s.edges),
+        nodes: [...cleared, node],
+        edges: addEdge({ ...conn, type: 'deletable' }, s.edges),
+        _spawn: s._spawn + 1
+      };
+    });
+    return id;
+  },
 
   ensureResultNode: (sourceId) =>
     set((s) => {
@@ -946,10 +1213,16 @@ export const useSmartCanvasStore = create<SmartCanvasState>()((set, get) => ({
       const abs = absPosition(src, s.nodes);
       const w = typeof src.width === 'number' ? src.width : 268;
       const size = DEFAULT_SIZE.result;
+      const rpos = findFreePosition(
+        { x: abs.x + w + 80, y: abs.y },
+        size.width ?? 260,
+        size.height ?? 200,
+        s.nodes
+      );
       const rnode: Node = {
         id: rid(),
         type: 'result',
-        position: { x: abs.x + w + 80, y: abs.y },
+        position: rpos,
         data: { ...(defaultNodeData('result') as object), createdAt: Date.now() } as unknown as Record<string, unknown>,
         width: size.width,
         ...(size.height ? { height: size.height } : {})
@@ -970,7 +1243,7 @@ export const useSmartCanvasStore = create<SmartCanvasState>()((set, get) => ({
         id,
         type: kind,
         position: pos,
-        data: defaultNodeData(kind) as unknown as Record<string, unknown>,
+        data: dataForNewNode(kind),
         width: size.width,
         selected: true,
         ...(size.height ? { height: size.height } : {})
@@ -1019,6 +1292,48 @@ export const useSmartCanvasStore = create<SmartCanvasState>()((set, get) => ({
       return {
         ...commitHistory(s._past, s.nodes, s.edges),
         nodes: [...groups, ...s.nodes, ...rest],
+        edges: [...s.edges, ...newEdges],
+        _spawn: s._spawn + made.length
+      };
+    }),
+
+  altDragDuplicate: (id, originPos, copyPos) =>
+    set((s) => {
+      const node = s.nodes.find((n) => n.id === id);
+      if (!node) return {};
+      const kids = node.type === 'group' ? s.nodes.filter((n) => n.parentId === id) : [];
+      const srcNodes = [node, ...kids];
+      const idMap = new Map<string, string>();
+      srcNodes.forEach((n) => idMap.set(n.id, rid()));
+      const idset = new Set(srcNodes.map((n) => n.id));
+      // 副本：顶层节点放 copyPos，子节点保持相对父坐标；只克隆「内部」连线（不连任何现有节点）
+      const made: Node[] = srcNodes.map((n, i) => {
+        const clone = structuredClone(n);
+        const parentId = clone.parentId && idMap.has(clone.parentId) ? idMap.get(clone.parentId) : clone.parentId;
+        return {
+          ...clone,
+          id: idMap.get(n.id) as string,
+          parentId,
+          position: i === 0 ? copyPos : clone.position,
+          selected: false
+        };
+      });
+      const newEdges: Edge[] = s.edges
+        .filter((e) => idset.has(e.source) && idset.has(e.target))
+        .map((e) => ({
+          ...structuredClone(e),
+          id: rid(),
+          source: idMap.get(e.source) as string,
+          target: idMap.get(e.target) as string,
+          type: 'deletable'
+        }));
+      const groups = made.filter((n) => n.type === 'group');
+      const rest = made.filter((n) => n.type !== 'group');
+      // 原节点回到拖动起点（它的所有连线原样不动），把新副本「拉出来」放到 copyPos
+      const baseNodes = s.nodes.map((n) => (n.id === id ? { ...n, position: originPos } : n));
+      return {
+        ...commitHistory(s._past, s.nodes, s.edges),
+        nodes: [...groups, ...baseNodes, ...rest],
         edges: [...s.edges, ...newEdges],
         _spawn: s._spawn + made.length
       };
@@ -1134,16 +1449,28 @@ export const useSmartResultStore = create<SmartResultState>((set) => ({
     })
 }));
 
-/** 结果图放大预览（驱动 SmartCanvasPage 顶层的 Lightbox），节点里点缩略图即开。 */
+/** 结果图放大预览（驱动 SmartCanvasPage 顶层的 Lightbox），节点里点缩略图即开。
+ *  open 接受 单个 src（兼容旧调用）或 PreviewItem 列表 + 起始下标（获得左右切换）。 */
 interface SmartPreviewState {
+  items: PreviewItem[];
+  index: number;
+  /** 兼容旧字段：当前是否打开（= items 非空） */
   src: string | null;
-  open: (src: string) => void;
+  open: (srcOrItems: string | PreviewItem[], index?: number) => void;
   close: () => void;
 }
 export const useSmartPreviewStore = create<SmartPreviewState>((set) => ({
+  items: [],
+  index: 0,
   src: null,
-  open: (src) => set({ src }),
-  close: () => set({ src: null })
+  open: (srcOrItems, index = 0) => {
+    const items: PreviewItem[] =
+      typeof srcOrItems === 'string' ? [{ src: srcOrItems }] : srcOrItems;
+    if (!items.length) return;
+    const i = Math.max(0, Math.min(index, items.length - 1));
+    set({ items, index: i, src: items[i].src });
+  },
+  close: () => set({ items: [], index: 0, src: null })
 }));
 
 /** 长文本放大查看（LLM 输出 / 结果节点文本看不全时全屏读 + 复制）。 */
@@ -1171,6 +1498,8 @@ export interface CreateMenuState {
   /** 若由「从某节点拖出」触发：锚点节点 id + 方向（down=建下游并连出 / up=建上游并连入） */
   anchorId?: string;
   dir?: 'up' | 'down';
+  /** dir='down' 时拖出的源输出口 id（多输出口节点如智能分镜 out / out-trans）；缺省 'out' */
+  anchorHandle?: string;
   /** 打开时间戳：挡掉「开菜单的同一手势」尾随的合成 click 把菜单立刻关掉 */
   openedAt?: number;
 }
@@ -1193,6 +1522,13 @@ interface SmartUiState {
   panel: SmartPanel | null;
   setPanel: (p: SmartPanel | null) => void;
   togglePanel: (p: SmartPanel) => void;
+  /** 是否正在框选（Ctrl 拖拽选区进行中）：期间不弹节点属性面板，避免遮挡、影响框选 */
+  boxSelecting: boolean;
+  setBoxSelecting: (v: boolean) => void;
+  /** 本次选中由「点节点卡上的控件（运行按钮 / 下拉 / 输入框…）」触发：不弹属性面板。
+   *  用户已在卡上设定完成，点运行再弹面板既拖慢界面又造成干扰；点节点卡空白处恢复弹出。 */
+  panelSuppressed: boolean;
+  setPanelSuppressed: (v: boolean) => void;
 }
 export const useSmartCanvasUiStore = create<SmartUiState>((set) => ({
   pendingKind: null,
@@ -1206,7 +1542,11 @@ export const useSmartCanvasUiStore = create<SmartUiState>((set) => ({
   setDimFilter: (dimFilter) => set({ dimFilter }),
   panel: null,
   setPanel: (panel) => set({ panel }),
-  togglePanel: (p) => set((s) => ({ panel: s.panel === p ? null : p }))
+  togglePanel: (p) => set((s) => ({ panel: s.panel === p ? null : p })),
+  boxSelecting: false,
+  setBoxSelecting: (boxSelecting) => set({ boxSelecting }),
+  panelSuppressed: false,
+  setPanelSuppressed: (panelSuppressed) => set({ panelSuppressed })
 }));
 
 /** 「运行全部」进度（拓扑顺序串行跑全图工作/ComfyUI/LLM 节点）。取消=软停（停止后续，不打断已发起的）。 */
@@ -1232,33 +1572,65 @@ export const useSmartRunStore = create<SmartRunState>((set) => ({
 }));
 
 /** ── 自定义快捷键 ── */
-export const KEYBIND_ACTIONS: Array<{ id: string; label: string }> = [
-  { id: 'add-image', label: '新建图片节点' },
-  { id: 'add-prompt', label: '新建提示词节点' },
-  { id: 'add-llm', label: '新建 LLM 节点' },
-  { id: 'add-work', label: '新建生成节点' },
-  { id: 'add-comfy', label: '新建 ComfyUI 节点' },
-  { id: 'add-angle-prompt', label: '新建视角提示词节点' },
-  { id: 'add-scale', label: '新建缩放节点' },
-  { id: 'add-ratio', label: '新建尺寸分析节点' },
-  { id: 'add-result', label: '新建结果节点' },
-  { id: 'add-group', label: '新建分组节点' },
-  { id: 'save', label: '保存 / 导出' },
-  { id: 'select-all', label: '全选节点' },
-  { id: 'deselect', label: '取消选择' },
-  { id: 'fit-view', label: '适配视图' },
-  { id: 'arrange-grid', label: '网格排布' },
-  { id: 'arrange-type', label: '按类型分组' },
-  { id: 'group-selection', label: '群组选中节点' },
-  { id: 'clear', label: '清空画布' },
-  { id: 'undo', label: '撤销' },
-  { id: 'redo', label: '重做' },
-  { id: 'copy', label: '复制选中节点' },
-  { id: 'paste', label: '粘贴节点' },
-  { id: 'duplicate', label: '再制选中节点' },
-  { id: 'search', label: '搜索节点' }
+/** 快捷键分区（设置弹窗按区分组展示，与「主工具栏 / 功能视图 / 导出保存」对齐） */
+export const KEYBIND_CATEGORIES: Record<string, { label: string; order: number }> = {
+  create: { label: '创建节点（底部工具坞）', order: 0 },
+  file: { label: '文件 / 导出保存', order: 1 },
+  edit: { label: '编辑', order: 2 },
+  selection: { label: '选择与清除', order: 3 },
+  view: { label: '视图', order: 4 },
+  arrange: { label: '排布', order: 5 },
+  align: { label: '对齐 / 均分', order: 6 },
+  search: { label: '查找', order: 7 }
+};
+export const KEYBIND_ACTIONS: Array<{ id: string; label: string; category: string }> = [
+  { id: 'add-image', label: '新建图片节点', category: 'create' },
+  { id: 'add-prompt', label: '新建提示词节点', category: 'create' },
+  { id: 'add-llm', label: '新建 LLM 节点', category: 'create' },
+  { id: 'add-work', label: '新建生图节点', category: 'create' },
+  { id: 'add-comfy', label: '新建 ComfyUI 节点', category: 'create' },
+  { id: 'add-angle-prompt', label: '新建镜头节点', category: 'create' },
+  { id: 'add-scale', label: '新建缩放节点', category: 'create' },
+  { id: 'add-ratio', label: '新建尺寸节点', category: 'create' },
+  { id: 'add-result', label: '新建结果节点', category: 'create' },
+  { id: 'add-group', label: '新建分组节点', category: 'create' },
+  { id: 'save', label: '保存 / 导出画布', category: 'file' },
+  { id: 'undo', label: '撤销', category: 'edit' },
+  { id: 'redo', label: '重做', category: 'edit' },
+  { id: 'copy', label: '复制选中节点', category: 'edit' },
+  { id: 'paste', label: '粘贴节点', category: 'edit' },
+  { id: 'duplicate', label: '再制选中节点', category: 'edit' },
+  { id: 'select-all', label: '全选节点', category: 'selection' },
+  { id: 'deselect', label: '取消选择', category: 'selection' },
+  { id: 'group-selection', label: '群组选中节点', category: 'selection' },
+  { id: 'clear', label: '清空画布', category: 'selection' },
+  { id: 'fit-view', label: '适配视图', category: 'view' },
+  { id: 'arrange-grid', label: '网格排布', category: 'arrange' },
+  { id: 'arrange-type', label: '按类型分组', category: 'arrange' },
+  { id: 'arrange-smart', label: '智能排布', category: 'arrange' },
+  { id: 'align-left', label: '左对齐（选中）', category: 'align' },
+  { id: 'align-hcenter', label: '水平居中对齐（选中）', category: 'align' },
+  { id: 'align-right', label: '右对齐（选中）', category: 'align' },
+  { id: 'align-top', label: '顶对齐（选中）', category: 'align' },
+  { id: 'align-vcenter', label: '垂直居中对齐（选中）', category: 'align' },
+  { id: 'align-bottom', label: '底对齐（选中）', category: 'align' },
+  { id: 'distribute-h', label: '横向均分（选中）', category: 'align' },
+  { id: 'distribute-v', label: '纵向均分（选中）', category: 'align' },
+  { id: 'search', label: '搜索节点', category: 'search' }
 ];
 const DEFAULT_KEYS: Record<string, string> = {
+  // 创建节点（底部工具坞）：Alt+数字 —— Alt 不改数字键值（comboFromEvent 取 e.key，稳定可靠），
+  // 且与 App 主导航 Ctrl+1~6、Ctrl 系编辑键、Alt 方向键对齐 全不冲突。
+  'add-image': 'alt+1',
+  'add-prompt': 'alt+2',
+  'add-llm': 'alt+3',
+  'add-work': 'alt+4',
+  'add-comfy': 'alt+5',
+  'add-angle-prompt': 'alt+6',
+  'add-scale': 'alt+7',
+  'add-ratio': 'alt+8',
+  'add-result': 'alt+9',
+  'add-group': 'alt+0',
   save: 'ctrl+s',
   'select-all': 'ctrl+a',
   deselect: 'escape',
@@ -1269,7 +1641,17 @@ const DEFAULT_KEYS: Record<string, string> = {
   paste: 'ctrl+v',
   duplicate: 'ctrl+d',
   'group-selection': 'ctrl+g',
-  search: 'ctrl+f'
+  search: 'ctrl+f',
+  // 对齐 / 分布 / 排布（Alt 系，避开纯方向键的「微调」与 Ctrl 系既有快捷键）
+  'align-left': 'alt+arrowleft',
+  'align-right': 'alt+arrowright',
+  'align-top': 'alt+arrowup',
+  'align-bottom': 'alt+arrowdown',
+  'align-hcenter': 'alt+h',
+  'align-vcenter': 'alt+v',
+  'distribute-h': 'alt+shift+h',
+  'distribute-v': 'alt+shift+v',
+  'arrange-smart': 'alt+l'
 };
 
 /** 把 keydown 事件标准化成组合串，如 'ctrl+s' / 'escape' / 'ctrl+shift+g'。纯修饰键返回 ''。 */

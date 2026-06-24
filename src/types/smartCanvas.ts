@@ -5,6 +5,7 @@
  * 命名对齐 MVP 规格：image-generation / outpainting / video-generation / batch-process / continue-from-connections。
  */
 import type { InputControl } from './comfyui';
+import type { VideoMode, VideoTaskStatusState } from './video';
 
 export type SmartNodeKind =
   | 'image'
@@ -19,8 +20,21 @@ export type SmartNodeKind =
   | 'ratio'
   | 'text'
   | 'light'
+  | 'palette'
   | 'compare'
-  | 'video';
+  | 'video'
+  | 'image-reverse'
+  | 'video-source'
+  | 'video-reverse'
+  | 'frame-interp'
+  | 'video-clip'
+  | 'storyboard'
+  | 'prompt-mall'
+  | 'loop'
+  | 'upscale'
+  | 'vectorize'
+  | 'folder-input'
+  | 'folder-output';
 
 export type WorkType =
   | 'image-generation' // 图片生成
@@ -101,18 +115,74 @@ export interface NodeMeta {
   notes?: string;
   /** 创建时间戳（addNode 时打；属性面板「创建时间」展示） */
   createdAt?: number;
+  /** true=用户手动调整过尺寸 → 自适应让位手动（不再自动放缩）。拖 NodeResizer 时由 onNodesChange 自动置位；
+   *  右键「恢复自适应大小」清除。优先级：手动 > 自适应。 */
+  manualSize?: boolean;
 }
 
 export interface ImageNodeData extends NodeMeta {
-  /** 本地绝对路径或 data:URI */
+  /** 本地绝对路径或 data:URI（单图模式） */
   src?: string;
   name?: string;
   naturalW?: number;
   naturalH?: number;
+  /**
+   * 局部重绘/扩图遮罩（OpenAI「透明=编辑区、不透明=保留」PNG，dataURI；externalize 后为磁盘路径）。
+   * 在图片编辑器里「画遮罩→设为重绘遮罩」或「AI 扩图」时产出，与 src 同尺寸。
+   * 下游生图节点检测到它 → 走 /v1/images/edits 带 mask 做服务端局部重绘（见 runWorkNode）。
+   * 仅单图模式有意义；任何改变像素/尺寸的编辑都应清掉它（避免与底图错位）。
+   */
+  inpaintMaskSrc?: string;
+  /**
+   * 「人类可见」的红色半透明标注层（PNG，dataURI；externalize 后为磁盘路径），与 src 同尺寸。
+   * 与 inpaintMaskSrc 同时产出：画笔蒙版区 / AI 扩图的新区（边缘）显红，叠在节点封面上
+   * 让用户直观看到「蒙版画了哪些区域 / 扩了多少边」。纯展示，不参与生图。清蒙版时一并清。
+   */
+  maskOverlaySrc?: string;
+  /** AI 扩图时各边新增的像素（节点上显示「扩了多少边」的小标签）；非扩图编辑应清掉 */
+  outpaintPad?: { top: number; right: number; bottom: number; left: number };
+  /**
+   * 最初始图片（首次进图片编辑器前的 src）。编辑器首次「保存」时写入并永不覆盖；
+   * 「重置」据此回到最初状态（即使中途扩图/画笔/蒙版保存过多次）。externalize 后为磁盘路径。
+   */
+  originalSrc?: string;
+  // ── 列表模式（2026-06-13）：一个图片节点持有多张图，可增删 / 批量导入；
+  //    可设「每批向下游传入几张」并自驱逐批跑下游（也可连「循环」节点由其驱动）。──
+  /** true=列表模式（多图）；缺省/false=单图模式（src） */
+  listMode?: boolean;
+  /** 列表模式下的多张图（本地绝对路径 / data:URI），按顺序 */
+  srcs?: string[];
+  /** 每次向下游传入几张（逐批驱动时用；0/空 = 全部一次） */
+  batchSize?: number;
+  // ── 自驱逐批运行态（与循环节点同义，复用共享迭代器；持久化无害）──
+  runStatus?: RunStatus | 'paused';
+  /** 当前批序号（0 起） */
+  batchIndex?: number;
+  totalBatches?: number;
+  doneCount?: number;
+  failCount?: number;
+  runLogs?: string[];
+  runError?: string | null;
+  /** 自驱逐批运行中「当前批」的图（运行中 computeUpstream 优先读它，否则读全部 srcs） */
+  outBatch?: string[];
 }
 
 export interface PromptNodeData extends NodeMeta {
+  /** 单条模式的提示词文本 */
   text: string;
+  // ── 列表模式（2026-06-13）：持有多条提示词，每条作为独立上游提示词（配合「多条提示词逐条生图」）──
+  /** true=列表模式（多条）；缺省/false=单条模式（text） */
+  listMode?: boolean;
+  /** 列表模式下的多条提示词，按顺序 */
+  items?: string[];
+  /** 列表模式下每个输入框的统一高度（px）；改一个 = 所有条目一起变（Shift 拖动单独调；空=默认） */
+  listItemHeight?: number;
+  // ── 统一提示词 / 前置提示词（2026-06-24）：多段提示词逐条生图时，统一提示词会拼进每一段，
+  //    避免在每个框里重复输入同样的内容，形成规范性。──
+  /** 统一提示词文本（夹在每段提示词的前/后/两侧） */
+  unifiedPrompt?: string;
+  /** 统一提示词拼接位置：'prefix'=放每段前 / 'suffix'=放每段后 / 'both'=前后都放（缺省=prefix） */
+  unifiedPos?: 'prefix' | 'suffix' | 'both';
 }
 
 /** 上游输入引用（运行时从连线收集的快照，仅用于展示） */
@@ -141,12 +211,21 @@ export interface WorkNodeData extends NodeMeta {
   n: number;
   /** 比例（如 '1:1'）；空 = 不指定。按 family.supportedAspects 自适应 */
   aspect?: string;
+  /** 「自动」比例的解析结果：aspect 为空且有输入图时，运行时量首张输入图（含扩图后的尺寸）得到的实际比例，回写供节点展示。 */
+  autoAspect?: string;
   /** 分辨率档位 '1K'|'2K'|'4K'；空 = 默认。按 family.supportedTiers 自适应 */
   imageSize?: string;
   /** 质量 'standard'|'high'…；family.supportsQuality 时可用 */
   quality?: string;
   /** 绘画强度 0-1（img2img/重绘；仅 ComfyUI 等支持的后端生效，OpenAI 协议忽略） */
   strength?: number;
+  /** 多条上游提示词连入时的执行方式：false/缺省=按连入顺序逐条生图；true=并发提交（中转站支持并发时更快）。
+   *  分组内的多条提示词组合后算作一条，不受此影响。 */
+  promptConcurrency?: boolean;
+  /** 逐张处理输入图（2026-06-13）：true=每张上游图各跑一次生成（N 张图 = N 次结果，配合图片列表/批量改图）；
+   *  缺省/false=多张图作为一组参考图喂给一次生成。仅图片编辑类工作（非纯文生图）有意义。
+   *  与多条提示词配合：词数==图数时按序配对（zip），否则每张都用同一条提示词。 */
+  imageEach?: boolean;
   /** 上次运行收集到的上游输入引用 */
   inputRefs: InputRef[];
   status: RunStatus;
@@ -192,7 +271,8 @@ export type LlmOp =
   | 'expand' // 扩写细化
   | 'decompose' // 细节分解
   | 'refine' // 对话完善
-  | 'reverse'; // 图片反推提示词（需 vision 文本模型）
+  | 'reverse' // 图片反推提示词（需 vision 文本模型）
+  | 'to-json'; // 自然语言 → JSON 结构化提示词
 
 export const LLM_OP_LABELS: Record<LlmOp, string> = {
   optimize: '优化提示词',
@@ -201,7 +281,8 @@ export const LLM_OP_LABELS: Record<LlmOp, string> = {
   expand: '扩写细化',
   decompose: '细节分解',
   refine: '对话完善',
-  reverse: '图片反推提示词'
+  reverse: '图片反推提示词',
+  'to-json': '转 JSON 提示词'
 };
 
 /** 需要上游图片的 LLM 操作（vision） */
@@ -221,6 +302,8 @@ export interface LlmNodeData extends NodeMeta {
   modelId: string;
   /** 额外指令（追加到 systemPrompt） */
   instruction: string;
+  /** 开启后：上游连入的提示词文本作为「额外指令」（注入 systemPrompt），而非作为待处理文本（userInput）。 */
+  instructionFromUpstream?: boolean;
   /** 本节点输入文本（与上游文本合并） */
   input: string;
   /** reverse 时的反推类型 */
@@ -242,6 +325,27 @@ export interface LlmNodeData extends NodeMeta {
 // 绑定「工作流」模块保存的模板（api:comfyui:run-single + template:get），
 // 简化成：选模板 + 在检查器里改暴露的标量控件 + 运行 → 输出图喂下游。
 
+/** ComfyUI 节点多输入运行方式：merge=单次（现状：多提示词分发/合并到文本控件、多图按序进图片控件）；
+ *  per-prompt=逐条提示词执行（每条单独跑一遍完整工作流，第一条完成后再跑第二条）；
+ *  per-image=逐张图执行（工作流只有一个图片输入位时，N 张图逐张各跑一遍）。 */
+export type ComfyMultiMode = 'merge' | 'per-prompt' | 'per-image';
+
+export const COMFY_MULTI_MODE_LABELS: Record<ComfyMultiMode, string> = {
+  merge: '单次（合并分发）',
+  'per-prompt': '逐条提示词执行',
+  'per-image': '逐张图执行'
+};
+
+/** 上游输入 → 指定控件的显式绑定（缺省 = 自动按序分发）：
+ *  prompt:i = 该控件收上游第 i 条提示词；image:j = 收上游第 j 张图；
+ *  all-images = 收全部上游图（multi_image 控件）；off = 不接收上游（保留手填/工作流默认）。 */
+export type ComfyInputBinding =
+  | { kind: 'prompt'; index: number }
+  | { kind: 'image'; index: number }
+  | { kind: 'mask'; index: number }
+  | { kind: 'all-images' }
+  | { kind: 'off' };
+
 export interface ComfyNodeData extends NodeMeta {
   /** 绑定的工作流模板 id（comfyui_workflow_templates.workflowId） */
   workflowId: string;
@@ -250,6 +354,10 @@ export interface ComfyNodeData extends NodeMeta {
   controls: InputControl[];
   /** controlId → 覆盖值 */
   controlValues: Record<string, unknown>;
+  /** 多输入运行方式；缺省 'merge' = 现状单次 */
+  multiMode?: ComfyMultiMode;
+  /** controlId → 上游输入显式绑定；缺省 = 全自动按序分发 */
+  inputBindings?: Record<string, ComfyInputBinding>;
   status: RunStatus;
   /** 进行中的 comfyui runId（匹配 comfyui:run-done） */
   runId?: string;
@@ -258,22 +366,125 @@ export interface ComfyNodeData extends NodeMeta {
   error?: string | null;
 }
 
-// ───────────────────────── 视角提示词节点（angle-prompt）─────────────────────────
-// 接入一张图片 → 3D 预览 + 角度控制 → 实时生成「改变拍摄视角」的提示词，作文本输出喂下游。
-// 不直接生成图片；3D 预览仅用于交互展示。
+// ───────────────────────── 镜头节点（angle-prompt，原「视角」升级）─────────────────────────
+// 接入一张图片 → 3D 预览 + 镜头语言控制（拍照：相机/光圈/视角/构图；视频：运镜/焦距/构图）
+// → 实时生成镜头提示词，作文本输出喂下游。不直接生成图片；3D 预览仅用于交互展示。
+
+/** 拍照 / 视频 两种镜头模式。 */
+export type CameraMode = 'photo' | 'video';
+
+/** 相机机型（拍照模式）。 */
+export type CameraType =
+  | 'none' | 'dslr' | 'mirrorless' | 'film35' | 'mediumformat' | 'polaroid' | 'phone' | 'cinema' | 'drone' | 'action';
+/** 光圈（拍照模式，决定景深虚化）。 */
+export type ApertureSetting = 'none' | 'f1.4' | 'f2.8' | 'f4' | 'f8' | 'f16';
+/** 运镜方式（视频模式）。 */
+export type CameraMovement =
+  | 'none' | 'push' | 'pull' | 'panleft' | 'panright' | 'tiltup' | 'tiltdown'
+  | 'truck' | 'orbit' | 'handheld' | 'crane' | 'dollyzoom' | 'tracking' | 'static';
+/** 焦距（视频模式）。 */
+export type FocalLength = 'none' | 'ultrawide' | 'wide' | 'standard' | 'tele' | 'macro';
+/** 构图（两种模式通用）。 */
+export type ShotComposition =
+  | 'none' | 'thirds' | 'centered' | 'symmetry' | 'diagonal' | 'leadinglines' | 'frameinframe' | 'golden' | 'fill' | 'negative';
+
+export const CAMERA_TYPE_LABELS: Record<CameraType, string> = {
+  none: '未指定',
+  dslr: '单反相机',
+  mirrorless: '微单',
+  film35: '35mm 胶片',
+  mediumformat: '中画幅',
+  polaroid: '拍立得',
+  phone: '手机摄影',
+  cinema: '电影摄影机',
+  drone: '无人机航拍',
+  action: '运动相机'
+};
+export const CAMERA_TYPE_ICON: Record<CameraType, string> = {
+  none: '○', dslr: '📷', mirrorless: '📸', film35: '🎞️', mediumformat: '🎴', polaroid: '🖼️',
+  phone: '📱', cinema: '🎥', drone: '🚁', action: '🤿'
+};
+export const APERTURE_LABELS: Record<ApertureSetting, string> = {
+  none: '未指定', 'f1.4': 'f/1.4', 'f2.8': 'f/2.8', 'f4': 'f/4', 'f8': 'f/8', 'f16': 'f/16'
+};
+/** 光圈副标（景深效果）。 */
+export const APERTURE_SUB: Record<ApertureSetting, string> = {
+  none: '', 'f1.4': '强虚化', 'f2.8': '浅景深', 'f4': '中景深', 'f8': '深景深', 'f16': '全清晰'
+};
+/** 光圈图标：用不同填充的圆示意光圈开口（大→小）。 */
+export const APERTURE_ICON: Record<ApertureSetting, string> = {
+  none: '○', 'f1.4': '◉', 'f2.8': '◎', 'f4': '⊙', 'f8': '◌', 'f16': '∘'
+};
+export const MOVEMENT_LABELS: Record<CameraMovement, string> = {
+  none: '未指定',
+  push: '推镜（推近）',
+  pull: '拉镜（拉远）',
+  panleft: '左摇',
+  panright: '右摇',
+  tiltup: '上摇',
+  tiltdown: '下摇',
+  truck: '横移',
+  orbit: '环绕',
+  handheld: '手持跟随',
+  crane: '升降摇臂',
+  dollyzoom: '滑动变焦',
+  tracking: '跟拍',
+  static: '固定机位'
+};
+export const MOVEMENT_ICON: Record<CameraMovement, string> = {
+  none: '○', push: '🔎', pull: '🔭', panleft: '⬅️', panright: '➡️', tiltup: '⬆️', tiltdown: '⬇️',
+  truck: '↔️', orbit: '🔄', handheld: '🤳', crane: '🏗️', dollyzoom: '🌀', tracking: '🏃', static: '⏹️'
+};
+export const FOCAL_LABELS: Record<FocalLength, string> = {
+  none: '未指定', ultrawide: '超广角', wide: '广角', standard: '标准', tele: '长焦', macro: '微距'
+};
+export const FOCAL_SUB: Record<FocalLength, string> = {
+  none: '', ultrawide: '14mm', wide: '24mm', standard: '50mm', tele: '85-200mm', macro: '微距'
+};
+export const FOCAL_ICON: Record<FocalLength, string> = {
+  none: '○', ultrawide: '🌐', wide: '🏞️', standard: '👁️', tele: '🔭', macro: '🔬'
+};
+export const COMPOSITION_LABELS: Record<ShotComposition, string> = {
+  none: '未指定',
+  thirds: '三分法',
+  centered: '中心构图',
+  symmetry: '对称构图',
+  diagonal: '对角线',
+  leadinglines: '引导线',
+  frameinframe: '框中框',
+  golden: '黄金螺旋',
+  fill: '充满画面',
+  negative: '留白构图'
+};
+export const COMPOSITION_ICON: Record<ShotComposition, string> = {
+  none: '○', thirds: '#️⃣', centered: '🎯', symmetry: '🪞', diagonal: '⤢', leadinglines: '🛤️',
+  frameinframe: '🖼️', golden: '🌀', fill: '🔳', negative: '⬜'
+};
 
 export interface AnglePromptNodeData extends NodeMeta {
   /** 手动上传的图（上游图片优先；本字段为兜底）。url = 本地路径或 data:URI */
   inputImage?: { url: string; name?: string };
+  /** 镜头模式：拍照 / 视频（旧数据缺省按 'photo'） */
+  camMode?: CameraMode;
   /** 水平旋转 -90~90，0 默认；>0 向右 / <0 向左 */
   horizontalAngle: number;
   /** 垂直俯仰 -90~90，0 默认；>0 俯视 / <0 仰视 */
   verticalAngle: number;
   /** 镜头距离 0.1~8，4 默认；>4 广角 / <4 特写 */
   distance: number;
-  /** 实时生成的视角提示词（文本输出，下游可读） */
+  /** 相机机型（拍照模式） */
+  cameraType?: CameraType;
+  /** 光圈（拍照模式） */
+  aperture?: ApertureSetting;
+  /** 运镜（视频模式） */
+  movement?: CameraMovement;
+  /** 焦距（视频模式） */
+  focal?: FocalLength;
+  /** 构图（两种模式通用） */
+  composition?: ShotComposition;
+  /** 实时生成的镜头提示词（文本输出，下游可读） */
   generatedPrompt: string;
-  /** 是否追加「保持主体一致，只改视角」约束句 */
+  /** 是否追加「保持主体一致，只改镜头」约束句 */
   appendConsistencyInstruction: boolean;
 }
 
@@ -326,13 +537,53 @@ export interface ScaleNodeData extends NodeMeta {
   /** 输入尺寸（展示用） */
   inW?: number;
   inH?: number;
+  // ── 视频缩放（上游为视频时；主进程 ffmpeg 重编码，异步） ──
+  /** 缩放后输出视频本地路径（ffmpeg 产出，非持久化） */
+  outputVideo?: string | null;
+  /** 视频缩放运行状态 */
+  vidStatus?: RunStatus;
+  vidError?: string | null;
+  /** 视频补帧目标帧率（0/缺省 = 保持原帧率；30/48/60 = minterpolate 运动补偿插帧，慢但更流畅） */
+  vidFps?: number;
 }
 
-// ───────────────────────── 比例/分辨率分析节点（ratio）─────────────────────────
-// 接入一张图 → 显示最接近的常用比例 + 各分辨率档（1K/2K/4K）下的实际像素 + 像素预算建议。
-// 纯参考展示，不输出（帮你决定生图用什么比例/分辨率）。
+// ───────────────────────── 尺寸来源节点（ratio）─────────────────────────
+// 可选接一张图 → 显示其比例 + 各分辨率档（1K/2K/4K）下的实际像素（分析参考）；
+// 同时作为「尺寸来源」：选预设尺寸 / 填自定义宽高 → 输出 SizeSpec 给 生图/ComfyUI/视频 节点统一驱动尺寸。
 
-export type RatioNodeData = NodeMeta;
+/** 尺寸来源节点的输出意图：both=比例+尺寸都喂下游；aspect=只喂比例；resolution=只喂尺寸/分辨率。 */
+export type RatioEmit = 'both' | 'aspect' | 'resolution';
+
+/** 尺寸来源节点的统一输出：比例 + 精确宽高（像素）+ 输出意图。下游各取所需：
+ *  生图取比例(+能精确宽高的模型用宽高/否则映射档位)、视频取比例+最近分辨率档、ComfyUI 取宽×高；
+ *  emit 决定只喂比例 / 只喂尺寸 / 两者。 */
+export interface SizeSpec {
+  aspect: string;
+  width: number;
+  height: number;
+  emit?: RatioEmit;
+}
+
+export type RatioSizeMode = 'preset' | 'custom' | 'original';
+
+export interface RatioNodeData extends NodeMeta {
+  /** 尺寸来源：预设（比例 + 分辨率档）/ 自定义宽高 / 原尺寸（取连接图的原始宽高与比例，默认 preset）。 */
+  sizeMode: RatioSizeMode;
+  /** preset 模式：选中的比例（如 '16:9'）。 */
+  aspect: string;
+  /** preset 模式：选中的分辨率档（'1K'…'8K'，最长边约定）。 */
+  tier: string;
+  /** custom 模式：自定义宽（px）。 */
+  customW: number;
+  /** custom 模式：自定义高（px）。 */
+  customH: number;
+  /** 输出意图：只比例 / 只分辨率 / 两者。 */
+  emit: RatioEmit;
+  /** original 模式用：上游连接图的原始宽（px）。由 RatioNode 分析图片后回写持久化；无图时缺省。 */
+  origW?: number;
+  /** original 模式用：上游连接图的原始高（px）。 */
+  origH?: number;
+}
 
 // ───────────────────────── 文字节点（text）─────────────────────────
 // 画布上的自由文字元素（标题 / 备注 / 标注），可调字体、字号、颜色、粗细、对齐。
@@ -368,25 +619,126 @@ export const TEXT_FONTS: Array<{ label: string; value: string }> = [
 // 接入一张图 → 圆顶预览 + 拖光点调光照方位/高度 + 强度/色温/遮挡/光效 → 实时生成光照提示词喂下游。
 // 与视角节点同类（不直接生成图片，输出文本）。
 
-export type LightOcclusion = 'none' | 'leaves' | 'window' | 'blinds' | 'branches' | 'curtain';
-export type LightEffect = 'none' | 'tyndall' | 'fog' | 'godrays' | 'backlight' | 'flare';
+export type LightOcclusion =
+  | 'none' | 'leaves' | 'window' | 'blinds' | 'branches' | 'curtain'
+  | 'caustics' | 'lace' | 'foliage' | 'grid' | 'smoke';
+export type LightEffect =
+  | 'none' | 'tyndall' | 'fog' | 'godrays' | 'backlight' | 'flare'
+  | 'bokeh' | 'bloom' | 'hardshadow' | 'dappled' | 'silhouette';
 
 export const LIGHT_OCCLUSION_LABELS: Record<LightOcclusion, string> = {
   none: '无遮挡',
-  leaves: '树叶（光斑）',
+  leaves: '树叶光斑',
   window: '窗格',
   blinds: '百叶窗',
   branches: '树枝',
-  curtain: '薄纱窗帘'
+  curtain: '薄纱窗帘',
+  caustics: '水面波光',
+  lace: '蕾丝镂空',
+  foliage: '密林剪影',
+  grid: '几何格栅',
+  smoke: '烟雾缝隙'
+};
+/** 遮挡图标（直观示意，下拉/按钮里带图标，小白也能看懂视觉感觉）。 */
+export const LIGHT_OCCLUSION_ICON: Record<LightOcclusion, string> = {
+  none: '○',
+  leaves: '🌳',
+  window: '🪟',
+  blinds: '🎚️',
+  branches: '🌿',
+  curtain: '🎐',
+  caustics: '💧',
+  lace: '🕸️',
+  foliage: '🌲',
+  grid: '🔲',
+  smoke: '🌫️'
 };
 export const LIGHT_EFFECT_LABELS: Record<LightEffect, string> = {
   none: '无',
-  tyndall: '丁达尔效应（体积光）',
+  tyndall: '丁达尔体积光',
   fog: '穿过雾气',
-  godrays: '上帝之光（云隙光）',
+  godrays: '上帝之光',
   backlight: '逆光轮廓',
-  flare: '镜头光晕'
+  flare: '镜头光晕',
+  bokeh: '背景散景',
+  bloom: '柔光辉光',
+  hardshadow: '硬朗阴影',
+  dappled: '斑驳光影',
+  silhouette: '强逆光剪影'
 };
+export const LIGHT_EFFECT_ICON: Record<LightEffect, string> = {
+  none: '○',
+  tyndall: '🔆',
+  fog: '🌫️',
+  godrays: '⛅',
+  backlight: '🌓',
+  flare: '✨',
+  bokeh: '🟡',
+  bloom: '💫',
+  hardshadow: '◐',
+  dappled: '🍃',
+  silhouette: '🌑'
+};
+
+/** 光源类型（这束光从何而来：阳光 / 朝阳夕阳 / 烛光灯笼 / 霓虹影棚 …）。 */
+export type LightSourceType =
+  | 'none' | 'sunlight' | 'sunrise' | 'sunset' | 'goldenhour' | 'overcast'
+  | 'moonlight' | 'candle' | 'lantern' | 'firelight' | 'neon' | 'studio' | 'daylight' | 'street' | 'screen';
+
+export const LIGHT_SOURCE_LABELS: Record<LightSourceType, string> = {
+  none: '未指定',
+  sunlight: '阳光（直射）',
+  sunrise: '朝阳 / 晨光',
+  sunset: '夕阳 / 黄昏',
+  goldenhour: '黄金时刻',
+  overcast: '阴天柔光',
+  moonlight: '月光',
+  candle: '烛光',
+  lantern: '灯笼光',
+  firelight: '火光 / 篝火',
+  neon: '霓虹灯',
+  studio: '影棚灯',
+  daylight: '窗边自然光',
+  street: '路灯',
+  screen: '屏幕光'
+};
+export const LIGHT_SOURCE_ICON: Record<LightSourceType, string> = {
+  none: '○',
+  sunlight: '☀️',
+  sunrise: '🌅',
+  sunset: '🌇',
+  goldenhour: '🌄',
+  overcast: '☁️',
+  moonlight: '🌙',
+  candle: '🕯️',
+  lantern: '🏮',
+  firelight: '🔥',
+  neon: '💡',
+  studio: '🎬',
+  daylight: '🪟',
+  street: '🛣️',
+  screen: '📱'
+};
+
+/** 光位快捷预设：一键设好方位角 + 高度角（常见布光），节点上以带图标的按钮呈现。 */
+export interface LightPositionPreset {
+  key: string;
+  label: string;
+  icon: string;
+  azimuth: number;
+  elevation: number;
+}
+export const LIGHT_POSITION_PRESETS: LightPositionPreset[] = [
+  { key: 'front', label: '正面光', icon: '🔦', azimuth: 0, elevation: 30 },
+  { key: 'left', label: '左侧光', icon: '◀️', azimuth: -75, elevation: 28 },
+  { key: 'right', label: '右侧光', icon: '▶️', azimuth: 75, elevation: 28 },
+  { key: 'rembrandt', label: '伦勃朗 45°', icon: '🎭', azimuth: -45, elevation: 52 },
+  { key: 'top', label: '顶光', icon: '🔝', azimuth: 0, elevation: 85 },
+  { key: 'butterfly', label: '蝴蝶光', icon: '🦋', azimuth: 0, elevation: 68 },
+  { key: 'back', label: '逆光', icon: '🌗', azimuth: 180, elevation: 25 },
+  { key: 'rim', label: '轮廓侧逆光', icon: '⭐', azimuth: 140, elevation: 32 },
+  { key: 'bottom', label: '底光（脚光）', icon: '🔻', azimuth: 0, elevation: 6 }
+];
 
 export interface LightNodeData extends NodeMeta {
   /** 手动上传的图（上游图片优先；本字段为兜底）。 */
@@ -401,10 +753,62 @@ export interface LightNodeData extends NodeMeta {
   warmth: number;
   occlusion: LightOcclusion;
   effect: LightEffect;
+  /** 光源类型（阳光 / 朝阳夕阳 / 烛光灯笼 …）；旧数据缺省按 'none' 处理 */
+  sourceType?: LightSourceType;
   /** 实时生成的光照提示词（文本输出，下游可读） */
   generatedPrompt: string;
   /** 是否追加「保持主体一致，只改光照」约束句 */
   appendConsistencyInstruction: boolean;
+  /** 光点在预览图上的可视位置（0~1，相对图片左上角）。用于直接「在图上拖光点」交互；
+   *  azimuth/elevation 由它推导出来喂提示词。旧数据缺省时按 azimuth/elevation 反推渲染。 */
+  posX?: number;
+  posY?: number;
+}
+
+// ───────────────────────── 配色工具节点（palette）─────────────────────────
+// 提取模式：接上游图（或卡上上传）→ 中位切分提取 N 个主色；调色模式：基准色 + 配色方案推导。
+// 每个色给 HEX/RGB/CMYK/HSL/HSB 可复制，可导出 .ase/.aco 直接进 PS/AI/CorelDRAW，
+// 并实时生成配色提示词文本喂下游（与 视角/光源 同类，本地纯计算零成本）。
+
+export type PaletteMode = 'extract' | 'scheme';
+export type PaletteScheme = 'complementary' | 'contrast' | 'analogous' | 'split' | 'tetradic' | 'monochrome';
+
+export const PALETTE_MODE_LABELS: Record<PaletteMode, string> = {
+  extract: '提取配色',
+  scheme: '调色方案'
+};
+export const PALETTE_SCHEME_LABELS: Record<PaletteScheme, string> = {
+  complementary: '互补色',
+  contrast: '对比色（三角）',
+  analogous: '邻近色',
+  split: '分裂互补',
+  tetradic: '四角配色',
+  monochrome: '单色深浅'
+};
+
+export interface PaletteColorEntry {
+  /** '#RRGGBB' */
+  hex: string;
+  /** 占比 0-100（仅提取模式有） */
+  pct?: number;
+}
+
+export interface PaletteNodeData extends NodeMeta {
+  mode: PaletteMode;
+  /** 提取数量 2~12（提取模式）；邻近/单色方案的取色数（调色模式） */
+  count: number;
+  /** 手动上传图（上游图片优先；本字段为兜底，仅提取模式用） */
+  inputImage?: { url: string; name?: string };
+  /** 当前色板（提取结果 / 方案推导结果） */
+  colors: PaletteColorEntry[];
+  /** 调色模式：基准色 HEX */
+  baseHex: string;
+  /** 调色模式：配色方案 */
+  scheme: PaletteScheme;
+  /** 提示词里是否附 HEX 色值（指令跟随型模型能直接吃 HEX） */
+  promptIncludeValues: boolean;
+  /** 实时生成的配色提示词（文本输出，下游可读） */
+  generatedPrompt: string;
 }
 
 /** 对比节点：左右两图 + 对比滑块（wipe）。两图优先取上游图片（A=上游[0] / B=上游[1]），
@@ -418,36 +822,53 @@ export interface CompareNodeData extends NodeMeta {
   slider: number;
 }
 
-/** 视频生成模式 */
-export type VideoMode = 'text-to-video' | 'image-to-video';
-export const VIDEO_MODE_LABELS: Record<VideoMode, string> = {
-  'text-to-video': '文生视频',
-  'image-to-video': '图生视频'
-};
+// 视频模式统一到 @shared/video（7 档）；此处 re-export 兼容旧 import 路径。
+export type { VideoMode };
+export { VIDEO_MODE_LABELS } from './video';
 
 /**
  * 视频节点：复用 type='video' 的设置配置，按 video_kind 走 kling/sora/unified 协议（异步）。
  * 上游接提示词（文本）→ prompt；接图片 → 图生视频首帧（自动切 image-to-video）。
- * 运行结果是本地 mp4 路径（已自动入图库），节点卡上直接播放。
+ * 运行结果是本地 mp4 路径（已自动入资产库），节点卡上直接播放。
  */
 export interface VideoNodeData extends NodeMeta {
   /** 视频模型显示名（复用 settingsStore type='video' 配置） */
   modelId: string;
   prompt: string;
   negativePrompt?: string;
-  /** 文生 / 图生（有上游图时运行端自动切 image-to-video） */
+  /** 统一 7 模式（旧 'text-to-video'/'image-to-video' 由 normalizeVideoMode 兼容） */
   mode: VideoMode;
   /** 时长（秒，字符串，如 '5' / '10' / '8'） */
   duration: string;
-  /** 画幅，如 '16:9' / '9:16' / '1:1' */
+  /** 画幅，如 '16:9' / '9:16' / '1:1' / 'adaptive'；空 = 自动（跟随首张上游图比例） */
   aspect: string;
-  /** 分辨率/档位：kling 用 std|pro；其它用 720p|1080p；sora 可填 size 如 1280x720 */
+  /** 「自动」画幅运行后解析出的实际比例（跟随首张上游图），仅作节点上展示 */
+  autoAspect?: string;
+  /** 分辨率/档位：seedance 用 480p/720p/1080p；kling 用 std|pro；sora 可填 size 如 1280x720 */
   resolution: string;
   /** 随机种子；空 = 随机（部分协议忽略） */
   seed?: number | null;
+  /** 生成音频（仅模型支持时） */
+  generateAudio?: boolean;
+  /** 返回最后一帧（连续视频默认开） */
+  returnLastFrame?: boolean;
+  // ── 参考素材（adapter 路径用；URL 或 data:URI）──
+  firstFrameUrl?: string | null;
+  lastFrameUrl?: string | null;
+  referenceImageUrls?: string[];
+  referenceVideoUrls?: string[];
+  referenceAudioUrls?: string[];
+  /** 连续视频：上一段最后一帧（作本段首帧） */
+  previousLastFrameUrl?: string | null;
   status: RunStatus;
+  /** 细分任务状态（adapter 路径） */
+  taskState?: VideoTaskStatusState;
   /** 生成结果：本地 mp4 绝对路径 */
   videoPath?: string | null;
+  /** 结果最后一帧 URL（供「继续生成下一段」） */
+  outLastFrameUrl?: string | null;
+  /** 最近一次费用预估说明 */
+  costNote?: string;
   error?: string | null;
   logs?: string[];
   durationMs?: number;
@@ -458,7 +879,416 @@ export interface VideoNodeData extends NodeMeta {
   phase?: string;
 }
 
+// ───────────────────────── 反推 / 视频来源节点 ─────────────────────────
+// 图像反推 / 视频反推：接图/视频 → 视觉模型反推 → 文本（描述/标签/风格）喂下游（复用 api:lab:reverse）。
+// 视频来源：上传本地视频 / URL → 输出视频给下游（视频反推 / 缩放 / 结果）。
+
+export type ReverseType = 'description' | 'tags' | 'style';
+export const REVERSE_TYPE_LABELS: Record<ReverseType, string> = {
+  description: '自然语言描述',
+  tags: '标签词',
+  style: '风格分析'
+};
+
+/** 图像反推节点：接一张图 → 视觉模型反推 → 描述/标签/风格 文本，喂下游。 */
+export interface ImageReverseNodeData extends NodeMeta {
+  modelId: string;
+  reverseType: ReverseType;
+  /** 手动上传图（上游图片优先；本字段兜底） */
+  inputImage?: { url: string; name?: string };
+  status: RunStatus;
+  resultText?: string;
+  logs?: string[];
+  error?: string | null;
+}
+
+/** 视频上传/来源节点：本地视频路径 / http(s) URL（不存 data:URI，视频过大易爆 localStorage）。 */
+export interface VideoSourceNodeData extends NodeMeta {
+  src?: string;
+  name?: string;
+}
+
+/** 视频反推节点：接一个视频 → 渲染端抽帧 → 多图反推 → 文本，喂下游。 */
+export interface VideoReverseNodeData extends NodeMeta {
+  modelId: string;
+  reverseType: ReverseType;
+  /** 抽帧数量（默认 6） */
+  frameCount?: number;
+  status: RunStatus;
+  resultText?: string;
+  logs?: string[];
+  error?: string | null;
+}
+
+/** 插帧节点：接一个视频 → 本地 RIFE AI 运动插帧（24fps→60fps）→ 输出 mp4 喂下游。 */
+export interface FrameInterpNodeData extends NodeMeta {
+  /** 目标帧率（需高于源帧率），默认 60 */
+  targetFps: number;
+  /** RIFE 模型目录名（缺省用引擎默认 rife-v4.6） */
+  model?: string;
+  status: RunStatus;
+  /** 总进度 0-100（主进程三阶段定额推送） */
+  progress?: number;
+  /** 中文阶段说明（拆帧 N/M、AI 插帧 N/M、合成编码…） */
+  phase?: string;
+  /** 探测到的源帧率（展示「源 24fps → 60fps」） */
+  srcFps?: number;
+  /** 输出视频本地路径（mp4，非持久化运行态以外的产物路径，可持久化） */
+  outputVideo?: string | null;
+  error?: string | null;
+  /** 主进程任务 id（取消用，运行中才有） */
+  taskId?: string;
+  durationMs?: number;
+}
+
+// ───────────────────────── 保真放大节点（upscale，本地 Real-ESRGAN ncnn）─────────────────────────
+// 1:1 复刻工具箱「保真放大」：接上游图 → api:upscale:run-single（同步等完成）→ 输出放大图喂下游。
+// 引擎不随包，首次在卡上一键安装（与插帧同款 ncnn 引擎模式）。
+
+export interface UpscaleNodeData extends NodeMeta {
+  /** Real-ESRGAN 模型名（引擎扫到的，如 realesrgan-x4plus / realesrgan-x4plus-anime） */
+  modelName: string;
+  /** 放大倍数 2/3/4 */
+  scale: 2 | 3 | 4;
+  /** 输出格式 */
+  format: 'png' | 'jpg' | 'webp';
+  status: RunStatus;
+  /** 输出图本地路径（可持久化） */
+  outputImage?: string | null;
+  /** 输出实际分辨率（角标展示） */
+  outW?: number;
+  outH?: number;
+  durationMs?: number;
+  logs?: string[];
+  error?: string | null;
+}
+
+// ───────────────────────── 图像转矢量节点（vectorize，本地 VTracer/Potrace）─────────────────────────
+// 1:1 复刻工具箱「图像转矢量」：接上游图 → api:vec:run-vtracer / run-potrace（异步，vec:progress 回结果路径）→ 输出 SVG。
+// SVG 为终端产物（查看 / 另存 / 连结果节点），不喂栅格管线。
+
+export type VectorizeMode = 'vtracer' | 'potrace';
+
+export interface VectorizeNodeData extends NodeMeta {
+  /** 矢量化模式：vtracer=彩色（logo/美陈）/ potrace=单色（线稿） */
+  vmode: VectorizeMode;
+  status: RunStatus;
+  /** 输出 SVG 本地路径 */
+  outputSvgPath?: string | null;
+  /** 进度 0-100（vec:progress） */
+  progress?: number;
+  /** 主进程批次/任务 id（路由结果 + 取消用） */
+  batchId?: string;
+  taskId?: string;
+  logs?: string[];
+  error?: string | null;
+}
+
+// ───────────────────────── 视频剪辑节点（video-clip）─────────────────────────
+// 时间轴式视频剪辑（参照剪映/Premiere）：接多个上游视频 → 每段一个片段，按时间轴排序，
+// 每段可 裁切(入/出点) / 变速 / 音量·静音·淡入淡出，段间可加 转场，整体可调色 + 文字叠加 →
+// 本地 ffmpeg 一次性合成（复用 api:video:edit op='clip'）→ 输出 mp4 喂下游。
+// 长条形节点上做轻量排序/裁切 + 双击进「剪辑工作台」弹窗做深度编辑。
+
+/** 段间转场类型（'none'=硬切）。与 electron/services/video/clipGraph.ts 的 VideoTransition 保持同步。 */
+export type VideoTransition = 'none' | 'fade' | 'fadeblack' | 'dissolve' | 'wipeleft' | 'slideright';
+export const VIDEO_TRANSITION_LABELS: Record<VideoTransition, string> = {
+  none: '硬切',
+  fade: '交叉淡化',
+  fadeblack: '黑场过渡',
+  dissolve: '溶解',
+  wipeleft: '左擦除',
+  slideright: '右滑入'
+};
+
+/** 时间轴上的一个视频片段（一段上游视频 + 其剪辑参数）。src 作为与上游视频的对应键。 */
+export interface VideoClipSegment {
+  /** 视频本地路径 / http(s) URL（来自上游视频来源，作为身份键，reconcile 用） */
+  src: string;
+  /** 裁切入点（秒，>=0） */
+  trimStart: number;
+  /** 裁切出点（秒）；<=0 = 到自然结尾 */
+  trimEnd: number;
+  /** 变速 0.5~2（1=正常） */
+  speed: number;
+  /** 音量倍数 0~4（1=不变） */
+  volume: number;
+  muted: boolean;
+  fadeIn: number;
+  fadeOut: number;
+  /** 进入本段的转场（第 0 段忽略） */
+  transition: VideoTransition;
+  transitionDur: number;
+}
+
+/** 时间轴文字/字幕叠加（按时间区间显示）。 */
+export interface VideoClipTextOverlay {
+  id: string;
+  text: string;
+  /** 显示起止（成片时间轴秒） */
+  start: number;
+  end: number;
+  /** 0~1 相对位置 */
+  x: number;
+  y: number;
+  fontSize: number;
+  color: string;
+}
+
+/** 视频剪辑节点：多段时间轴 + 转场 + 每段音频/变速 + 整体调色 + 文字叠加。 */
+export interface VideoClipNodeData extends NodeMeta {
+  /** 片段（顺序 = 时间轴顺序）；由上游视频 reconcile 生成、用户可排序/裁切 */
+  segments: VideoClipSegment[];
+  /** 文字叠加轨 */
+  texts: VideoClipTextOverlay[];
+  /** 整体调色（默认值 = 不变） */
+  brightness: number;
+  contrast: number;
+  saturation: number;
+  gamma: number;
+  hue: number;
+  /** 成片帧率（默认 30） */
+  fps: number;
+  status: RunStatus;
+  progress?: number;
+  outputVideo?: string | null;
+  error?: string | null;
+  durationMs?: number;
+}
+
+// ───────────────────────── 智能分镜节点（storyboard）─────────────────────────
+// 输入一篇故事或一个短句 → LLM 生成完整故事 → 按用户选的分镜数量拆成 N 条按时间顺序的
+// 图像提示词。每条分镜可单独拉出成提示词节点；节点输出口把全部分镜按顺序作为多条提示词
+// 喂下游生图节点（配合「多条提示词逐条生图」规则按序出图）。复用 api:chat:optimize-prompt，零新 IPC。
+
+/**
+ * 分镜固定约束（强制约束型内容）：渲染端把非空项拼成「固定段」前置到每条分镜提示词里，
+ * 不依赖 LLM 自觉重复——跨分镜的角色/风格/氛围一致性由代码保证。全部可选。
+ */
+export interface StoryboardConstraints {
+  /** 固定角色描述（外貌特征） */
+  character?: string;
+  /** 固定画面风格 */
+  style?: string;
+  /** 固定镜头语言 */
+  camera?: string;
+  /** 固定色彩氛围 */
+  palette?: string;
+  /** 固定世界观设定 */
+  world?: string;
+  /** 固定场景背景 */
+  scene?: string;
+  /** 固定人物服装与外貌特征 */
+  wardrobe?: string;
+}
+
+/** 单条分镜的结构化元信息（展示用；成品提示词在 shots[] 里）。 */
+export interface StoryboardShotMeta {
+  /** 场景与环境（地点/时间/光线氛围） */
+  scene?: string;
+  /** 镜头变化（景别/机位/运镜） */
+  shot?: string;
+  /** 画面细节 */
+  detail?: string;
+  /** 出场人物/主体：外观要点 + 动作 + 表情（电影化分镜要求每条完整复述） */
+  characters?: string;
+  /** 画面中发生的动作/事件/转变 */
+  action?: string;
+}
+
+export interface StoryboardNodeData extends NodeMeta {
+  /** 文本模型显示名（复用 settingsStore type='text' 配置） */
+  modelId: string;
+  /** 故事素材：一篇故事或一个短句（与上游提示词文本合并） */
+  input: string;
+  /** 分镜数量 2-20 */
+  shotCount: number;
+  /** 画面风格提示（旧字段，读取时并入 constraints.style；新 UI 走 constraints） */
+  style?: string;
+  /** 固定约束（角色/风格/镜头/色彩/世界观/场景/服装），拼进每条分镜 */
+  constraints?: StoryboardConstraints;
+  /** 上游参考图的反推分析文本（自动生成，缓存展示用） */
+  analysis?: string;
+  /** 参考图分析用的视觉模型显示名（空 = 用 modelId） */
+  analysisModelId?: string;
+  /** 最近完成到哪一步：'story'=故事已生成（拆分失败可单独重试拆分步） */
+  lastStage?: 'story' | 'shots';
+  /** 生成的完整故事 */
+  story?: string;
+  /** 每个分镜的图像提示词（按时间顺序，已含固定约束段，可直接喂生图） */
+  shots: string[];
+  /** 每条分镜的结构化元信息（场景/镜头/细节，展示用；与 shots 等长或为空） */
+  shotsMeta?: StoryboardShotMeta[];
+  /** 镜头之间的转场动态提示词（N 分镜 → N-1 条：运动轨迹/运镜衔接/场景过渡/主体延续）；
+   *  从下输出口（out-trans）喂下游 */
+  transitions?: string[];
+  status: RunStatus;
+  logs?: string[];
+  error?: string | null;
+}
+
+// ───────────────────────── 提示词商城节点（prompt-mall）─────────────────────────
+// 「逛店选购」式提示词构建（替代旧「角色设计」节点）：左分类栏（人物/服饰/画风/镜头构图/光线/色彩/
+// 质感/环境/室内/动植物建筑/氛围/质量 等二级分类）→ 中缩略图卡片墙（拖一张进购物车则墙上消失）→
+// 右购物车（按大类自动排布）→ 合成一条提示词。勾「优化」交给对话模型（api:chat:optimize-prompt）合并去重，
+// 否则纯函数逗号拼接。输出文本喂下游（生图/分镜/视频/ComfyUI/LLM）。中/英切换同时控制卡片显示与输出语言。
+// 卡片库是 app 自带只读数据（src/lib/promptMall，每卡含 genPrompt 供用户自行批量生成缩略图）。零新 IPC。
+
+export type PromptMallLang = 'zh' | 'en';
+
+/** 购物车条目（拖进购物车的卡片快照；custom=用户手输的自由片段，无缩略图）。 */
+export interface PromptMallCartItem {
+  /** 实例唯一 id（同一张卡片可被加入多个分组，故用 uid 作稳定 key，非 cardId） */
+  uid: string;
+  /** 卡片库 id（custom 片段可自造） */
+  cardId: string;
+  /** 大类 slug（加入时快照，便于按大类分组排布） */
+  cat: string;
+  /** 子类 slug */
+  sub: string;
+  /** 中文片段快照 */
+  zh: string;
+  /** 英文片段快照 */
+  en: string;
+  /** true=用户自定义自由片段（非卡片库） */
+  custom?: boolean;
+  /** 所属分组（图片组成部分）id；缺省=默认第一组。同组内同 (cat,sub) 互斥（开启排斥时） */
+  group?: string;
+}
+
+/** 购物车分组（= 一张图的一个组成部分，如「人物A」「背景」）。组间互不影响，组内相关联（同 cat,sub）互斥。 */
+export interface PromptMallGroup {
+  id: string;
+  name: string;
+}
+
+export interface PromptMallNodeData extends NodeMeta {
+  /** 购物车（有序；展示与合成时按大类自动排布） */
+  cart: PromptMallCartItem[];
+  /** 分组列表（缺省视为单个「组 1」）。 */
+  groups?: PromptMallGroup[];
+  /** 当前活动分组 id（新拖入的卡片落到这一组）。 */
+  activeGroup?: string;
+  /** 排斥：同组内同 (cat,sub) 只能选一个（默认开启，undefined 视为 true）。 */
+  exclusive?: boolean;
+  /** 输出 + 卡片显示语言（单一真相） */
+  lang: PromptMallLang;
+  /** 合成用对话模型显示名（勾「优化」时用） */
+  modelId: string;
+  /** true=把购物车交给对话模型合并去重成一条；false=纯函数逗号拼接 */
+  optimize: boolean;
+  /** 合成产物 = 本节点的文本输出（优化后或原始拼接） */
+  assembled?: string;
+  /** 锁定产物：手改后不被「运行」覆盖 */
+  lockOutput?: boolean;
+  /** 缩略图「开发模式」：节点上点开后可连 ComfyUI 节点，按 genPrompt 批量生成卡片缩略图（按 cardId 落盘） */
+  devMode?: boolean;
+  status: RunStatus;
+  logs?: string[];
+  error?: string | null;
+}
+
+// ───────────────────────── 循环节点（loop）─────────────────────────
+// 工作流控制节点：对一组「项」逐项执行——把当前项作为本节点输出（提示词/尺寸/图片通道），
+// 触发并等待直接下游 runnable（生图/ComfyUI/视频）完成，再切下一项。
+// 支持 暂停（项间生效）/继续/停止/跳过当前项/从指定项继续；状态与当前项持久化（跨会话可续跑）。
+
+export type LoopSourceType = 'images' | 'prompts' | 'folder' | 'sizes' | 'range' | 'count';
+
+export const LOOP_SOURCE_LABELS: Record<LoopSourceType, string> = {
+  images: '图片批次（直接传入多张）',
+  prompts: '提示词列表',
+  folder: '文件夹图片',
+  sizes: '尺寸列表',
+  range: '数值范围',
+  count: '固定次数'
+};
+
+/** range 模式的输出通道：text=数值作为文本；size-width/size-height=数值作宽/高（另一边取 rangeOtherEdge）。 */
+export type LoopRangeAs = 'text' | 'size-width' | 'size-height';
+
+export interface LoopNodeData extends NodeMeta {
+  sourceType: LoopSourceType;
+  /** count 模式：循环次数（当前项输出 = 第 N 次文本） */
+  count: number;
+  /** range 模式：起 / 止 / 步长 */
+  rangeFrom: number;
+  rangeTo: number;
+  rangeStep: number;
+  rangeAs: LoopRangeAs;
+  /** rangeAs=size-* 时另一边的固定值 */
+  rangeOtherEdge?: number;
+  /** prompts 模式：多行文本，每行一条 */
+  promptLines: string;
+  /** sizes 模式：每行 "1024x768" / "1024,768"（也支持 ×） */
+  sizeLines: string;
+  /** folder 模式：图片文件夹（复用 api:storage:list-images 扫描） */
+  folderDir?: string;
+  /** images 模式：直接拖入 / 选入的多张图（本地路径 / data:URI） */
+  images?: string[];
+  /** images / folder 模式：每批向下游传入几张（默认 1 = 逐张；>1 = 每批 N 张，配合下游「逐张处理输入图」可一批多出） */
+  batchSize?: number;
+  /** true=某项失败即停；缺省 false=失败跳过继续 */
+  stopOnError?: boolean;
+  // ── 运行态（持久化无害；「从指定项继续」跨会话可用）──
+  status: RunStatus | 'paused';
+  currentIndex?: number;
+  totalItems?: number;
+  doneCount?: number;
+  failCount?: number;
+  /** 当前项展示值 */
+  currentValue?: string;
+  // ── 当前项输出通道：computeUpstream 读这里 ──
+  outPrompt?: string;
+  outSize?: SizeSpec;
+  outImage?: string;
+  /** 当前批的多张图（images / folder 批次模式；computeUpstream 优先读它，逐批喂下游） */
+  outImages?: string[];
+  logs?: string[];
+  error?: string | null;
+}
+
+// ───────────────────────── 文件夹输入 / 输出节点 ─────────────────────────
+// folder-input：选输入文件夹 → 扫描图片（api:storage:list-images）→ 作为图片来源输出（多图）。
+// folder-output：选输出文件夹 → 上游 生图/ComfyUI/视频/缩放/结果 每出一张结果自动落盘
+//（api:storage:copy-into，本地路径零转码复制 / dataUri 解码写入），命名规则 原名/前缀+序号。
+// 组合：folder-input(N 图) → ComfyUI 节点「逐张图执行」 → folder-output = 文件夹批量处理。
+
+export interface FolderInputNodeData extends NodeMeta {
+  dir?: string;
+  /** 扫描快照：图片绝对路径（文件名自然序）。持久化；「刷新」按钮重扫 */
+  files: string[];
+  /** 扫描快照：视频绝对路径（2026-06-12 起一并扫描，作下游视频来源） */
+  videoFiles?: string[];
+  scannedAt?: number;
+  error?: string | null;
+}
+
+export type FolderNameRule = 'original' | 'prefix-seq';
+
+export const FOLDER_NAME_RULE_LABELS: Record<FolderNameRule, string> = {
+  original: '沿用原文件名（重名自动 -2/-3）',
+  'prefix-seq': '前缀 + 四位序号'
+};
+
+export interface FolderOutputNodeData extends NodeMeta {
+  dir?: string;
+  nameRule: FolderNameRule;
+  /** nameRule='prefix-seq' 的前缀，默认 'output' */
+  prefix: string;
+  /** 下一序号（持久化递增） */
+  seq: number;
+  /** 关闭时只记日志不落盘 */
+  enabled: boolean;
+  savedCount: number;
+  failCount: number;
+  logs?: string[];
+  error?: string | null;
+}
+
 export type SmartNodeData =
+  | UpscaleNodeData
+  | VectorizeNodeData
   | ImageNodeData
   | PromptNodeData
   | WorkNodeData
@@ -471,8 +1301,19 @@ export type SmartNodeData =
   | RatioNodeData
   | TextNodeData
   | LightNodeData
+  | PaletteNodeData
   | CompareNodeData
-  | VideoNodeData;
+  | VideoNodeData
+  | ImageReverseNodeData
+  | VideoSourceNodeData
+  | VideoReverseNodeData
+  | FrameInterpNodeData
+  | VideoClipNodeData
+  | StoryboardNodeData
+  | PromptMallNodeData
+  | LoopNodeData
+  | FolderInputNodeData
+  | FolderOutputNodeData;
 
 // ───────────────────────── 运行结果 ─────────────────────────
 
@@ -497,6 +1338,16 @@ export interface WorkResult {
   simulated: boolean;
   /** 本次运行耗时（毫秒）：从点「运行」到出结果，结果区显示「用时 X.Xs」 */
   durationMs?: number;
+  /** 本条结果对应的提示词全文（多条提示词逐条生图时 = 该条；合集卡展示用） */
+  prompt?: string;
+  /** 结果产生时间戳（毫秒） */
+  createdAt?: number;
+  /** 同一次「运行」产生的多条结果共享的批次 id（多提示词逐条生图 → 结果节点按批次聚合成合集卡） */
+  batchId?: string;
+  /** 该条结果对应第几条提示词（0 起；分镜场景 = 分镜序号） */
+  shotIndex?: number;
+  /** 产出此结果的生图节点 id（合集卡「重试此条」回溯源节点用） */
+  sourceNodeId?: string;
 }
 
 // ───────────────────────── 画布序列化（导出/导入 .json）─────────────────────────
@@ -516,6 +1367,8 @@ export interface SmartCanvasConnectionDTO {
   id: string;
   source: string;
   target: string;
+  /** 多输出口节点（如智能分镜 out / out-trans）的源输出口 id；缺省 = 默认口 'out' */
+  sourceHandle?: string;
 }
 
 export interface SmartCanvasDoc {

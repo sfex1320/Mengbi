@@ -22,7 +22,7 @@ interface Props {
  * - 拖入（HTML5 dragover/drop）
  * - 系统粘贴（监听 paste 事件，从 clipboard 取 image item）
  * - 「打开文件」按钮（input[type=file]）
- * - 「从图库导入」按钮（弹出图库选择对话框）
+ * - 「从资产库导入」按钮（弹出资产库选择对话框）
  * - 跨页面预填（由调用方 setValue 触发，不在本组件内处理）
  *
  * 加载后展示缩略图 + 「移除」按钮回到空态。
@@ -125,7 +125,7 @@ export function ImportPanel({ value, onChange, maxDim }: Props): JSX.Element {
         >
           <ImageIcon size={32} />
           <div className="mb-import-empty-title">拖入图片到此处</div>
-          <div className="mb-import-empty-hint">支持 PNG / JPG / WebP；也可粘贴 / 打开文件 / 从图库导入</div>
+          <div className="mb-import-empty-hint">支持 PNG / JPG / WebP；也可粘贴 / 打开文件 / 从资产库导入</div>
           <div className="mb-import-actions">
             <button
               className="mb-btn mb-btn-secondary mb-btn-sm"
@@ -144,7 +144,7 @@ export function ImportPanel({ value, onChange, maxDim }: Props): JSX.Element {
               className="mb-btn mb-btn-secondary mb-btn-sm"
               onClick={() => setGalleryOpen(true)}
             >
-              <GalleryIcon size={14} /> 从图库导入
+              <GalleryIcon size={14} /> 从资产库导入
             </button>
           </div>
           <input
@@ -165,7 +165,7 @@ export function ImportPanel({ value, onChange, maxDim }: Props): JSX.Element {
         onClose={() => setGalleryOpen(false)}
         onPick={async (filePath) => {
           setGalleryOpen(false);
-          // 把图库本地文件转 dataUri 加载
+          // 把资产库本地文件转 dataUri 加载
           try {
             const url = localPathToImageUrl(filePath);
             const r = await fetch(url);
@@ -211,11 +211,11 @@ function GalleryPicker({
       .finally(() => setLoading(false));
   }, [open]);
   return (
-    <Modal open={open} onClose={onClose} title="从图库导入" width={720} dismissOnBackdrop>
+    <Modal open={open} onClose={onClose} title="从资产库导入" width={720} dismissOnBackdrop>
       <div className="mb-gallery-picker">
         {loading && <div className="mb-gallery-picker-loading">加载中…</div>}
         {!loading && rows.length === 0 && (
-          <div className="mb-gallery-picker-empty">图库为空——先去生图页生成几张图</div>
+          <div className="mb-gallery-picker-empty">资产库为空——先去生图页生成几张图</div>
         )}
         <div className="mb-gallery-picker-grid">
           {rows.map((r) => (

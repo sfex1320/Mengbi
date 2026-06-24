@@ -358,6 +358,18 @@
   gap: 6px;
 }
 
+/* 「已自动入资产库」提示徽章（2026-06-12：产物自动入库后取代手动入库按钮） */
+.mb-result-autogallery {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--mb-text-muted);
+  border: 1px dashed var(--mb-border-soft);
+  border-radius: var(--mb-radius-button);
+}
+
 .mb-result-actions-wrap {
   border: 1px solid var(--mb-border-soft);
   border-radius: 12px;
@@ -709,227 +721,6 @@
 .mb-tools-batch-results-dim {
   color: var(--mb-text-muted);
   font-size: 10px;
-}
-
-/* ─── HYPIR 依赖检查 ───────────────────── */
-
-.mb-tools-hypir-intro {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.mb-tools-hypir-checks {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.mb-tools-hypir-check {
-  display: grid;
-  grid-template-columns: auto 160px 1fr auto;
-  gap: 8px;
-  align-items: center;
-  padding: 8px 12px;
-  border-radius: 10px;
-  border: 1px solid var(--mb-border-soft);
-  background: var(--mb-bg-hover);
-  font-size: 12px;
-}
-
-.mb-tools-hypir-check.is-ok {
-  border-color: rgba(34, 197, 94, 0.45);
-}
-
-.mb-tools-hypir-check.is-fail {
-  border-color: rgba(239, 68, 68, 0.45);
-}
-
-.mb-tools-hypir-check-icon {
-  display: inline-flex;
-  width: 22px;
-  height: 22px;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.mb-tools-hypir-check.is-ok .mb-tools-hypir-check-icon {
-  background: rgba(34, 197, 94, 0.18);
-  color: rgb(34, 197, 94);
-}
-
-.mb-tools-hypir-check.is-fail .mb-tools-hypir-check-icon {
-  background: rgba(239, 68, 68, 0.18);
-  color: rgb(239, 68, 68);
-}
-
-.mb-tools-hypir-check-label {
-  font-weight: 600;
-  color: var(--mb-text-primary);
-}
-
-.mb-tools-hypir-check-detail {
-  color: var(--mb-text-muted);
-  font-size: 11px;
-  font-family: Consolas, ui-monospace, monospace;
-  word-break: break-all;
-}
-
-.mb-tools-hypir-check-actions {
-  justify-self: end;
-}
-
-.mb-tools-hypir-summary {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 10px 14px;
-  border-radius: 10px;
-  font-size: 12px;
-  font-weight: 600;
-  margin-top: 4px;
-}
-
-.mb-tools-hypir-summary.is-ok {
-  background: rgba(34, 197, 94, 0.12);
-  color: rgb(34, 197, 94);
-}
-
-.mb-tools-hypir-summary.is-block {
-  background: rgba(239, 68, 68, 0.12);
-  color: rgb(239, 68, 68);
-}
-
-/* ─── HYPIR 状态机横幅 ───────────────────── */
-
-.mb-hypir-banner {
-  border: 1px solid var(--mb-border-soft);
-  border-radius: 12px;
-  padding: 12px 14px;
-  background: var(--mb-bg-hover);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.mb-hypir-banner.is-server-ready,
-.mb-hypir-banner.is-completed {
-  border-color: rgba(34, 197, 94, 0.45);
-  background: rgba(34, 197, 94, 0.06);
-}
-
-.mb-hypir-banner.is-processing {
-  border-color: rgba(59, 130, 246, 0.45);
-  background: rgba(59, 130, 246, 0.06);
-}
-
-.mb-hypir-banner.is-failed,
-.mb-hypir-banner.is-not-installed,
-.mb-hypir-banner.is-gpu-unavailable {
-  border-color: rgba(239, 68, 68, 0.45);
-  background: rgba(239, 68, 68, 0.06);
-}
-
-.mb-hypir-banner.is-missing-runtime,
-.mb-hypir-banner.is-missing-models,
-.mb-hypir-banner.is-server-stopped {
-  border-color: rgba(251, 146, 60, 0.45);
-  background: rgba(251, 146, 60, 0.06);
-}
-
-.mb-hypir-banner-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.mb-hypir-banner-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--mb-text-primary);
-}
-
-.mb-hypir-banner-spacer {
-  flex: 1;
-}
-
-.mb-hypir-banner-path {
-  font-size: 10px;
-  color: var(--mb-text-muted);
-  font-family: Consolas, ui-monospace, monospace;
-  max-width: 260px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  background: transparent;
-  padding: 0;
-}
-
-.mb-hypir-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.mb-hypir-dot.is-gray {
-  background: var(--mb-text-muted);
-}
-
-.mb-hypir-dot.is-green {
-  background: rgb(34, 197, 94);
-  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.22);
-}
-
-.mb-hypir-dot.is-blue {
-  background: rgb(59, 130, 246);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.22);
-  animation: mb-hypir-pulse 1.4s ease-in-out infinite;
-}
-
-.mb-hypir-dot.is-amber {
-  background: rgb(251, 146, 60);
-  box-shadow: 0 0 0 3px rgba(251, 146, 60, 0.22);
-}
-
-.mb-hypir-dot.is-red {
-  background: rgb(239, 68, 68);
-  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.22);
-}
-
-@keyframes mb-hypir-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
-}
-
-.mb-hypir-banner-body {
-  font-size: 12px;
-  color: var(--mb-text-secondary);
-  line-height: 1.55;
-}
-
-.mb-hypir-banner-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 2px;
-  align-items: center;
-}
-
-.mb-hypir-server-info {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-top: 8px;
-  font-size: 11px;
-  color: var(--mb-text-secondary);
-}
-
-.mb-hypir-server-info code {
-  font-size: 11px;
-  color: var(--mb-text-primary);
 }
 
 /* ─── 提示词预设选择器 ───────────────────── */
@@ -1329,7 +1120,7 @@
   font-size: 11px;
 }
 
-/* HYPIR 修复深度警告：当用户选了与显存里不一致的深度，弹出提示 */
+/* 修复深度警告：当用户选了与显存里不一致的深度，弹出提示 */
 .mb-tools-depth-warn {
   display: inline;
   color: rgb(244, 162, 97);
@@ -1346,7 +1137,7 @@
 
 /* ──────────────────────────────────────────────────────────────────
  * mb-tlx-* —— ToolsPanelLayout 新视觉系统(2026-05-28)
- * 3 个面板共用:Real-ESRGAN / HYPIR / SUPIR
+ * Real-ESRGAN 保真放大面板用（HYPIR / SUPIR 已砍除）
  * 跟矢量化(mb-vec-*)视觉风格一致,但保留各自的标识色
  * ──────────────────────────────────────────────────────────────────*/
 

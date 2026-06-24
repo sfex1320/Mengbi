@@ -149,6 +149,33 @@ export async function downloadFromAny(
   );
 }
 
+/** 国内常用 GitHub 加速镜像前缀（社区反代，命中率随时间漂移，保留多家自动切换）。 */
+const GH_MIRROR_PREFIXES: string[] = [
+  'https://mirror.ghproxy.com/',
+  'https://gh-proxy.com/',
+  'https://github.moeyy.xyz/',
+  'https://ghps.cc/',
+  'https://hub.gitmirror.com/',
+  'https://ghproxy.net/'
+];
+
+/** 把 github.com 整域换掉的镜像（非前缀型）。 */
+const GH_HOST_SWAP: string[] = ['kkgithub.com'];
+
+/**
+ * GitHub release 直链 → 候选 URL 列表（纯函数）：
+ *   - github：仅直链；mirror：host-swap 优先 + 前缀镜像；auto：直链 + 全部镜像兜底。
+ * 与 realesrganEngine.ts 的 urlsFor 同一套镜像清单（那边后续可迁移过来统一）。
+ */
+export function githubReleaseUrls(directUrl: string, source: 'auto' | 'github' | 'mirror' = 'auto'): string[] {
+  const hostSwapped = GH_HOST_SWAP.map((host) => directUrl.replace('https://github.com/', `https://${host}/`));
+  const prefixed = GH_MIRROR_PREFIXES.map((prefix) => `${prefix}${directUrl}`);
+  const allMirrors = [...hostSwapped, ...prefixed];
+  if (source === 'github') return [directUrl];
+  if (source === 'mirror') return allMirrors;
+  return [directUrl, ...allMirrors];
+}
+
 function labelFromUrl(url: string): string {
   try {
     const u = new URL(url);

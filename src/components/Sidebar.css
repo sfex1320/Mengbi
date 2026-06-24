@@ -159,3 +159,214 @@
 .mb-sidebar-item-foot {
   margin-top: auto;
 }
+
+/* 自定义快捷方式 / 「+」添加位：button 复用 .mb-sidebar-item，需重置按钮默认样式 */
+.mb-sidebar-shortcut,
+.mb-sidebar-item-add {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+}
+
+/* 「+」添加位：虚线圆角占位 + 居中加号 */
+.mb-sidebar-item-add .mb-sidebar-item-inner {
+  background: transparent;
+  border: 1.5px dashed var(--mb-border);
+  color: var(--mb-text-muted);
+}
+.mb-sidebar-item-add:hover .mb-sidebar-item-inner {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--mb-accent);
+  color: var(--mb-accent);
+}
+[data-atmosphere='warm-jade'] .mb-sidebar-item-add .mb-sidebar-item-inner {
+  border-color: rgba(74, 60, 36, 0.28);
+}
+[data-atmosphere='warm-jade'] .mb-sidebar-item-add:hover .mb-sidebar-item-inner {
+  background: rgba(74, 60, 36, 0.08);
+}
+
+/* 软件系统图标 / 首字母色块（无图标回退） */
+.mb-sidebar-shortcut-img {
+  position: relative;
+  z-index: 1;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  object-fit: contain;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.3));
+}
+.mb-sidebar-shortcut-initial {
+  position: relative;
+  z-index: 1;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+/* ── 拖拽重排 / 内容投送 / 拖入添加 的视觉态 ── */
+/* 长按拖动中：被拖项抬起半透明 */
+.mb-sidebar-shortcut.is-sc-dragging .mb-sidebar-item-inner {
+  opacity: 0.45;
+  transform: scale(0.9);
+}
+/* 重排目标位：accent 内描边指示「会落到这里」 */
+.mb-sidebar-shortcut.is-sc-over .mb-sidebar-item-inner {
+  box-shadow: inset 0 0 0 2px var(--mb-accent);
+}
+/* 拖到另一项「身上」→ 将成组：实心 accent 高亮提示 */
+.mb-sidebar-shortcut.is-sc-grouptarget .mb-sidebar-item-inner {
+  box-shadow: 0 0 0 2px var(--mb-accent), 0 0 14px rgba(255, 255, 255, 0.18);
+  transform: scale(1.1);
+}
+.mb-sidebar-shortcut-initial.is-url {
+  font-size: 14px;
+}
+.mb-sidebar-group-icon {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.mb-sidebar-group-count {
+  position: absolute;
+  right: -6px;
+  bottom: -5px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border-radius: 8px;
+  background: var(--mb-accent);
+  color: #fff;
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
+}
+.mb-sidebar-grouppop {
+  position: fixed;
+  z-index: 9998;
+  min-width: 180px;
+  max-width: 260px;
+  padding: 8px;
+  border-radius: 12px;
+  background: var(--mb-bg-card-solid, var(--mb-bg-card));
+  border: 1px solid var(--mb-border);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.36);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mb-sidebar-grouppop-name {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--mb-border-soft);
+  background: var(--mb-bg-base);
+  color: var(--mb-text-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+.mb-sidebar-grouppop-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.mb-sidebar-grouppop-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--mb-text-secondary);
+  cursor: pointer;
+  text-align: left;
+}
+.mb-sidebar-grouppop-item:hover {
+  background: var(--mb-bg-hover);
+  color: var(--mb-text-primary);
+}
+.mb-sidebar-grouppop-item img,
+.mb-sidebar-grouppop-item .mb-sidebar-shortcut-initial {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  flex-shrink: 0;
+  object-fit: cover;
+}
+.mb-sidebar-grouppop-label {
+  flex: 1;
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mb-sidebar-grouppop-ungroup {
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--mb-text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 5px;
+}
+.mb-sidebar-grouppop-ungroup:hover {
+  color: var(--mb-danger, #e5484d);
+  background: var(--mb-bg-hover);
+}
+/* 内容投送悬停：accent 光晕，提示「松手投送到这里」 */
+.mb-sidebar-shortcut.is-sc-dropcontent .mb-sidebar-item-inner {
+  border-color: var(--mb-accent);
+  box-shadow: 0 0 0 2px var(--mb-accent), 0 0 12px rgba(255, 255, 255, 0.12);
+  transform: scale(1.06);
+}
+/* 拖文件夹/软件进侧栏空白处添加：给「+」高亮提示 */
+.mb-sidebar-nav.is-sc-addhover .mb-sidebar-item-add .mb-sidebar-item-inner {
+  border-color: var(--mb-accent);
+  color: var(--mb-accent);
+  background: rgba(255, 255, 255, 0.06);
+}
+/* 拖拽重排时跟随鼠标的虚影（fixed，不挡交互） */
+.mb-sidebar-ghost {
+  position: fixed;
+  z-index: 9999;
+  width: 52px;
+  height: 52px;
+  border-radius: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1.5px solid var(--mb-accent);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45), 0 0 16px var(--mb-accent);
+  backdrop-filter: blur(10px);
+  transform: scale(1.08);
+  opacity: 0.92;
+}
+.mb-sidebar-ghost img {
+  width: 30px;
+  height: 30px;
+  object-fit: cover;
+  border-radius: 8px;
+}
+/* 主功能按钮接收「图片拖入 → 发送到该功能」时的高亮 */
+.mb-sidebar-item.is-navdrop .mb-sidebar-item-inner {
+  background: var(--mb-accent-gradient);
+  border-color: transparent;
+  box-shadow: 0 0 14px var(--mb-accent);
+  transform: scale(1.12);
+}

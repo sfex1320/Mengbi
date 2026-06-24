@@ -240,3 +240,33 @@
   color: var(--mb-text-muted);
   font-style: italic;
 }
+
+/* 一键修复按钮：失败条目带可自动修复建议时显示 */
+.mb-notif-row-fix {
+  align-self: flex-start;
+  margin-top: 6px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--mb-accent);
+  background: color-mix(in srgb, var(--mb-accent) 14%, transparent);
+  color: var(--mb-accent);
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background var(--mb-duration-fast) var(--mb-ease),
+    color var(--mb-duration-fast) var(--mb-ease),
+    transform var(--mb-duration-fast) var(--mb-ease-snap);
+}
+.mb-notif-row-fix:hover:not(:disabled) {
+  background: var(--mb-accent);
+  color: #fff;
+  transform: translateY(-1px);
+}
+.mb-notif-row-fix:disabled {
+  opacity: 0.7;
+  cursor: default;
+  border-color: var(--mb-border-soft);
+  background: transparent;
+  color: var(--mb-text-muted);
+}

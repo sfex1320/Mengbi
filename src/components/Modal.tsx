@@ -10,6 +10,8 @@ interface ModalProps {
   width?: number;
   children: React.ReactNode;
   footer?: React.ReactNode;
+  /** 标题栏右侧、关闭按钮左边的操作区（如把「保存 / 取消」放到顶部） */
+  headerActions?: React.ReactNode;
   /** 是否允许点击 backdrop 关闭，默认 false（避免误触丢失编辑数据） */
   dismissOnBackdrop?: boolean;
   /** 是否允许 Esc 关闭，默认 true */
@@ -23,6 +25,7 @@ export function Modal({
   width = 520,
   children,
   footer,
+  headerActions,
   dismissOnBackdrop = false,
   dismissOnEsc = true
 }: ModalProps): JSX.Element {
@@ -59,6 +62,7 @@ export function Modal({
           >
             <div className="mb-modal-header">
               <h3>{title}</h3>
+              {headerActions && <div className="mb-modal-header-actions">{headerActions}</div>}
               <button className="mb-modal-close" onClick={onClose} aria-label="关闭">
                 <XIcon size={18} />
               </button>

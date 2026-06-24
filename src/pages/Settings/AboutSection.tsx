@@ -37,23 +37,7 @@ const ENTRIES: LicenseEntry[] = [
     source: 'https://github.com/xinntao/Real-ESRGAN',
     description: '保真放大默认引擎；ncnn + Vulkan 离线推理。'
   },
-  {
-    name: 'HYPIR',
-    kind: 'model',
-    license: 'Apache-2.0',
-    source: 'https://github.com/XPixelGroup/HYPIR',
-    description: 'AI 修复放大引擎；SD2.1 base + LoRA 单步修复。需要 12GB+ 显存。',
-    separateDownload: true
-  },
-  {
-    name: 'SUPIR',
-    kind: 'model',
-    license: 'Apache-2.0',
-    source: 'https://github.com/Fanghua-Yu/SUPIR',
-    description: 'AI 高质量修复放大引擎；SDXL 基础。需要 16GB+ 显存。',
-    separateDownload: true
-  },
-
+  // SUPIR 已于 2026-05-29、HYPIR 已于 2026-06-18 整体砍除，不再登记
   // AI 矢量化条目（StarVector / OmniSVG）已随图像转矢量功能整体移除，待重做后重新登记
 
   // ── 运行时 ──
@@ -83,7 +67,12 @@ const ENTRIES: LicenseEntry[] = [
 export function AboutSection(): JSX.Element {
   const [filter, setFilter] = useState<'all' | 'library' | 'model' | 'runtime'>('all');
   const filtered = filter === 'all' ? ENTRIES : ENTRIES.filter((e) => e.kind === filter);
-  const appVersion = '1.0.0'; // 写死，避免引 package.json
+  const appVersion = '0.0.10'; // 写死，避免引 package.json（与 package.json/electron-builder 版本保持一致）
+  // 构建标识（构建期注入）：用户据此确认「正在运行的包就是最新源码构建的」，
+  // 排查「打包后新功能没进去」时先看这里——若哈希/时间是旧的，说明 out/ 没重新构建就打了包。
+  const gitHash = typeof __GIT_HASH__ === 'string' ? __GIT_HASH__ : 'dev';
+  const buildTime = typeof __BUILD_TIME__ === 'string' ? __BUILD_TIME__ : '';
+  const buildTimeLocal = buildTime ? new Date(buildTime).toLocaleString() : '开发模式';
 
   return (
     <div className="mb-settings-section">
@@ -95,6 +84,9 @@ export function AboutSection(): JSX.Element {
           梦笔（mengbi）<span className="mb-about-app-ver">v{appVersion}</span>
         </div>
         <div className="mb-about-app-tagline">梦中之笔，绘未来之画 —— 一个不断进化的 AI 绘画工具箱</div>
+        <div className="mb-about-app-build" title="构建标识：排查「打包后新功能没进去」时，先核对此处哈希/时间是否为最新源码构建">
+          构建 {gitHash} · {buildTimeLocal}
+        </div>
       </div>
 
       {/* 总体合规提示 */}
@@ -119,8 +111,8 @@ export function AboutSection(): JSX.Element {
         ))}
       </div>
 
-      {/* 条目列表 */}
-      <ul className="mb-about-license-list">
+      {/* 条目卡片网格（自适应：窗口越宽一行越多卡片） */}
+      <ul className="mb-about-license-list mb-about-license-grid">
         {filtered.map((e) => (
           <li key={e.name} className={`mb-about-license-item ${e.experimental ? 'is-experimental' : ''}`}>
             <div className="mb-about-license-head">

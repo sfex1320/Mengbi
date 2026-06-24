@@ -68,10 +68,15 @@ class LocalLlmServer {
     };
   }
 
-  async ensureRunning(modelPath: string): Promise<LocalLlmInfo> {
+  /**
+   * gpuLayers：放到 GPU 的层数（settings `local_llm_gpu_layers`）。
+   * undefined = node-llama-cpp 自动；0 = 纯 CPU（推理变慢但完全不抢界面 GPU）；
+   * 正整数 = 限制 offload 层数（推理与界面合成分摊显卡）。换值需先停止本地模型再发消息（重新加载生效）。
+   */
+  async ensureRunning(modelPath: string, gpuLayers?: number): Promise<LocalLlmInfo> {
     if (this.info && this.currentModelPath === modelPath) return this.info;
     if (this.loadingPromise) return this.loadingPromise;
-    this.loadingPromise = this.start(modelPath).finally(() => {
+    this.loadingPromise = this.start(modelPath, gpuLayers).finally(() => {
       this.loadingPromise = null;
     });
     return this.loadingPromise;
@@ -84,11 +89,11 @@ class LocalLlmServer {
     return this.moduleCache;
   }
 
-  private async start(modelPath: string): Promise<LocalLlmInfo> {
+  private async start(modelPath: string, gpuLayers?: number): Promise<LocalLlmInfo> {
     if (this.info && this.currentModelPath !== modelPath) {
       await this.stop();
     }
-    logger.info('localLlm.start', { modelPath });
+    logger.info('localLlm.start', { modelPath, gpuLayers: gpuLayers ?? 'auto' });
 
     const mod = await this.getModule();
     // 加载模型 + 建上下文整体套超时：坏 gguf / 超大模型会让 loadModel /
@@ -111,7 +116,11 @@ class LocalLlmServer {
             this.llama = await mod.getLlama();
           }
           const llama = this.llama as Awaited<ReturnType<typeof mod.getLlama>>;
-          const model = await llama.loadModel({ modelPath });
+          const model = await llama.loadModel(
+            typeof gpuLayers === 'number' && Number.isFinite(gpuLayers) && gpuLayers >= 0
+              ? { modelPath, gpuLayers: Math.trunc(gpuLayers) }
+              : { modelPath }
+          );
           if (this.loadToken !== token) {
             await disposeQuietly(model); // 已超时/被取代：释放，不赋值
             return;

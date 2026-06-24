@@ -1,11 +1,18 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { NodeResizer, type NodeProps } from '@xyflow/react';
 import { useSmartCanvasStore, useSmartPreviewStore } from '@/store/smartCanvasStore';
-import { computeUpstream } from '@/lib/smartCanvasRunner';
+import { computeUpstream, runScaleVideo } from '@/lib/smartCanvasRunner';
 import { loadImage, computeScaleTarget, resizeToDataUri } from '@/lib/imageScale';
+import { localPathToImageUrl } from '@/lib/imageUrl';
 import { SCALE_MODE_LABELS, type ScaleNodeData, type SmartNodeData } from '@shared/smartCanvas';
 import { NodeShell } from './NodeShell';
 import { MeasuredThumb } from '../MeasuredThumb';
+import { areaMenu, imageSaveAs, showInFolder, openVideoPreview, hoverPreviewProps } from '../nodeArea';
+
+function vidUrl(src?: string): string | null {
+  if (!src) return null;
+  return src.startsWith('data:') || src.startsWith('http') ? src : localPathToImageUrl(src);
+}
 
 /** 模式参数的一句话摘要（节点上展示）。 */
 function summary(d: ScaleNodeData): string {
@@ -43,6 +50,9 @@ export function ScaleNode({ id, data }: NodeProps): JSX.Element {
 
   const up = useMemo(() => computeUpstream(nodes, edges, id), [nodes, edges, id]);
   const src = up.images[0];
+  const upVideo = !src ? up.videos[0] : undefined;
+  const setF = (p: Partial<ScaleNodeData>): void => update(id, p as Partial<SmartNodeData>);
+  const outVid = vidUrl(d.outputVideo ?? undefined);
 
   const imgRef = useRef<{ src: string; img: HTMLImageElement } | null>(null);
 
@@ -108,8 +118,60 @@ export function ScaleNode({ id, data }: NodeProps): JSX.Element {
               </div>
             )}
           </>
+        ) : upVideo ? (
+          <div className="mb-sc-revctl nodrag">
+            <div className="mb-sc-work-model">上游视频 · ffmpeg 缩放 / 补帧（重编码 mp4）</div>
+            <div className="mb-sc-revrow">
+              宽
+              <input className="mb-input" type="number" min={0} placeholder="自适应" value={d.fitW || ''} onFocus={(e) => e.currentTarget.select()} onChange={(e) => setF({ fitW: Number(e.target.value) || 0 })} />
+              高
+              <input className="mb-input" type="number" min={0} placeholder="自适应" value={d.fitH || ''} onFocus={(e) => e.currentTarget.select()} onChange={(e) => setF({ fitH: Number(e.target.value) || 0 })} />
+            </div>
+            <div className="mb-sc-revrow">
+              帧率
+              <select
+                className="mb-select"
+                value={d.vidFps ?? 0}
+                onChange={(e) => setF({ vidFps: Number(e.target.value) || 0 })}
+                title="生成模型多为固定 24fps；补帧用运动补偿插帧（minterpolate），更流畅但处理较慢"
+              >
+                <option value={0}>保持原帧率</option>
+                <option value={30}>补帧到 30fps</option>
+                <option value={48}>补帧到 48fps（慢）</option>
+                <option value={60}>补帧到 60fps（很慢）</option>
+              </select>
+            </div>
+            <button
+              className="mb-btn mb-btn-sm mb-btn-primary"
+              disabled={d.vidStatus === 'running' || (!d.fitW && !d.fitH && !d.vidFps)}
+              onClick={() => void runScaleVideo(id, d.fitW || null, d.fitH || null, d.vidFps || null)}
+            >
+              {d.vidStatus === 'running' ? '处理中…' : d.vidFps ? (d.fitW || d.fitH ? '缩放 + 补帧' : '补帧') : '缩放视频'}
+            </button>
+            {d.vidError && <div className="mb-sc-result-err">{d.vidError}</div>}
+            {outVid && (
+              <video
+                className="mb-sc-video-player nodrag"
+                src={outVid}
+                controls
+                loop
+                muted
+                preload="metadata"
+                {...hoverPreviewProps()}
+                title="悬停自动预览 · 双击放大播放 · 右键更多"
+                onDoubleClick={() => openVideoPreview([d.outputVideo ?? outVid])}
+                onContextMenu={(e) =>
+                  areaMenu(e, [
+                    { label: '放大播放', onClick: () => openVideoPreview([d.outputVideo ?? outVid]) },
+                    { label: '另存视频…', onClick: () => void imageSaveAs(d.outputVideo ?? '', 'scaled.mp4') },
+                    { label: '打开文件所在目录', onClick: () => void showInFolder(d.outputVideo ?? '') }
+                  ])
+                }
+              />
+            )}
+          </div>
         ) : (
-          <div className="mb-sc-empty">连一个图片来源进来 → 自动按设定缩放输出（选中后在检查器选模式/尺寸）。</div>
+          <div className="mb-sc-empty">连图片来源 → 自动缩放（检查器选模式/尺寸）；连视频来源 → 填宽/高或选补帧帧率后点运行。</div>
         )}
       </NodeShell>
     </>

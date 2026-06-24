@@ -5,54 +5,93 @@ import { NODE_ICONS } from './icons';
 
 const ITEMS: Array<[SmartNodeKind, string]> = [
   ['image', '图片'],
+  ['folder-input', '文件夹输入'],
   ['prompt', '提示词'],
   ['llm', 'LLM'],
-  ['angle-prompt', '视角'],
+  ['prompt-mall', '提示词商城'],
+  ['storyboard', '智能分镜'],
+  ['image-reverse', '图像反推'],
+  ['angle-prompt', '镜头'],
   ['light', '光源'],
+  ['palette', '配色工具'],
   ['scale', '缩放'],
+  ['upscale', '保真放大'],
+  ['vectorize', '图像转矢量'],
   ['ratio', '尺寸分析'],
-  ['work', '生成'],
+  ['loop', '循环'],
+  ['work', '生图'],
   ['comfy', 'ComfyUI'],
+  ['video-source', '视频上传'],
   ['video', '视频'],
+  ['video-reverse', '视频反推'],
+  ['frame-interp', '插帧'],
+  ['video-clip', '视频剪辑'],
   ['result', '结果'],
+  ['folder-output', '文件夹输出'],
   ['compare', '对比'],
   ['group', '分组']
 ];
 
 /** 从「输出口」拖出 → 能接到哪些下游节点（图片/提示词无输入口，不作目标；结果/缩放可作来源继续往下连）。 */
 const DOWNSTREAM: Record<SmartNodeKind, SmartNodeKind[]> = {
-  image: ['work', 'comfy', 'video', 'llm', 'group', 'angle-prompt', 'light', 'scale', 'ratio', 'result', 'compare'],
-  prompt: ['work', 'comfy', 'video', 'llm', 'group', 'result'],
-  llm: ['work', 'comfy', 'video', 'llm', 'group', 'result'],
+  image: ['work', 'comfy', 'video', 'llm', 'storyboard', 'group', 'angle-prompt', 'light', 'palette', 'scale', 'ratio', 'result', 'compare', 'image-reverse', 'upscale', 'vectorize'],
+  prompt: ['work', 'comfy', 'video', 'llm', 'prompt-mall', 'storyboard', 'group', 'result'],
+  llm: ['work', 'comfy', 'video', 'llm', 'prompt-mall', 'storyboard', 'group', 'result'],
   'angle-prompt': ['work', 'comfy', 'video', 'llm', 'group', 'result'],
   light: ['work', 'comfy', 'video', 'llm', 'group', 'result'],
-  work: ['result', 'work', 'comfy', 'video', 'llm', 'angle-prompt', 'light', 'scale', 'ratio', 'compare'],
-  comfy: ['result', 'work', 'comfy', 'video', 'llm', 'angle-prompt', 'light', 'scale', 'ratio', 'compare'],
-  group: ['work', 'comfy', 'video', 'llm', 'angle-prompt', 'light', 'scale', 'ratio', 'result', 'compare'],
-  result: ['work', 'comfy', 'video', 'llm', 'group', 'angle-prompt', 'light', 'scale', 'ratio', 'compare'],
-  scale: ['work', 'comfy', 'video', 'llm', 'group', 'angle-prompt', 'light', 'scale', 'ratio', 'result', 'compare'],
-  ratio: [],
+  palette: ['work', 'comfy', 'video', 'llm', 'group', 'result'],
+  work: ['result', 'folder-output', 'work', 'comfy', 'video', 'llm', 'storyboard', 'angle-prompt', 'light', 'palette', 'scale', 'ratio', 'compare', 'image-reverse', 'upscale', 'vectorize'],
+  comfy: ['result', 'folder-output', 'work', 'comfy', 'video', 'llm', 'storyboard', 'angle-prompt', 'light', 'palette', 'scale', 'ratio', 'compare', 'image-reverse', 'upscale', 'vectorize'],
+  group: ['work', 'comfy', 'video', 'llm', 'prompt-mall', 'storyboard', 'angle-prompt', 'light', 'palette', 'scale', 'ratio', 'result', 'folder-output', 'compare', 'image-reverse', 'video-reverse', 'frame-interp', 'video-clip', 'upscale', 'vectorize'],
+  result: ['work', 'comfy', 'video', 'llm', 'prompt-mall', 'storyboard', 'group', 'angle-prompt', 'light', 'palette', 'scale', 'ratio', 'folder-output', 'compare', 'image-reverse', 'video-reverse', 'frame-interp', 'video-clip', 'upscale', 'vectorize'],
+  scale: ['work', 'comfy', 'video', 'llm', 'storyboard', 'group', 'angle-prompt', 'light', 'palette', 'scale', 'ratio', 'result', 'folder-output', 'compare', 'image-reverse', 'video-reverse', 'frame-interp', 'video-clip', 'upscale', 'vectorize'],
+  ratio: ['work', 'comfy', 'video', 'result'],
   text: [],
   compare: [],
-  video: ['result']
+  video: ['result', 'folder-output', 'video-reverse', 'scale', 'frame-interp', 'video-clip'],
+  'image-reverse': ['work', 'comfy', 'video', 'llm', 'prompt-mall', 'storyboard', 'group', 'result'],
+  'video-source': ['video-reverse', 'scale', 'frame-interp', 'video-clip', 'result'],
+  'video-reverse': ['work', 'comfy', 'video', 'llm', 'prompt-mall', 'storyboard', 'group', 'result'],
+  'frame-interp': ['video-reverse', 'scale', 'frame-interp', 'video-clip', 'result'],
+  'video-clip': ['video-reverse', 'scale', 'frame-interp', 'video-clip', 'result', 'folder-output'],
+  storyboard: ['work', 'comfy', 'video', 'llm', 'group', 'result'],
+  'prompt-mall': ['storyboard', 'work', 'comfy', 'video', 'llm', 'group', 'result'],
+  loop: ['work', 'comfy', 'video', 'result'],
+  'folder-input': ['work', 'comfy', 'scale', 'upscale', 'vectorize', 'image-reverse', 'video-reverse', 'frame-interp', 'video-clip', 'group', 'result', 'compare', 'ratio', 'angle-prompt', 'light', 'palette', 'storyboard'],
+  upscale: ['work', 'comfy', 'video', 'llm', 'group', 'angle-prompt', 'light', 'palette', 'scale', 'upscale', 'vectorize', 'ratio', 'result', 'folder-output', 'compare', 'image-reverse'],
+  vectorize: ['result', 'folder-output'],
+  'folder-output': []
 };
 
 /** 从「输入口」拖出 → 能建哪些上游节点（谁能喂进本节点；结果只接 生成/ComfyUI/LLM；视角/光源/缩放/比例只接图片来源）。 */
 const UPSTREAM: Record<SmartNodeKind, SmartNodeKind[]> = {
-  work: ['image', 'prompt', 'llm', 'angle-prompt', 'light', 'work', 'comfy', 'group', 'result', 'scale'],
-  comfy: ['image', 'prompt', 'llm', 'angle-prompt', 'light', 'work', 'comfy', 'group', 'result', 'scale'],
-  llm: ['image', 'prompt', 'llm', 'angle-prompt', 'light', 'work', 'comfy', 'group', 'result', 'scale'],
-  group: ['image', 'prompt', 'llm', 'angle-prompt', 'light', 'work', 'comfy', 'group', 'result', 'scale'],
-  'angle-prompt': ['image', 'group', 'work', 'comfy', 'result', 'scale'],
-  light: ['image', 'group', 'work', 'comfy', 'result', 'scale'],
-  scale: ['image', 'group', 'work', 'comfy', 'result', 'scale'],
-  ratio: ['image', 'group', 'work', 'comfy', 'result', 'scale'],
-  result: ['work', 'comfy', 'llm', 'group', 'prompt', 'image', 'angle-prompt', 'light', 'scale', 'video'],
-  compare: ['image', 'group', 'work', 'comfy', 'result', 'scale'],
-  video: ['image', 'prompt', 'llm', 'angle-prompt', 'light', 'work', 'comfy', 'group', 'result', 'scale'],
+  work: ['image', 'folder-input', 'prompt', 'llm', 'prompt-mall', 'storyboard', 'angle-prompt', 'light', 'palette', 'work', 'comfy', 'group', 'result', 'scale', 'upscale', 'image-reverse', 'video-reverse', 'ratio', 'loop'],
+  comfy: ['image', 'folder-input', 'prompt', 'llm', 'prompt-mall', 'storyboard', 'angle-prompt', 'light', 'palette', 'work', 'comfy', 'group', 'result', 'scale', 'upscale', 'image-reverse', 'video-reverse', 'ratio', 'loop'],
+  llm: ['image', 'folder-input', 'prompt', 'llm', 'prompt-mall', 'storyboard', 'angle-prompt', 'light', 'palette', 'work', 'comfy', 'group', 'result', 'scale', 'upscale', 'image-reverse', 'video-reverse'],
+  group: ['image', 'folder-input', 'prompt', 'llm', 'prompt-mall', 'storyboard', 'angle-prompt', 'light', 'palette', 'work', 'comfy', 'group', 'result', 'scale', 'upscale', 'image-reverse', 'video-reverse'],
+  'angle-prompt': ['image', 'folder-input', 'group', 'work', 'comfy', 'result', 'scale', 'upscale'],
+  light: ['image', 'folder-input', 'group', 'work', 'comfy', 'result', 'scale', 'upscale'],
+  palette: ['image', 'folder-input', 'group', 'work', 'comfy', 'result', 'scale', 'upscale'],
+  scale: ['image', 'folder-input', 'group', 'work', 'comfy', 'result', 'scale', 'video-source', 'video', 'frame-interp', 'video-clip'],
+  ratio: ['image', 'folder-input', 'group', 'work', 'comfy', 'result', 'scale', 'upscale'],
+  result: ['work', 'comfy', 'llm', 'prompt-mall', 'storyboard', 'group', 'prompt', 'image', 'folder-input', 'angle-prompt', 'light', 'palette', 'scale', 'upscale', 'vectorize', 'video', 'image-reverse', 'video-reverse', 'video-source', 'frame-interp', 'video-clip', 'ratio', 'loop'],
+  compare: ['image', 'folder-input', 'group', 'work', 'comfy', 'result', 'scale', 'upscale'],
+  video: ['image', 'prompt', 'llm', 'prompt-mall', 'storyboard', 'angle-prompt', 'light', 'palette', 'work', 'comfy', 'group', 'result', 'scale', 'upscale', 'image-reverse', 'video-reverse', 'ratio', 'loop'],
   image: [],
   prompt: [],
-  text: []
+  text: [],
+  'image-reverse': ['image', 'folder-input', 'group', 'work', 'comfy', 'result', 'scale', 'upscale'],
+  'video-source': [],
+  'video-reverse': ['video-source', 'video', 'result', 'scale', 'frame-interp', 'video-clip', 'folder-input', 'group'],
+  'frame-interp': ['video-source', 'video', 'result', 'scale', 'frame-interp', 'video-clip', 'folder-input', 'group'],
+  'video-clip': ['video-source', 'video', 'result', 'scale', 'frame-interp', 'video-clip', 'folder-input', 'group'],
+  storyboard: ['prompt', 'llm', 'image-reverse', 'video-reverse', 'group', 'result', 'image', 'work', 'comfy', 'scale', 'prompt-mall'],
+  'prompt-mall': ['prompt', 'llm', 'image-reverse', 'video-reverse', 'group', 'result'],
+  loop: [],
+  'folder-input': [],
+  upscale: ['image', 'folder-input', 'group', 'work', 'comfy', 'result', 'scale', 'upscale'],
+  vectorize: ['image', 'folder-input', 'group', 'work', 'comfy', 'result', 'scale', 'upscale'],
+  'folder-output': ['work', 'comfy', 'video', 'scale', 'frame-interp', 'video-clip', 'result', 'group', 'upscale', 'vectorize']
 };
 
 /** 拖出连线 / 双击画布时弹出的快捷创建菜单（fixed 定位在光标处）。 */
@@ -71,9 +110,9 @@ export function CreateMenu(): JSX.Element | null {
   function create(kind: SmartNodeKind): void {
     const id = addNode(kind, { x: m.flowX, y: m.flowY });
     if (m.anchorId) {
-      // up=新节点作上游连入锚点；down=锚点连出到新节点
+      // up=新节点作上游连入锚点；down=锚点连出到新节点（多输出口节点保留拖出的具体口，如分镜 out-trans）
       if (m.dir === 'up') onConnect({ source: id, target: m.anchorId, sourceHandle: 'out', targetHandle: 'in' });
-      else onConnect({ source: m.anchorId, target: id, sourceHandle: 'out', targetHandle: 'in' });
+      else onConnect({ source: m.anchorId, target: id, sourceHandle: m.anchorHandle ?? 'out', targetHandle: 'in' });
     }
     close();
   }

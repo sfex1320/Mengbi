@@ -26,8 +26,10 @@ const WRITE_CHANNELS: ReadonlySet<string> = new Set<string>([
   // video
   'api:video:generate',
   'api:video:cancel',
+  'api:video:upload-asset',
   // gallery / prompt / album
   'api:gallery:update',
+  'api:gallery:import-files',
   'api:prompt:upsert',
   'api:prompt:delete',
   'api:album:upsert',
@@ -45,6 +47,7 @@ const WRITE_CHANNELS: ReadonlySet<string> = new Set<string>([
   'api:storage:select',
   'api:storage:pick-images',
   'api:storage:save-temp-image',
+  'api:storage:save-temp-text',
   'api:storage:show-in-folder',
   'api:storage:open-path',
   'api:storage:save-as',
@@ -55,6 +58,8 @@ const WRITE_CHANNELS: ReadonlySet<string> = new Set<string>([
   // tools box
   'api:tools:save-output',
   'api:gallery:import-from-buffer',
+  // 文件夹批量输出（folder-output 节点落盘）
+  'api:storage:copy-into',
   // 图像转矢量(2 模式: vtracer / potrace) — AI + Pro 已于 2026-05-28 全砍除
   'api:vec:run-vtracer',
   'api:vec:run-potrace',
@@ -75,23 +80,15 @@ const WRITE_CHANNELS: ReadonlySet<string> = new Set<string>([
   'api:upscale:run-single',
   'api:upscale:run-batch',
   'api:upscale:cancel',
-  // HYPIR Portable
-  'api:hypir:set-portable-path',
-  'api:hypir:bootstrap',
-  'api:hypir:start-server',
-  'api:hypir:stop-server',
-  'api:hypir:submit-task',
-  'api:hypir:cancel-task',
-  // SUPIR 已于 2026-05-29 整体砍除(显存需求 25-30 GB 太大)
-  // 通用 AI 平台底座（未来新 AI 功能都用 api:ai-feature:* / api:ai-model:*）
-  'api:ai-feature:bootstrap',
-  'api:ai-feature:set-portable-path',
-  'api:ai-feature:start',
-  'api:ai-feature:stop',
-  'api:ai-feature:install',
-  'api:ai-feature:cancel-install',
-  'api:ai-feature:unload-model',
-  'api:ai-feature:cleanup-all',
+  // 视频插帧（RIFE）—— run 是同步等完成的 IPC，其 success/failure 通知即「真完成」（语音播报白名单依赖此语义）
+  'api:interp:install-engine',
+  'api:interp:remove-engine',
+  'api:interp:run',
+  'api:interp:cancel',
+  // HYPIR / SUPIR / 通用 AI 平台底座 已于 2026-05-29 / 2026-06-18 整体砍除
+  // 侧栏外部软件快捷方式（启动软件 / 用软件打开文件）
+  'api:shortcuts:launch-exe',
+  'api:shortcuts:open-with',
   // config import / export
   'api:config:export',
   'api:config:import',
@@ -118,6 +115,18 @@ const WRITE_CHANNELS: ReadonlySet<string> = new Set<string>([
 ]);
 
 /**
+ * 解析模型标识：渲染端下拉/存储的 modelId 可能是复合「中转站 / 显示名」（区分同名模型在不同中转站），
+ * 也可能是旧版裸显示名。统一拆成 { provider, name }；无 " / " 视为裸名（provider 为空）。
+ * 各 find*Config 解析器据此「先按中转站名+映射名精确命中，再回退裸名首个命中」（向后兼容旧存量）。
+ */
+export function parseModelRef(ref: string): { provider: string; name: string } {
+  const s = ref ?? '';
+  const i = s.indexOf(' / ');
+  if (i < 0) return { provider: '', name: s };
+  return { provider: s.slice(0, i).trim(), name: s.slice(i + 3) };
+}
+
+/**
  * 向某个 webContents 推送一条通知中心条目。
  * - register() 包装层会在写通道命中时自动调用；
  * - 异步任务（image:done / chat:done）的旁路也用它。
@@ -140,7 +149,8 @@ export function appendNotification(
     message: payload.message,
     hint: payload.hint,
     taskId: payload.taskId,
-    refId: payload.refId
+    refId: payload.refId,
+    remedy: payload.remedy
   };
   sender.send('notification:append', full);
 }

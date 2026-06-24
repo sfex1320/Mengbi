@@ -3,6 +3,7 @@ import { toast } from '@/store/toastStore';
 import { CustomSelect } from '@/components/CustomSelect';
 import { useComfyuiStore } from '@/store/comfyuiStore';
 import { useComfyuiRunStore } from '@/store/comfyuiRunStore';
+import { ClampNumberInput } from '@/pages/SmartCanvas/nodePanel/consoleControls';
 import type { LoopConfig, LoopMode, LoopVar } from '@shared/comfyui';
 
 const MODES: Array<{ key: LoopMode; label: string }> = [
@@ -193,9 +194,9 @@ export function LoopPanel(): JSX.Element {
               )}
               {r.kind === 'range' && mode !== 'list' ? (
                 <div className="mb-cfy-range">
-                  <input className="mb-input" type="number" value={r.from} onChange={(e) => setRow(i, { from: e.target.value })} placeholder="起" />
-                  <input className="mb-input" type="number" value={r.to} onChange={(e) => setRow(i, { to: e.target.value })} placeholder="止" />
-                  <input className="mb-input" type="number" value={r.step} onChange={(e) => setRow(i, { step: e.target.value })} placeholder="步长" />
+                  <input className="mb-input" type="number" value={r.from} onFocus={(e) => e.currentTarget.select()} onChange={(e) => setRow(i, { from: e.target.value })} placeholder="起" />
+                  <input className="mb-input" type="number" value={r.to} onFocus={(e) => e.currentTarget.select()} onChange={(e) => setRow(i, { to: e.target.value })} placeholder="止" />
+                  <input className="mb-input" type="number" value={r.step} onFocus={(e) => e.currentTarget.select()} onChange={(e) => setRow(i, { step: e.target.value })} placeholder="步长" />
                 </div>
               ) : (
                 <input className="mb-input" value={r.valuesText} onChange={(e) => setRow(i, { valuesText: e.target.value })} placeholder="值1, 值2, 值3" />
@@ -213,7 +214,7 @@ export function LoopPanel(): JSX.Element {
         <div className="mb-cfy-loop-rows">
           <label className="mb-cfy-field">
             <span className="mb-label">总轮数 n</span>
-            <input className="mb-input" type="number" value={formulaCount} onChange={(e) => setFormulaCount(Number(e.target.value))} />
+            <ClampNumberInput min={1} max={MAX_ITER} value={formulaCount} onCommit={setFormulaCount} />
           </label>
           {formulaItems.map((it, i) => (
             <div key={i} className="mb-cfy-loop-row">
@@ -242,7 +243,7 @@ export function LoopPanel(): JSX.Element {
           </label>
           <label className="mb-cfy-field">
             <span className="mb-label">最大轮数</span>
-            <input className="mb-input" type="number" value={fbMax} onChange={(e) => setFbMax(Number(e.target.value))} />
+            <ClampNumberInput min={1} max={MAX_ITER} value={fbMax} onCommit={setFbMax} />
           </label>
           <div className="mb-cfy-loop-hint">每轮把上一轮的首个输出图作为下一轮该控件的输入（接龙式迭代）。</div>
         </div>
