@@ -74,7 +74,8 @@ linux:
     - AppImage
   category: Graphics
   artifactName: mengbi-${version}.${ext}
+# 自动更新源（electron-updater 按此查 GitHub Releases）—— 2026-07-07 指向新仓库地址
 publish:
   provider: github
-  owner: mengbi
-  repo: mengbi
+  owner: sfex1320
+  repo: Mengbi
