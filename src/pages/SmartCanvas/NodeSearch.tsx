@@ -39,7 +39,9 @@ const TYPE_LABEL: Record<string, string> = {
   upscale: '保真放大',
   vectorize: '图像转矢量',
   'folder-input': '文件夹输入',
-  'folder-output': '文件夹输出'
+  'folder-output': '文件夹输出',
+  segment: '切分工具',
+  proof: '对稿'
 };
 
 /** 节点的可搜索文本（类型名 + 内容片段）。导出供画布筛选 dim 复用。 */

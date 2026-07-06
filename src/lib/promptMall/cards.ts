@@ -33,6 +33,9 @@ import { CHINA_FEMALE_CARDS } from './data/chinaFemale';
 import { CHINA_MALE_CARDS } from './data/chinaMale';
 import { SWIMWEAR_CARDS } from './data/swimwear';
 import { WEDDING_CARDS } from './data/wedding';
+// 2026-06-25 扩充：静态/动作姿态（男女）补到各 ~100 + 中国古代发型（女/男）各 ~22
+import { CHARACTER_EXT_POSE2 } from './data/characterExtPose2';
+import { CHARACTER_EXT_HAIR_ANCIENT } from './data/characterExtHairAncient';
 
 const RAW: PromptMallCard[] = [
   ...CHARACTER_CARDS,
@@ -63,14 +66,45 @@ const RAW: PromptMallCard[] = [
   ...CHINA_FEMALE_CARDS,
   ...CHINA_MALE_CARDS,
   ...SWIMWEAR_CARDS,
-  ...WEDDING_CARDS
+  ...WEDDING_CARDS,
+  ...CHARACTER_EXT_POSE2,
+  ...CHARACTER_EXT_HAIR_ANCIENT
 ];
 
-// 防御性去重（按 id；任两个数据文件 id 撞了只留第一个），保证卡片墙 / 购物车不出现重复 key。
+/**
+ * 分类重映射（2026-06-25）：
+ *  ① 把「中国风女/男·泳衣·婚服」四个旧大类的卡片并入「服饰(clothing)」对应子分类；
+ *  ② 把「年龄段(age-stage)」并入「性别·年龄段(gender-age)」。
+ * 只改 cat/sub/id（旧 sub 前缀进 id 防撞），不动卡片文案；数据文件本身一律不改。
+ * 旧 id 形如 `<cat>.<sub>.<slug>` → 取 `<slug>` 段，新 id = `新cat.新sub.<旧sub>-<slug>` 保证唯一。
+ */
+const CLOTHING_MERGE: Record<string, string> = {
+  'china-female': 'china-female',
+  'china-male': 'china-male',
+  swimwear: 'swimwear',
+  wedding: 'wedding'
+};
+function remapCard(c: PromptMallCard): PromptMallCard {
+  const tail = c.id.split('.').slice(2).join('-') || c.sub;
+  const clo = CLOTHING_MERGE[c.cat];
+  if (clo) return { ...c, cat: 'clothing', sub: clo, id: `clothing.${clo}.${c.sub}-${tail}` };
+  if (c.cat === 'character' && c.sub === 'age-stage') {
+    return { ...c, sub: 'gender-age', id: `character.gender-age.as-${tail}` };
+  }
+  return c;
+}
+
+// 去重两道：① 按 id（任两个数据文件 id 撞了只留第一个）；② 按「同一(大类,子类)下中文名规范化后相同」
+// 合并相同意思的提示词（如扩充时与既有卡撞了同名「盘腿坐」），原数据在前故保留首张。
 const _seen = new Set<string>();
-export const PROMPT_MALL_CARDS: PromptMallCard[] = RAW.filter((c) => {
+const _seenZh = new Set<string>();
+const zhKey = (c: PromptMallCard): string =>
+  `${c.cat}.${c.sub}.${(c.zh || '').trim().toLowerCase().replace(/\s+/g, '')}`;
+export const PROMPT_MALL_CARDS: PromptMallCard[] = RAW.map(remapCard).filter((c) => {
   if (!c.id || _seen.has(c.id)) return false;
+  if (c.zh && _seenZh.has(zhKey(c))) return false; // 同子类同中文名 = 相同意思，只留首张
   _seen.add(c.id);
+  if (c.zh) _seenZh.add(zhKey(c));
   return true;
 });
 

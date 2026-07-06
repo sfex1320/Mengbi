@@ -610,13 +610,52 @@
   color: var(--mb-text-primary);
 }
 
+/* 资产库「冻结」头：面包屑 + 文件夹横排 sticky 固定在滚动容器顶部，不随卡片网格滚动 */
+.mb-gallery-header {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  /* 与面板同款磨砂玻璃：滚动卡片在头部下被虚化而非硬挡，自然融入面板（不再是丑陋的实色暗色带）。
+     横向负边距 -26px = 抵消滚动容器 26px 内边距 → 头部横向全覆盖到面板两缘。 */
+  background: var(--mb-bg-card);
+  backdrop-filter: blur(28px) saturate(140%);
+  -webkit-backdrop-filter: blur(28px) saturate(140%);
+  margin: 0 -26px;
+  padding: 2px 26px 8px;
+  border-bottom: 1px solid var(--mb-border-soft);
+}
+/* 滚动容器顶部有 22px 内边距：sticky 吸顶后该缝隙会漏出下方上滚的卡片。用 ::before 向上补一块同款磨砂盖住缝隙。 */
+.mb-gallery-header::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  height: 26px;
+  background: var(--mb-bg-card);
+  backdrop-filter: blur(28px) saturate(140%);
+  -webkit-backdrop-filter: blur(28px) saturate(140%);
+}
+/* 低配模式关闭了 backdrop-filter（性能）→ 半透明玻璃会漏出卡片，退回不透明底色兜底 */
+html[data-perf='low'] .mb-gallery-header,
+html[data-perf='low'] .mb-gallery-header::before {
+  background: var(--mb-bg-base);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+/* 文件夹横排：单行、横向滚动（超出不换行）、长按抓手左右滑（mb-dragscroll） */
 .mb-gallery-folders {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: 12px;
-  padding: 0 2px 12px;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  gap: 10px;
+  padding: 2px 0 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 .mb-gallery-folder {
+  flex: 0 0 auto;
+  width: 118px;
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -634,7 +673,7 @@
 }
 .mb-gallery-folder-cover {
   width: 100%;
-  aspect-ratio: 4 / 3;
+  aspect-ratio: 1 / 1;
   background: var(--mb-bg-hover);
   display: flex;
   align-items: center;
@@ -649,8 +688,8 @@
   display: block;
 }
 .mb-gallery-folder-name {
-  padding: 8px 10px 2px;
-  font-size: 13px;
+  padding: 6px 8px 1px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--mb-text-primary);
   white-space: nowrap;
@@ -658,8 +697,8 @@
   text-overflow: ellipsis;
 }
 .mb-gallery-folder-count {
-  padding: 0 10px 9px;
-  font-size: 11.5px;
+  padding: 0 8px 7px;
+  font-size: 11px;
   color: var(--mb-text-muted);
 }
 
@@ -821,8 +860,23 @@
 
 .mb-gallery-actions {
   display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
+  gap: 5px;
+  flex-wrap: nowrap; /* 垃圾桶不另起一行：目录 / 预览 / 删除 同排 */
+  align-items: center;
+}
+/* 卡内动作按钮收紧，保证三个按钮单行排得下（窄卡片时 目录/预览 文字省略，删除图标按钮固定） */
+.mb-gallery-actions .mb-config-row-btn {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 5px 6px;
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  justify-content: center;
+}
+.mb-gallery-actions .mb-config-row-btn-danger {
+  flex: 0 0 auto;
+  padding: 5px 8px;
 }
 
 /* ─── 提示词标签：筛选 + 编辑 ─── */

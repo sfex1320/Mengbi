@@ -207,7 +207,7 @@ export function PromptMallNode({ id, data }: NodeProps): JSX.Element {
         {!d.devMode && (
           <div className="mb-sc-sb-runrow nodrag">
             <button className="mb-btn mb-btn-sm" disabled={running} onClick={() => void runPromptMallNode(id)}>
-              {running ? '运行中…' : d.assembled ? '重新合成' : '组装并优化'}
+              {running ? '运行中…' : d.assembled ? '重新合成' : d.assembleMode === 'paragraph' ? '组装成整段' : '组装'}
             </button>
           </div>
         )}

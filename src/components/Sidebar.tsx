@@ -1,5 +1,6 @@
 import { NavLink, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
+import { createPortal } from 'react-dom';
 import { useRef, useState } from 'react';
 import { useImageParamsStore } from '@/store/imageParamsStore';
 import {
@@ -659,9 +660,12 @@ export function Sidebar(): JSX.Element {
           })()
         : null}
 
-      {/* 分组浮窗：列出成员，点击逐个启动；可移出 / 解散 */}
+      {/* 分组浮窗：列出成员，点击逐个启动；可移出 / 解散
+          —— portal 到 body：侧栏/页面用了 framer transform，position:fixed 会被 transform 祖先
+          变成相对定位 + 困在其层叠上下文里被正式内容盖住（铁律 27）。挂到 body 才真正脱离。 */}
       {openGroup
-        ? (() => {
+        ? createPortal(
+            (() => {
             const g = groupById(openGroup.id);
             if (!g) return null;
             return (
@@ -721,7 +725,9 @@ export function Sidebar(): JSX.Element {
                 </button>
               </div>
             );
-          })()
+          })(),
+            document.body
+          )
         : null}
     </aside>
   );

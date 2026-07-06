@@ -24,8 +24,17 @@ import fs from 'node:fs/promises';
 import { existsSync, statSync } from 'node:fs';
 import { app, type WebContents } from 'electron';
 import { randomUUID } from 'node:crypto';
-import * as ort from 'onnxruntime-node';
+import type * as ort from 'onnxruntime-node';
 import { logger } from './logger';
+
+// onnxruntime-node 是 200MB+ 的重型 native 模块（加载时还要侧载 DirectML 等 DLL）。
+// 顶层静态 import 会在启动注册 IPC 时就同步加载、拖慢冷启动 —— 改为首次真正推理时才
+// 动态加载（与 localLlmServer 对 node-llama-cpp 的 lazy 模式一致）。类型引用走 import type（零运行时开销）。
+let ortModule: typeof import('onnxruntime-node') | null = null;
+async function getOrt(): Promise<typeof import('onnxruntime-node')> {
+  if (!ortModule) ortModule = await import('onnxruntime-node');
+  return ortModule;
+}
 import { findOnnxSpec, ONNX_MODELS } from './realesrganOnnxModels';
 import type {
   OutFormat,
@@ -108,7 +117,8 @@ async function ensureSession(modelPath: string): Promise<ort.InferenceSession> {
     `[realesrgan-onnx] loading session: ${path.basename(modelPath)}, EP=${executionProviders.join('/')}`
   );
 
-  const session = await ort.InferenceSession.create(modelPath, {
+  const ortRt = await getOrt();
+  const session = await ortRt.InferenceSession.create(modelPath, {
     executionProviders,
     graphOptimizationLevel: 'all',
     logSeverityLevel: 3
@@ -286,7 +296,8 @@ async function inferTile(
   tileW: number,
   tileH: number
 ): Promise<{ data: Float32Array; outW: number; outH: number }> {
-  const tensor = new ort.Tensor('float32', tile, [1, 3, tileH, tileW]);
+  const ortRt = await getOrt();
+  const tensor = new ortRt.Tensor('float32', tile, [1, 3, tileH, tileW]);
   const feeds: Record<string, ort.Tensor> = { [ctx.inputName]: tensor };
   const results = await ctx.session.run(feeds);
   const outTensor = results[ctx.outputName] ?? results[Object.keys(results)[0]];

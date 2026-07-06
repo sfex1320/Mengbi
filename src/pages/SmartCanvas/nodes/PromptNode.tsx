@@ -23,12 +23,12 @@ export function PromptNode({ id, data }: NodeProps): JSX.Element {
   const ITEM_H = Math.max(60, d.listItemHeight ?? 132);
   const listRef = useRef<HTMLDivElement>(null);
 
-  // 自适应：单条 ≈5× 高（输入框大）；列表按 listItemHeight + 条数估高（含统一提示词行），保证输入框/按钮完整可见。
+  // 自适应：单条 ≈2.5× 高（输入框适中）；列表按 listItemHeight + 条数估高（含统一提示词行），保证输入框/按钮完整可见。
   useEffect(() => {
     const w = getNodeWidth(id);
     const h = d.listMode
       ? 130 + items.length * (ITEM_H + 16) + 64
-      : Math.max(680, 90 + estimateTextHeight(d.text ?? '', w)) + (showTr ? 300 : 0);
+      : Math.max(340, 90 + estimateTextHeight(d.text ?? '', w)) + (showTr ? 300 : 0);
     autoGrowNode(id, h, 2200);
   }, [id, d.text, d.listMode, items, showTr, ITEM_H]);
 

@@ -11,11 +11,12 @@
  *   - distinctColors > 5000 + saturationStd 大 → complex-photo
  *   - 渐变图 (saturationStd 大 + edgeDensity 低) → gradient-photo
  */
-import sharp from 'sharp';
+import { getSharp } from '../../sharpLazy';
 import type { ImageTypeDetection, ImageTypeTag, VecMode } from '../types';
 
 /** 主入口:接受图片路径,返回检测结果。 */
 export async function detectImageType(inputPath: string): Promise<ImageTypeDetection> {
+  const sharp = await getSharp();
   const img = sharp(inputPath);
   const meta = await img.metadata();
   const width = meta.width ?? 0;

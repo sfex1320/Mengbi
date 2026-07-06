@@ -8,7 +8,8 @@ import type {
   ApertureSetting,
   CameraMovement,
   FocalLength,
-  ShotComposition
+  ShotComposition,
+  ShotSize
 } from '@shared/smartCanvas';
 
 const CAMERA_TYPE_PHRASE: Record<CameraType, string> = {
@@ -55,6 +56,18 @@ const FOCAL_PHRASE: Record<FocalLength, string> = {
   tele: '长焦镜头，压缩空间、突出主体',
   macro: '微距镜头，极近距离放大细节'
 };
+const SHOT_SIZE_PHRASE: Record<ShotSize, string> = {
+  none: '',
+  'extreme-long': '超远景，主体置于广阔环境中显得渺小，强调宏大空间与氛围',
+  long: '远景，完整呈现主体与周遭环境的关系',
+  full: '全景，主体全身入镜并带少量环境',
+  'full-body': '全身镜头，从头到脚完整呈现主体',
+  medium: '中景，截取主体腰部以上',
+  'medium-close': '中近景，截取主体胸部以上',
+  close: '近景，聚焦主体头肩部',
+  closeup: '特写，面部或局部充满画面',
+  'extreme-closeup': '大特写，极近放大眼睛或细节'
+};
 const COMPOSITION_PHRASE: Record<ShotComposition, string> = {
   none: '',
   thirds: '三分法构图，主体置于黄金分割线',
@@ -90,12 +103,16 @@ export interface CameraPromptInput {
   movement?: CameraMovement;
   focal?: FocalLength;
   composition?: ShotComposition;
+  shotSize?: ShotSize;
   appendConsistencyInstruction: boolean;
 }
 
 export function buildCameraPrompt(d: CameraPromptInput): string {
   const mode = d.camMode ?? 'photo';
   const parts: string[] = [];
+
+  // 景别 / 景构是最根本的取景，放在镜头描述最前面（两种模式通用）。
+  if (d.shotSize && d.shotSize !== 'none') parts.push(SHOT_SIZE_PHRASE[d.shotSize]);
 
   if (mode === 'photo') {
     if (d.cameraType && d.cameraType !== 'none') parts.push(CAMERA_TYPE_PHRASE[d.cameraType]);

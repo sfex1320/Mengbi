@@ -138,6 +138,15 @@ export const PROMPT_MALL_SYSTEM: Record<PromptMallLang, string> = {
   en: 'You are an AI image-prompt integration assistant. Below are prompt fragments the user picked from a Prompt Mall. Merge, de-duplicate, and organize them into ONE coherent, natural English image-generation prompt. Keep every concept (omit nothing); do NOT add elements the user did not pick; if any fragment is introduced by "Negative:", place those undesired elements on a single trailing "Negative:" line. Output ONLY the final prompt itself — no explanation, no code fences, no preamble.'
 };
 
+/**
+ * 「自然语言整段」组装的 systemPrompt（按输出语言）：不是逐段拼接，而是让对话模型据所有元素
+ * 从头写出一整段连贯、流畅的自然语言画面描述（适合指令跟随型模型，服从度更高）。
+ */
+export const PROMPT_MALL_PARAGRAPH_SYSTEM: Record<PromptMallLang, string> = {
+  zh: '你是资深 AI 绘画提示词作者。下面是用户从「提示词商城」挑选的若干元素片段，请把它们融会贯通，从头撰写成「一整段」连贯流畅的自然语言画面描述（不是逗号堆叠的标签，而是像描述一幅画那样的完整段落）。要求：自然地包含用户选中的每一个元素、不要遗漏；不要新增用户没有选择的元素；语序与措辞自行组织得通顺优美；若出现以「负面：」开头的内容，把这些不希望出现的内容单独放在结尾的「负面：」一行。只输出这段描述本身，不要任何解释、不要代码块、不要前后缀。',
+  en: 'You are a seasoned AI image-prompt writer. Below are element fragments the user picked from a Prompt Mall. Weave them together and write ONE flowing, coherent natural-language paragraph describing the scene (a complete prose description like depicting a painting, NOT a comma-stacked tag list). Requirements: naturally include every element the user picked, omit none; do NOT add elements the user did not pick; organize wording fluently; if any fragment starts with "Negative:", place those undesired elements on a single trailing "Negative:" line. Output ONLY this paragraph — no explanation, no code fences, no preamble.'
+};
+
 /** 去掉模型回复里可能包裹的 ``` 代码块（best-effort，永不抛）。 */
 export function stripFences(raw: string): string {
   let s = (raw ?? '').trim();

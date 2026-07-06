@@ -18,7 +18,7 @@
 import { existsSync, statSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import sharp from 'sharp';
+import { getSharp } from './sharpLazy';
 import { logger } from './logger';
 
 /** 缩略图最长边像素 */
@@ -62,6 +62,7 @@ export async function generateThumbnail(originalPath: string): Promise<string | 
     //   否则用户生成/放大出的「几万×几万」超大图会直接抛错 → 无缩略图 → 各处封面回退渲染原图 → 卡死。
     // sequentialRead:true —— 让 libvips 按扫描线流式缩放，峰值内存只占几行而非整张光栅，
     //   30000² 这种巨图也不会把整张读进内存导致 OOM。
+    const sharp = await getSharp();
     await sharp(originalPath, { failOn: 'none', limitInputPixels: false, sequentialRead: true })
       .rotate() // 应用 EXIF 旋转
       .resize({

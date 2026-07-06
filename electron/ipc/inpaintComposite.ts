@@ -8,7 +8,7 @@
  * 遮罩约定（与 canvasEngine/maskEngine.ts:maskToEditAlphaPng 一致，发给 OpenAI 的形式）：
  *   透明(alpha=0)=编辑区 / 不透明(alpha=255)=保留区。
  */
-import sharp from 'sharp';
+import { getSharp } from '../services/sharpLazy';
 import { logger } from '../services/logger';
 
 /**
@@ -19,6 +19,7 @@ import { logger } from '../services/logger';
  */
 export async function compositeInpaintResult(resultBuf: Buffer, baseBuf: Buffer, maskBuf: Buffer): Promise<Buffer> {
   try {
+    const sharp = await getSharp();
     const meta = await sharp(baseBuf).metadata();
     const W = meta.width ?? 0;
     const H = meta.height ?? 0;

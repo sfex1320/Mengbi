@@ -34,7 +34,9 @@ export type SmartNodeKind =
   | 'upscale'
   | 'vectorize'
   | 'folder-input'
-  | 'folder-output';
+  | 'folder-output'
+  | 'segment'
+  | 'proof';
 
 export type WorkType =
   | 'image-generation' // 图片生成
@@ -387,6 +389,9 @@ export type FocalLength = 'none' | 'ultrawide' | 'wide' | 'standard' | 'tele' | 
 /** 构图（两种模式通用）。 */
 export type ShotComposition =
   | 'none' | 'thirds' | 'centered' | 'symmetry' | 'diagonal' | 'leadinglines' | 'frameinframe' | 'golden' | 'fill' | 'negative';
+/** 景别 / 景构（两种模式通用）：从超远景到大特写的取景范围。 */
+export type ShotSize =
+  | 'none' | 'extreme-long' | 'long' | 'full' | 'full-body' | 'medium' | 'medium-close' | 'close' | 'closeup' | 'extreme-closeup';
 
 export const CAMERA_TYPE_LABELS: Record<CameraType, string> = {
   none: '未指定',
@@ -460,6 +465,31 @@ export const COMPOSITION_ICON: Record<ShotComposition, string> = {
   none: '○', thirds: '#️⃣', centered: '🎯', symmetry: '🪞', diagonal: '⤢', leadinglines: '🛤️',
   frameinframe: '🖼️', golden: '🌀', fill: '🔳', negative: '⬜'
 };
+export const SHOT_SIZE_LABELS: Record<ShotSize, string> = {
+  none: '未指定',
+  'extreme-long': '超远景',
+  long: '远景',
+  full: '全景',
+  'full-body': '全身',
+  medium: '中景',
+  'medium-close': '中近景',
+  close: '近景',
+  closeup: '特写',
+  'extreme-closeup': '大特写'
+};
+/** 景别副标（取景范围提示）。 */
+export const SHOT_SIZE_SUB: Record<ShotSize, string> = {
+  none: '',
+  'extreme-long': '宏大空间',
+  long: '环境关系',
+  full: '全身带景',
+  'full-body': '头到脚',
+  medium: '腰部以上',
+  'medium-close': '胸部以上',
+  close: '头肩部',
+  closeup: '面部局部',
+  'extreme-closeup': '眼睛细节'
+};
 
 export interface AnglePromptNodeData extends NodeMeta {
   /** 手动上传的图（上游图片优先；本字段为兜底）。url = 本地路径或 data:URI */
@@ -482,6 +512,8 @@ export interface AnglePromptNodeData extends NodeMeta {
   focal?: FocalLength;
   /** 构图（两种模式通用） */
   composition?: ShotComposition;
+  /** 景别 / 景构（两种模式通用）：超远景～大特写的取景范围 */
+  shotSize?: ShotSize;
   /** 实时生成的镜头提示词（文本输出，下游可读） */
   generatedPrompt: string;
   /** 是否追加「保持主体一致，只改镜头」约束句 */
@@ -1177,6 +1209,8 @@ export interface PromptMallNodeData extends NodeMeta {
   modelId: string;
   /** true=把购物车交给对话模型合并去重成一条；false=纯函数逗号拼接 */
   optimize: boolean;
+  /** 组装方式：'fragments'=逐段片段逗号拼接（默认，可选优化合并）/ 'paragraph'=对话模型从头写成一整段连贯自然语言描述 */
+  assembleMode?: 'fragments' | 'paragraph';
   /** 合成产物 = 本节点的文本输出（优化后或原始拼接） */
   assembled?: string;
   /** 锁定产物：手改后不被「运行」覆盖 */
@@ -1286,6 +1320,111 @@ export interface FolderOutputNodeData extends NodeMeta {
   error?: string | null;
 }
 
+// ───────────────────────── 切分 / 对稿 共享（视觉元素分析）─────────────────────────
+// 两类节点都靠「视觉模型分析整图 → 返回逐元素边界框 + 逐元素信息」，框为源图像素坐标，可在工作台拖拽/缩放校准。
+
+/** 元素边界框（源图像素坐标，左上角原点）。 */
+export interface ElementRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** 对稿问题类别。 */
+export type ProofIssueType = 'font' | 'element' | 'logo' | 'shape';
+/** 对稿严重度。 */
+export type ProofSeverity = 'high' | 'medium' | 'low' | 'ok';
+
+export const PROOF_ISSUE_LABELS: Record<ProofIssueType, string> = {
+  font: '字体/文字错误',
+  element: '元素错误',
+  logo: 'Logo 错误',
+  shape: '形态错误'
+};
+export const PROOF_SEVERITY_LABELS: Record<ProofSeverity, string> = {
+  high: '严重',
+  medium: '中等',
+  low: '轻微',
+  ok: '正常'
+};
+
+/** 切分元素：一个被识别出的画面元素 + 它的反推提示词 + 重绘结果。 */
+export interface SegElement {
+  id: string;
+  /** 元素名（如「猪肉」「微信图标」「左手」） */
+  label: string;
+  /** 边界框（源图像素坐标） */
+  box: ElementRect;
+  /** 逐元素反推提示词（视觉模型给出，可手改） */
+  prompt?: string;
+  /** 重绘后的元素图（dataURI / 磁盘路径；不持久化大 base64，落盘后为路径） */
+  regenSrc?: string;
+  /** 该元素重绘状态（done=已重绘，独立于节点级 RunStatus） */
+  status?: 'idle' | 'running' | 'done' | 'error';
+  error?: string | null;
+}
+
+/** 切分工具节点：整图 → 自动识别元素框 → 逐元素反推 → 统一风格 → 逐元素重绘 → 1:1 拼回整图。 */
+export interface SegmentNodeData extends NodeMeta {
+  /** 视觉模型（识别元素框 + 逐元素反推；需多模态/vision 能力） */
+  modelId?: string;
+  /** 生图模型（逐元素重绘） */
+  genModelId?: string;
+  /** 统一风格约束（拼进每个元素的重绘提示词，保证整体风格一致） */
+  stylePrompt?: string;
+  /** 手动上传图（上游图片优先；本字段兜底） */
+  inputImage?: { url: string; name?: string } | null;
+  /** 指纹：上次识别用的图（图变了需重新识别） */
+  analysisSrc?: string;
+  /** 源图尺寸（识别后量得，框坐标的参照系） */
+  imgW?: number;
+  imgH?: number;
+  /** 识别出的元素 */
+  elements?: SegElement[];
+  /** 拼合后的整图（节点输出；dataURI / 磁盘路径，不持久化） */
+  composedSrc?: string;
+  status: RunStatus;
+  /** 进度文案（识别中 / 反推中 / 重绘中 / 拼合中） */
+  phase?: string;
+  logs?: string[];
+  error?: string | null;
+}
+
+/** 对稿元素：一个被识别出的元素 + 它的检错结论。 */
+export interface ProofElement {
+  id: string;
+  label: string;
+  box: ElementRect;
+  /** 命中的问题类别（可多个） */
+  issueTypes: ProofIssueType[];
+  severity: ProofSeverity;
+  /** 问题描述 */
+  description: string;
+  /** 修改建议 */
+  suggestion: string;
+  /** 是否无问题（ok=true 时不渲染问题框） */
+  ok: boolean;
+}
+
+/** 对稿节点：多模态模型逐元素拆分识别海报问题（字体/元素/logo/形态），输出审稿报告文本 + 可导出标注图。 */
+export interface ProofNodeData extends NodeMeta {
+  /** 视觉模型（需多模态/vision 能力） */
+  modelId?: string;
+  inputImage?: { url: string; name?: string } | null;
+  analysisSrc?: string;
+  imgW?: number;
+  imgH?: number;
+  elements?: ProofElement[];
+  /** 审稿报告（节点文本输出，喂下游） */
+  reportText?: string;
+  /** 标注图（问题框画在海报上；dataURI，不持久化，工作台导出/入库用） */
+  annotatedSrc?: string;
+  status: RunStatus;
+  logs?: string[];
+  error?: string | null;
+}
+
 export type SmartNodeData =
   | UpscaleNodeData
   | VectorizeNodeData
@@ -1313,7 +1452,9 @@ export type SmartNodeData =
   | PromptMallNodeData
   | LoopNodeData
   | FolderInputNodeData
-  | FolderOutputNodeData;
+  | FolderOutputNodeData
+  | SegmentNodeData
+  | ProofNodeData;
 
 // ───────────────────────── 运行结果 ─────────────────────────
 

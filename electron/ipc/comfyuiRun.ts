@@ -108,6 +108,7 @@ export function registerComfyuiRunHandlers(): void {
         outputNodeIds: input.outputNodeIds,
         fileTaskId: nextFileTaskId(),
         skipGallery: input.skipGallery,
+        galleryGroup: input.galleryGroup ?? null,
         sender: event.sender
       }
     ]);

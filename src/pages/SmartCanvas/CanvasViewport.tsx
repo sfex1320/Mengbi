@@ -42,6 +42,8 @@ import { makePromptNodeFrom, imageSaveAs, imageToGallery, openVideoPreview, copy
 import { useGalleryPickerStore } from './GalleryPickerDialog';
 import { usePromptMallStudioStore } from './PromptMallStudio';
 import { useStoryboardStudioStore } from './StoryboardStudio';
+import { useSegmentStudioStore } from './SegmentStudio';
+import { useProofStudioStore } from './ProofStudio';
 import type {
   SmartNodeKind,
   SmartNodeData,
@@ -52,7 +54,9 @@ import type {
   PromptNodeData,
   AnglePromptNodeData,
   LightNodeData,
-  PaletteNodeData
+  PaletteNodeData,
+  SegmentNodeData,
+  ProofNodeData
 } from '@shared/smartCanvas';
 import { ImageNode } from './nodes/ImageNode';
 import { PromptNode } from './nodes/PromptNode';
@@ -80,6 +84,8 @@ import { StoryboardNode } from './nodes/StoryboardNode';
 import { PromptMallNode } from './nodes/PromptMallNode';
 import { LoopNode } from './nodes/LoopNode';
 import { FolderInputNode, FolderOutputNode } from './nodes/FolderNodes';
+import { SegmentNode } from './nodes/SegmentNode';
+import { ProofNode } from './nodes/ProofNode';
 import { DeletableEdge } from './DeletableEdge';
 import { CreateMenu } from './CreateMenu';
 import { ArrangePanel } from './ArrangePanel';
@@ -118,7 +124,9 @@ const nodeTypes: NodeTypes = {
   upscale: memo(UpscaleNode),
   vectorize: memo(VectorizeNode),
   'folder-input': memo(FolderInputNode),
-  'folder-output': memo(FolderOutputNode)
+  'folder-output': memo(FolderOutputNode),
+  segment: memo(SegmentNode),
+  proof: memo(ProofNode)
 };
 const edgeTypes: EdgeTypes = { deletable: DeletableEdge };
 const defaultEdgeOptions = { type: 'deletable' };
@@ -140,6 +148,8 @@ function latestImageOf(cur: Node): string | undefined {
       const imgs = acc.flatMap((r) => r.images);
       return imgs.length ? imgs[imgs.length - 1] : undefined;
     }
+    case 'segment':
+      return (cur.data as unknown as SegmentNodeData).composedSrc ?? undefined;
     default:
       return undefined;
   }
@@ -190,6 +200,8 @@ function textOutputOf(cur: Node): string {
       const shots = (cur.data as unknown as { shots?: string[] }).shots ?? [];
       return shots.map((s, i) => `【分镜 ${i + 1}】${s}`).join('\n\n').trim();
     }
+    case 'proof':
+      return ((cur.data as unknown as ProofNodeData).reportText ?? '').trim();
     default:
       return '';
   }
@@ -206,7 +218,9 @@ const RUN_TYPES = new Set([
   'video-clip',
   'image-reverse',
   'video-reverse',
-  'prompt-mall'
+  'prompt-mall',
+  'segment',
+  'proof'
 ]);
 
 /** 节点右键菜单的「类型专属操作」（运行 / 工作台 / 选图 / 预览 / 复制 / 另存 / 入资产库 / 文本放大 / 建提示词节点），置顶展示。 */
@@ -222,6 +236,12 @@ function nodeTypeActions(cur: Node): ContextMenuEntry[] {
   }
   if (cur.type === 'storyboard') {
     items.push({ label: '打开分镜工作台', onClick: () => useStoryboardStudioStore.getState().open(id) });
+  }
+  if (cur.type === 'segment') {
+    items.push({ label: '打开切分工作台', onClick: () => useSegmentStudioStore.getState().open(id) });
+  }
+  if (cur.type === 'proof') {
+    items.push({ label: '打开对稿工作台', onClick: () => useProofStudioStore.getState().open(id) });
   }
   if (cur.type === 'image') {
     items.push({ label: '从资产库选图', onClick: () => useGalleryPickerStore.getState().open(id) });

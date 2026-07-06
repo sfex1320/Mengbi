@@ -88,7 +88,9 @@ export const NODE_TYPE_LABELS: Record<SmartNodeKind, string> = {
   upscale: '保真放大',
   vectorize: '图像转矢量',
   'folder-input': '文件夹输入',
-  'folder-output': '文件夹输出'
+  'folder-output': '文件夹输出',
+  segment: '切分工具',
+  proof: '对稿'
 };
 
 /** 运行状态胶囊（与生成控制台同款 mb-np-status，work/comfy/llm 共用）。 */

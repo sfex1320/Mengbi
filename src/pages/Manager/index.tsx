@@ -106,6 +106,8 @@ export default function ManagerPage(): JSX.Element {
   const ui = useUIStore();
   // 主内容区长按拖动滚动（资产库 / 提示词库 网格）；输入/可拖图片自动跳过（见 useDragScroll）。
   const contentRef = useDragScroll<HTMLElement>();
+  // 文件夹横排单行：自己的横向抓手滚动（与主内容区垂直滚动各管一轴）。
+  const foldersRef = useDragScroll<HTMLDivElement>();
   // 提示词管家 2026-06-12 复活：资产库 / 提示词 双视图（2026-06-05 下线时只删了切换入口，
   // 提示词分支与后端通道一直休眠保留）。默认资产库——用户更习惯先看图。
   const [mode, setMode] = useState<Mode>('gallery');
@@ -309,19 +311,22 @@ export default function ManagerPage(): JSX.Element {
       toast.error('分组操作失败', r.error.message);
       return false;
     }
+    // 关键：清掉资产库缓存——否则刷新时会先把「分组前的旧列表」当缓存闪出来（被分掉的图一闪即逝又冒出来）。
+    useGalleryStore.getState().clear();
     await refreshGroups();
     await refreshImages();
     return true;
   }
 
-  /** 拖一张卡到另一张卡上 → 成组：目标已在某文件夹则并入，否则新建文件夹把两张一起放进去。 */
-  async function dropCardOnCard(draggedId: number, target: ImageRow): Promise<void> {
-    if (draggedId === target.id) return;
+  /** 拖一张/一批卡到另一张卡上 → 成组：目标已在某文件夹则并入，否则新建文件夹把它们一起放进去。 */
+  async function dropCardsOnCard(draggedIds: number[], target: ImageRow): Promise<void> {
+    const ids = draggedIds.filter((id) => id !== target.id);
+    if (ids.length === 0) return;
     if (target.group_name) {
-      if (await setImagesGroup([draggedId], target.group_name)) toast.success(`已加入「${target.group_name}」`);
+      if (await setImagesGroup(ids, target.group_name)) toast.success(`已加入「${target.group_name}」`);
     } else {
       const name = uniqueGroupName();
-      if (await setImagesGroup([draggedId, target.id], name)) toast.success(`已新建文件夹「${name}」`);
+      if (await setImagesGroup([...ids, target.id], name)) toast.success(`已新建文件夹「${name}」`);
     }
   }
 
@@ -538,38 +543,9 @@ export default function ManagerPage(): JSX.Element {
     }));
   }
 
-  /** 图片右键「移到文件夹」子菜单：新建文件夹 / 现有文件夹 / 移出（若已在文件夹内）。 */
-  function folderSubmenuItems(im: ImageRow): ContextMenuEntry[] {
-    const items: ContextMenuEntry[] = [
-      {
-        label: '新建文件夹并移入…',
-        icon: <PlusIcon size={11} />,
-        onClick: () => {
-          const name = uniqueGroupName();
-          void setImagesGroup([im.id], name).then((ok) => {
-            if (ok) {
-              enterGroup(name);
-              setGroupRenaming(name);
-            }
-          });
-        }
-      }
-    ];
-    for (const g of groups) {
-      if (g.name === im.group_name) continue;
-      items.push({
-        label: `📁 ${g.name}`,
-        onClick: () => void setImagesGroup([im.id], g.name).then((ok) => ok && toast.success(`已移入「${g.name}」`))
-      });
-    }
-    if (im.group_name) {
-      items.push({ separator: true });
-      items.push({
-        label: '移出文件夹（回首页）',
-        onClick: () => void setImagesGroup([im.id], null).then((ok) => ok && toast.success('已移出文件夹'))
-      });
-    }
-    return items;
+  /** 右键成组的目标 id：批量选择且本卡在选中里 → 整批；否则只这一张。 */
+  function groupTargetIds(im: ImageRow): number[] {
+    return selectMode && selectedIds.has(im.id) ? Array.from(selectedIds) : [im.id];
   }
 
   async function deletePrompt(id: number): Promise<void> {
@@ -1158,10 +1134,40 @@ export default function ManagerPage(): JSX.Element {
           children: albumSubmenuItems(im)
         },
         {
-          label: '移到文件夹…',
+          label: selectMode && selectedIds.has(im.id) && selectedIds.size > 1 ? `加入成新组（${selectedIds.size} 张）` : '加入成新组',
           icon: <FolderIcon size={12} />,
-          children: folderSubmenuItems(im)
+          onClick: () => {
+            const ids = groupTargetIds(im);
+            const name = uniqueGroupName();
+            void setImagesGroup(ids, name).then((ok) => {
+              if (ok) {
+                enterGroup(name);
+                setGroupRenaming(name);
+              }
+            });
+          }
         },
+        ...(groups.length
+          ? [
+              {
+                label: '加入现有组…',
+                icon: <FolderIcon size={12} />,
+                children: groups.map((g) => ({
+                  label: `📁 ${g.name}`,
+                  onClick: () =>
+                    void setImagesGroup(groupTargetIds(im), g.name).then((ok) => ok && toast.success(`已移入「${g.name}」`))
+                }))
+              }
+            ]
+          : []),
+        ...(im.group_name
+          ? [
+              {
+                label: '移出文件夹（回首页）',
+                onClick: () => void setImagesGroup([im.id], null).then((ok) => ok && toast.success('已移出文件夹'))
+              }
+            ]
+          : []),
         { separator: true },
         {
           label: '转入工具箱…',
@@ -1810,73 +1816,75 @@ export default function ManagerPage(): JSX.Element {
 
         {mode === 'gallery' && (
           <>
-            {/* 面包屑地址栏：相册视图不显示；有文件夹或已进入文件夹时显示 */}
+            {/* 资产库主区域「冻结」头：面包屑地址栏 + 文件夹横排——sticky 固定在顶部，不随卡片网格滚动 */}
             {activeAlbumId === null && (groups.length > 0 || activeGroup !== null) && (
-              <div className="mb-gallery-crumbs">
-                <button
-                  type="button"
-                  className={`mb-gallery-crumb ${activeGroup === null ? 'is-active' : ''}`}
-                  onClick={() => setActiveGroup(null)}
-                >
-                  🏠 首页
-                </button>
-                {activeGroup !== null && (
-                  <>
-                    <span className="mb-gallery-crumb-sep">›</span>
-                    {groupRenaming === activeGroup ? (
-                      <input
-                        className="mb-gallery-crumb-input"
-                        autoFocus
-                        defaultValue={activeGroup}
-                        onBlur={(e) => void renameGroup(activeGroup, e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-                          else if (e.key === 'Escape') setGroupRenaming(null);
-                        }}
-                      />
-                    ) : (
+              <div className="mb-gallery-header">
+                <div className="mb-gallery-crumbs">
+                  <button
+                    type="button"
+                    className={`mb-gallery-crumb ${activeGroup === null ? 'is-active' : ''}`}
+                    onClick={() => setActiveGroup(null)}
+                  >
+                    🏠 首页
+                  </button>
+                  {activeGroup !== null && (
+                    <>
+                      <span className="mb-gallery-crumb-sep">›</span>
+                      {groupRenaming === activeGroup ? (
+                        <input
+                          className="mb-gallery-crumb-input"
+                          autoFocus
+                          defaultValue={activeGroup}
+                          onBlur={(e) => void renameGroup(activeGroup, e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                            else if (e.key === 'Escape') setGroupRenaming(null);
+                          }}
+                        />
+                      ) : (
+                        <button
+                          type="button"
+                          className="mb-gallery-crumb is-active"
+                          onDoubleClick={() => setGroupRenaming(activeGroup)}
+                          title="双击重命名文件夹"
+                        >
+                          📁 {activeGroup}
+                        </button>
+                      )}
                       <button
                         type="button"
-                        className="mb-gallery-crumb is-active"
-                        onDoubleClick={() => setGroupRenaming(activeGroup)}
-                        title="双击重命名文件夹"
+                        className="mb-gallery-crumb-edit"
+                        title="重命名"
+                        onClick={() => setGroupRenaming(activeGroup)}
                       >
-                        📁 {activeGroup}
+                        ✎
                       </button>
-                    )}
-                    <button
-                      type="button"
-                      className="mb-gallery-crumb-edit"
-                      title="重命名"
-                      onClick={() => setGroupRenaming(activeGroup)}
-                    >
-                      ✎
-                    </button>
-                    <button
-                      type="button"
-                      className="mb-gallery-crumb-edit"
-                      title="解散文件夹"
-                      onClick={() => void dissolveGroup(activeGroup)}
-                    >
-                      <TrashIcon size={12} />
-                    </button>
-                  </>
-                )}
-              </div>
-            )}
+                      <button
+                        type="button"
+                        className="mb-gallery-crumb-edit"
+                        title="解散文件夹"
+                        onClick={() => void dissolveGroup(activeGroup)}
+                      >
+                        <TrashIcon size={12} />
+                      </button>
+                    </>
+                  )}
+                </div>
 
-            {/* 首页：文件夹卡（拖图片到卡上 = 归入该文件夹；右键改名/解散） */}
-            {activeAlbumId === null && activeGroup === null && groups.length > 0 && (
-              <div className="mb-gallery-folders">
-                {groups.map((g) => (
-                  <FolderCard
-                    key={g.name}
-                    group={g}
-                    onOpen={() => enterGroup(g.name)}
-                    onContextMenu={(e) => openGroupMenu(e, g)}
-                    onDropImage={(id) => void setImagesGroup([id], g.name)}
-                  />
-                ))}
+                {/* 文件夹横排单行（横向抓手滚动，超出不换行）：拖图片到卡上 = 归入；右键改名/解散 */}
+                {activeGroup === null && groups.length > 0 && (
+                  <div className="mb-gallery-folders mb-dragscroll" ref={foldersRef}>
+                    {groups.map((g) => (
+                      <FolderCard
+                        key={g.name}
+                        group={g}
+                        onOpen={() => enterGroup(g.name)}
+                        onContextMenu={(e) => openGroupMenu(e, g)}
+                        onDropImages={(ids) => void setImagesGroup(ids, g.name)}
+                      />
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 
@@ -1900,7 +1908,7 @@ export default function ManagerPage(): JSX.Element {
                 {activeGroup !== null && (
                   <ExitGroupCard
                     onClick={() => setActiveGroup(null)}
-                    onDropImage={(id) => void setImagesGroup([id], null)}
+                    onDropImages={(ids) => void setImagesGroup(ids, null)}
                   />
                 )}
                 {/* 大资产库时不包 AnimatePresence——它会跟踪 N 张卡片的 exit 动画，
@@ -1919,7 +1927,8 @@ export default function ManagerPage(): JSX.Element {
                       onShowFolder={() => showInFolder(im.file_path)}
                       onDelete={() => softDeleteImage(im.id)}
                       onContextMenu={(e) => showImageMenu(e, im)}
-                      onDropOnCard={(draggedId) => void dropCardOnCard(draggedId, im)}
+                      onDropOnCard={(ids) => void dropCardsOnCard(ids, im)}
+                      dragGroupIds={selectMode && selectedIds.has(im.id) ? Array.from(selectedIds) : undefined}
                     />
                   ))
                 ) : (
@@ -1937,7 +1946,8 @@ export default function ManagerPage(): JSX.Element {
                         onShowFolder={() => showInFolder(im.file_path)}
                         onDelete={() => softDeleteImage(im.id)}
                         onContextMenu={(e) => showImageMenu(e, im)}
-                        onDropOnCard={(draggedId) => void dropCardOnCard(draggedId, im)}
+                        onDropOnCard={(ids) => void dropCardsOnCard(ids, im)}
+                        dragGroupIds={selectMode && selectedIds.has(im.id) ? Array.from(selectedIds) : undefined}
                       />
                     ))}
                   </AnimatePresence>
@@ -2096,7 +2106,8 @@ function ImageCard({
   onShowFolder,
   onDelete,
   onContextMenu,
-  onDropOnCard
+  onDropOnCard,
+  dragGroupIds
 }: {
   img: ImageRow;
   index: number;
@@ -2108,8 +2119,10 @@ function ImageCard({
   onShowFolder: () => void;
   onDelete: () => void;
   onContextMenu: (e: React.MouseEvent) => void;
-  /** 另一张资产库卡片被拖到本卡上 → 成组（拖动者 id） */
-  onDropOnCard?: (draggedId: number) => void;
+  /** 另一张/一批资产库卡片被拖到本卡上 → 成组（拖动者 id 列表） */
+  onDropOnCard?: (draggedIds: number[]) => void;
+  /** 批量选择时本卡若被选中：拖动它=带走整批选中（用于批量成组） */
+  dragGroupIds?: number[];
 }): JSX.Element {
   // 资产库卡间拖拽成组：被拖到本卡上时高亮（仅识别内部「gallery-id」载荷，不影响拖出到外部/画布）
   const [dragOver, setDragOver] = useState(false);
@@ -2148,7 +2161,11 @@ function ImageCard({
       onContextMenu={onContextMenu}
       onClick={selectMode ? onToggleSelect : undefined}
       onDragOver={(e) => {
-        if (onDropOnCard && e.dataTransfer.types.includes('application/mengbi-gallery-id')) {
+        if (
+          onDropOnCard &&
+          (e.dataTransfer.types.includes('application/mengbi-gallery-id') ||
+            e.dataTransfer.types.includes('application/mengbi-gallery-ids'))
+        ) {
           e.preventDefault();
           setDragOver(true);
         }
@@ -2156,13 +2173,12 @@ function ImageCard({
       onDragLeave={() => setDragOver(false)}
       onDrop={(e) => {
         if (!onDropOnCard) return;
-        const raw = e.dataTransfer.getData('application/mengbi-gallery-id');
         setDragOver(false);
-        const id = Number(raw);
-        if (Number.isFinite(id) && id > 0) {
+        const ids = readGalleryDragIds(e);
+        if (ids.length) {
           e.preventDefault();
           e.stopPropagation();
-          onDropOnCard(id);
+          onDropOnCard(ids);
         }
       }}
     >
@@ -2187,6 +2203,10 @@ function ImageCard({
           );
           // 内部「成组」拖拽载荷：拖到另一张卡 / 文件夹卡 / 出组卡上时识别（不影响拖出到外部/画布）
           e.dataTransfer.setData('application/mengbi-gallery-id', String(img.id));
+          // 批量选择时拖动选中卡 → 带走整批（落到文件夹/卡上=批量成组）
+          if (dragGroupIds && dragGroupIds.length > 1) {
+            e.dataTransfer.setData('application/mengbi-gallery-ids', JSON.stringify(dragGroupIds));
+          }
         }}
         onClick={(e) => {
           if (selectMode) {
@@ -2261,22 +2281,31 @@ function ImageCard({
 // ─────────────────────────────────────────────────────
 // 资产库文件夹卡（首页）/ 出组卡（文件夹内第一张）
 // ─────────────────────────────────────────────────────
-/** 读取内部「成组」拖拽载荷里的 image id（无效返回 null）。 */
-function readGalleryDragId(e: React.DragEvent): number | null {
+/** 读取内部「成组」拖拽载荷里的 image id 列表（单张或批量选中；无效返回 []）。 */
+function readGalleryDragIds(e: React.DragEvent): number[] {
+  const multi = e.dataTransfer.getData('application/mengbi-gallery-ids');
+  if (multi) {
+    try {
+      const arr = JSON.parse(multi) as unknown;
+      if (Array.isArray(arr)) return arr.filter((x): x is number => typeof x === 'number' && x > 0);
+    } catch {
+      /* ignore */
+    }
+  }
   const id = Number(e.dataTransfer.getData('application/mengbi-gallery-id'));
-  return Number.isFinite(id) && id > 0 ? id : null;
+  return Number.isFinite(id) && id > 0 ? [id] : [];
 }
 
 function FolderCard({
   group,
   onOpen,
   onContextMenu,
-  onDropImage
+  onDropImages
 }: {
   group: GalleryGroup;
   onOpen: () => void;
   onContextMenu: (e: React.MouseEvent) => void;
-  onDropImage: (imageId: number) => void;
+  onDropImages: (imageIds: number[]) => void;
 }): JSX.Element {
   const [over, setOver] = useState(false);
   return (
@@ -2285,9 +2314,12 @@ function FolderCard({
       className={`mb-gallery-folder mb-card mb-card-interactive ${over ? 'is-over' : ''}`}
       onClick={onOpen}
       onContextMenu={onContextMenu}
-      title={`${group.name} · ${group.count} 项（双击/单击打开，把图片拖到此处归入）`}
+      title={`${group.name} · ${group.count} 项（单击打开，把图片拖到此处归入）`}
       onDragOver={(e) => {
-        if (e.dataTransfer.types.includes('application/mengbi-gallery-id')) {
+        if (
+          e.dataTransfer.types.includes('application/mengbi-gallery-id') ||
+          e.dataTransfer.types.includes('application/mengbi-gallery-ids')
+        ) {
           e.preventDefault();
           setOver(true);
         }
@@ -2295,10 +2327,10 @@ function FolderCard({
       onDragLeave={() => setOver(false)}
       onDrop={(e) => {
         setOver(false);
-        const id = readGalleryDragId(e);
-        if (id !== null) {
+        const ids = readGalleryDragIds(e);
+        if (ids.length) {
           e.preventDefault();
-          onDropImage(id);
+          onDropImages(ids);
         }
       }}
     >
@@ -2319,10 +2351,10 @@ function FolderCard({
 
 function ExitGroupCard({
   onClick,
-  onDropImage
+  onDropImages
 }: {
   onClick: () => void;
-  onDropImage: (imageId: number) => void;
+  onDropImages: (imageIds: number[]) => void;
 }): JSX.Element {
   const [over, setOver] = useState(false);
   return (
@@ -2332,7 +2364,10 @@ function ExitGroupCard({
       onClick={onClick}
       title="返回首页 · 把卡片拖到此处可移出本文件夹"
       onDragOver={(e) => {
-        if (e.dataTransfer.types.includes('application/mengbi-gallery-id')) {
+        if (
+          e.dataTransfer.types.includes('application/mengbi-gallery-id') ||
+          e.dataTransfer.types.includes('application/mengbi-gallery-ids')
+        ) {
           e.preventDefault();
           setOver(true);
         }
@@ -2340,10 +2375,10 @@ function ExitGroupCard({
       onDragLeave={() => setOver(false)}
       onDrop={(e) => {
         setOver(false);
-        const id = readGalleryDragId(e);
-        if (id !== null) {
+        const ids = readGalleryDragIds(e);
+        if (ids.length) {
           e.preventDefault();
-          onDropImage(id);
+          onDropImages(ids);
         }
       }}
     >

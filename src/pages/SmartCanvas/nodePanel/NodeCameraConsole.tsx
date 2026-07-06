@@ -11,12 +11,15 @@ import {
   FOCAL_LABELS,
   FOCAL_SUB,
   COMPOSITION_LABELS,
+  SHOT_SIZE_LABELS,
+  SHOT_SIZE_SUB,
   type AnglePromptNodeData,
   type CameraType,
   type ApertureSetting,
   type CameraMovement,
   type FocalLength,
   type ShotComposition,
+  type ShotSize,
   type SmartNodeData
 } from '@shared/smartCanvas';
 import { ResizablePanelWrapper } from './ResizablePanelWrapper';
@@ -33,12 +36,14 @@ const APERTURES = Object.keys(APERTURE_LABELS) as ApertureSetting[];
 const MOVEMENTS = Object.keys(MOVEMENT_LABELS) as CameraMovement[];
 const FOCALS = Object.keys(FOCAL_LABELS) as FocalLength[];
 const COMPOSITIONS = Object.keys(COMPOSITION_LABELS) as ShotComposition[];
+const SHOT_SIZES = Object.keys(SHOT_SIZE_LABELS) as ShotSize[];
 
 const CAMERA_OPTS: IconChoiceOption<CameraType>[] = CAMERA_TYPES.map((v) => ({ value: v, label: CAMERA_TYPE_LABELS[v], icon: optionIcon('cameraType', v) }));
 const APERTURE_OPTS: IconChoiceOption<ApertureSetting>[] = APERTURES.map((v) => ({ value: v, label: APERTURE_LABELS[v], sub: APERTURE_SUB[v], icon: optionIcon('aperture', v) }));
 const MOVEMENT_OPTS: IconChoiceOption<CameraMovement>[] = MOVEMENTS.map((v) => ({ value: v, label: MOVEMENT_LABELS[v], icon: optionIcon('movement', v) }));
 const FOCAL_OPTS: IconChoiceOption<FocalLength>[] = FOCALS.map((v) => ({ value: v, label: FOCAL_LABELS[v], sub: FOCAL_SUB[v], icon: optionIcon('focal', v) }));
 const COMPOSITION_OPTS: IconChoiceOption<ShotComposition>[] = COMPOSITIONS.map((v) => ({ value: v, label: COMPOSITION_LABELS[v], icon: optionIcon('composition', v) }));
+const SHOT_SIZE_OPTS: IconChoiceOption<ShotSize>[] = SHOT_SIZES.map((v) => ({ value: v, label: SHOT_SIZE_LABELS[v], sub: SHOT_SIZE_SUB[v], icon: optionIcon('shotSize', v) }));
 
 function imgUrl(src?: string): string | null {
   if (!src) return null;
@@ -100,7 +105,7 @@ function CameraConsoleInner({ id }: { id: string }): JSX.Element | null {
     update(id, next as Partial<SmartNodeData>);
   }
   function resetAll(): void {
-    patch({ horizontalAngle: 0, verticalAngle: 0, distance: 4, cameraType: 'none', aperture: 'none', movement: 'none', focal: 'none', composition: 'none' });
+    patch({ horizontalAngle: 0, verticalAngle: 0, distance: 4, cameraType: 'none', aperture: 'none', movement: 'none', focal: 'none', composition: 'none', shotSize: 'none' });
   }
 
   // 预览拖动调视角（右拖→向右、上拖→俯视，0.5°/px）
@@ -196,6 +201,9 @@ function CameraConsoleInner({ id }: { id: string }): JSX.Element | null {
                 </CamField>
               </>
             )}
+            <CamField label="景别（景构）">
+              <IconChoiceGrid<ShotSize> compact value={d.shotSize ?? 'none'} options={SHOT_SIZE_OPTS} onChange={(v) => patch({ shotSize: v })} />
+            </CamField>
             <CamField label="构图">
               <IconChoiceGrid<ShotComposition> compact value={d.composition ?? 'none'} options={COMPOSITION_OPTS} onChange={(v) => patch({ composition: v })} />
             </CamField>

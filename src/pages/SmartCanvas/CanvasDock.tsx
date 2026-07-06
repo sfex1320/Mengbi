@@ -22,6 +22,8 @@ const GROUPS: Array<Array<[SmartNodeKind, string]>> = [
     ['storyboard', '分镜'],
     ['image-reverse', '图像反推'],
     ['video-reverse', '视频反推'],
+    ['segment', '切分工具'],
+    ['proof', '对稿'],
     ['angle-prompt', '镜头'],
     ['light', '光源'],
     ['palette', '配色']

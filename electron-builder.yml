@@ -8,12 +8,28 @@ files:
   - package.json
   - "!**/{.eslintrc.cjs,.prettierrc,tsconfig*.json,electron.vite.config.ts}"
   - "!**/{*.map,*.tsbuildinfo}"
+  # —— 依赖瘦身（2026-07-07，包体 1.6GB → 目标 <700MB）——
+  # node-llama-cpp 预编译变体：x64 包只保 CPU + Vulkan（Vulkan 对 N/A/I 卡通吃）。
+  # win-arm64 是错架构死重量（9.6MB）；CUDA + CUDA-ext 共 580MB，Vulkan 已覆盖 NVIDIA
+  #（略慢于 CUDA，本地 LLM 是低频功能，不值 580MB）。mac/linux 打包时按需另调。
+  - "!node_modules/@node-llama-cpp/win-arm64/**"
+  - "!node_modules/@node-llama-cpp/win-x64-cuda/**"
+  - "!node_modules/@node-llama-cpp/win-x64-cuda-ext/**"
+  # onnxruntime-node 自带全平台二进制（254MB）：Windows 包只需 win32/x64（DirectML）。
+  # 注意 mac 打包（package:mac）时 darwin 排除项要去掉。
+  - "!node_modules/onnxruntime-node/bin/napi-v6/darwin/**"
+  - "!node_modules/onnxruntime-node/bin/napi-v6/linux/**"
+  - "!node_modules/onnxruntime-node/bin/napi-v6/win32/arm64/**"
 # 运行时窗口 / 托盘图标：主进程 loadAppIcon() 从 process.resourcesPath/resources/icon.png 读。
 # 必须显式随包发 —— files 白名单只含 out/**+package.json，resources/ 不在 asar 里，
 # 不发的话运行时找不到 icon.png，会回退到旧缓存图标（任务栏+托盘都显示老 logo）。
 extraResources:
   - from: resources/icon.png
     to: resources/icon.png
+  # 提示词商城内置缩略图（build-mall-thumbs 把 提示词商城图片/ 压成 ≤512px 小 WebP 平铺到 mall-thumbs-bundled/）。
+  # 随包解包到 process.resourcesPath/prompt-mall-thumbs，商城默认自动读取（无需用户选文件夹）。
+  - from: mall-thumbs-bundled
+    to: prompt-mall-thumbs
 asarUnpack:
   - resources/**
   - "**/*.{node,dll}"
@@ -32,17 +48,20 @@ win:
     - target: nsis
       arch:
         - x64
-    - target: portable
+    # 便携版改「绿色版 zip」（2026-07-07）：原 portable 单 exe 每次启动都把整个应用
+    # 解压到 %TEMP%（1.6GB + 杀软逐文件扫描 = 启动几十秒），机制上救不了。
+    # zip = win-unpacked 直接压包，用户解压一次、原地运行，启动速度与安装版持平。
+    - target: zip
       arch:
         - x64
+  # 平台级 artifactName 作用到 zip（nsis 有自己的覆盖）→ mengbi-x.y.z-portable.zip
+  artifactName: mengbi-${version}-portable.${ext}
 nsis:
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true
   deleteAppDataOnUninstall: false
   artifactName: mengbi-${version}-setup.${ext}
-portable:
-  artifactName: mengbi-${version}-portable.${ext}
 mac:
   target:
     - target: dmg

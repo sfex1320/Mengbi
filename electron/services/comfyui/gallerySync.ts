@@ -15,6 +15,8 @@ export interface GallerySyncOpts {
   prompt?: string | null;
   paramsJson?: string | null;
   notes?: string;
+  /** 资产库分组名（文件夹）；null=不分组（首页散图）。只写 group_name 列，不物理移动文件。 */
+  groupName?: string | null;
 }
 
 /** 把若干输出文件里的图片插入 images 表，返回新增条数。 */
@@ -42,10 +44,18 @@ export async function addImagesToGallery(
       }
       getDb()
         .prepare(
-          `INSERT INTO images(task_id, file_path, thumbnail_path, prompt_positive, prompt_negative, model_used, params_json, notes, created_at)
-           VALUES(NULL, ?, ?, ?, NULL, 'comfyui', ?, ?, ?)`
+          `INSERT INTO images(task_id, file_path, thumbnail_path, prompt_positive, prompt_negative, model_used, params_json, notes, group_name, created_at)
+           VALUES(NULL, ?, ?, ?, NULL, 'comfyui', ?, ?, ?, ?)`
         )
-        .run(o.path, thumb, opts.prompt ?? null, opts.paramsJson ?? null, opts.notes ?? 'ComfyUI 工作流输出', now);
+        .run(
+          o.path,
+          thumb,
+          opts.prompt ?? null,
+          opts.paramsJson ?? null,
+          opts.notes ?? 'ComfyUI 工作流输出',
+          opts.groupName ?? null,
+          now
+        );
       added++;
     } catch (e) {
       logger.warn(`[comfyui] addImagesToGallery failed for ${o.path}: ${(e as Error).message}`);

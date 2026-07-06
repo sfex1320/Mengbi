@@ -50,6 +50,43 @@ async function favoriteToLibrary(text: string): Promise<void> {
   else toast.error('收藏失败', r.error.message);
 }
 
+/** 把图片压成 ≤256px webp dataURI（用作卡片自带缩略图，避免撑爆 localStorage）。 */
+function shrinkToThumb(src: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const max = 256;
+      const nw = img.naturalWidth || max;
+      const nh = img.naturalHeight || max;
+      const scale = Math.min(1, max / Math.max(nw, nh));
+      const w = Math.max(1, Math.round(nw * scale));
+      const h = Math.max(1, Math.round(nh * scale));
+      const cv = document.createElement('canvas');
+      cv.width = w;
+      cv.height = h;
+      const ctx = cv.getContext('2d');
+      if (!ctx) return reject(new Error('no canvas'));
+      ctx.drawImage(img, 0, 0, w, h);
+      try {
+        resolve(cv.toDataURL('image/webp', 0.85));
+      } catch (e) {
+        reject(e as Error);
+      }
+    };
+    img.onerror = () => reject(new Error('图片加载失败'));
+    img.src = src;
+  });
+}
+/** File → dataURI。 */
+function fileToDataUri(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result));
+    fr.onerror = () => reject(new Error('读取失败'));
+    fr.readAsDataURL(file);
+  });
+}
+
 /**
  * 提示词商城工作台：三栏弹窗（左=分类栏 / 中=缩略图卡片墙 / 右=购物车 + 合成）。
  * 拖卡片进购物车则墙上消失；购物车按大类自动排布、可拖动重排；中/英切换控制显示与输出语言。
@@ -81,8 +118,11 @@ export function PromptMallStudio(): JSX.Element | null {
   const [overwrite, setOverwrite] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [nc, setNc] = useState({ cat: 'character', sub: 'gender-age', zh: '', en: '', genPrompt: '' });
+  // 新增卡片时自带的缩略图（拖入/粘贴/选文件 → 压缩后的 dataURI）
+  const [ncThumb, setNcThumb] = useState<string | null>(null);
   const stopGen = useRef(false);
   const dragUid = useRef<string | null>(null);
+  const thumbFileRef = useRef<HTMLInputElement>(null);
   const [editGroup, setEditGroup] = useState<string | null>(null);
 
   const node = nodeId ? nodes.find((n) => n.id === nodeId) : undefined;
@@ -139,6 +179,8 @@ export function PromptMallStudio(): JSX.Element | null {
   const [desc, setDesc] = useState('');
   const [recommending, setRecommending] = useState(false);
   const [recommended, setRecommended] = useState<Set<string>>(new Set());
+  // 推荐命中的子类（键 `大类slug/子类slug`）：高亮子类 chip
+  const [recommendedSubs, setRecommendedSubs] = useState<Set<string>>(new Set());
 
   const up = useMemo(
     () => (nodeId && d ? computeUpstream(nodes, edges, nodeId) : { images: [], prompts: [], refs: [], videos: [], sizes: [] }),
@@ -258,9 +300,20 @@ export function PromptMallStudio(): JSX.Element | null {
       return;
     }
     const subSlug = nc.sub || categories.find((c) => c.slug === nc.cat)?.subs[0]?.slug || '';
-    addUserCard({ cat: nc.cat, sub: subSlug, zh: zh || en, en: en || zh, genPrompt: nc.genPrompt });
-    toast.success('已新增卡片', '在该分类里可找到并拖入购物车');
+    addUserCard({ cat: nc.cat, sub: subSlug, zh: zh || en, en: en || zh, genPrompt: nc.genPrompt, thumb: ncThumb ?? undefined });
+    toast.success('已新增卡片', ncThumb ? '已带自定义缩略图，在该分类里可拖入购物车' : '在该分类里可找到并拖入购物车');
     setNc({ ...nc, zh: '', en: '', genPrompt: '' });
+    setNcThumb(null);
+  }
+  /** 设置新卡缩略图：File（拖入/选文件/粘贴）→ 压成 ≤256px webp dataURI。 */
+  async function setThumbFromFile(file: File | null | undefined): Promise<void> {
+    if (!file || !file.type.startsWith('image/')) return;
+    try {
+      const uri = await fileToDataUri(file);
+      setNcThumb(await shrinkToThumb(uri));
+    } catch {
+      toast.error('图片读取失败', '换一张图试试');
+    }
   }
 
   // ── 分类管理（增 / 改 / 删；删=用户类移除、内置类隐藏）──
@@ -296,9 +349,10 @@ export function PromptMallStudio(): JSX.Element | null {
     if (name?.trim()) useMallCustomizeStore.getState().addSub(cat, name);
   }
 
-  // ── 卡片管理（移分类 / 编辑 / 删除 / 多选批量）──
-  function moveCardToCategory(cardId: string, catSlug: string): void {
-    useMallCustomizeStore.getState().setCardOverride(cardId, { cat: catSlug, sub: '' });
+  // ── 卡片管理（移分类 / 移子类 / 编辑 / 删除 / 多选批量）──
+  // subSlug 省略=移到大类（清空子类）；传入=连子类一起改（拖到子类 chip / 右键「移到子类」用）
+  function moveCardToCategory(cardId: string, catSlug: string, subSlug = ''): void {
+    useMallCustomizeStore.getState().setCardOverride(cardId, { cat: catSlug, sub: subSlug });
   }
   function deleteCard(cardId: string): void {
     if (userIds.has(cardId)) removeUserCard(cardId);
@@ -331,9 +385,9 @@ export function PromptMallStudio(): JSX.Element | null {
   function clearSel(): void {
     setSelCards(new Set());
   }
-  function batchMoveSelected(catSlug: string): void {
+  function batchMoveSelected(catSlug: string, subSlug = ''): void {
     const cz = useMallCustomizeStore.getState();
-    for (const id of selCards) cz.setCardOverride(id, { cat: catSlug, sub: '' });
+    for (const id of selCards) cz.setCardOverride(id, { cat: catSlug, sub: subSlug });
     toast.success(`已移动 ${selCards.size} 张卡片`);
     clearSel();
     setMultiSel(false);
@@ -345,8 +399,9 @@ export function PromptMallStudio(): JSX.Element | null {
     clearSel();
     setMultiSel(false);
   }
-  /** 卡片右键统一菜单（单选态用）：加入组 / 编辑 / 移到分类 / 删除。 */
+  /** 卡片右键统一菜单（单选态用）：加入组 / 编辑 / 移到分类 / 移到子类 / 删除。 */
   function cardMenu(e: React.MouseEvent, c: PromptMallCard): void {
+    const ownCat = categories.find((g) => g.slug === c.cat);
     areaMenu(e, [
       { label: `加入「${groups.find((g) => g.id === activeGroup)?.name ?? '组'}」`, onClick: () => addCardById(c.id) },
       { label: '编辑卡片…', onClick: () => setEditCard({ id: c.id, zh: c.zh, en: c.en, genPrompt: c.genPrompt }) },
@@ -356,6 +411,17 @@ export function PromptMallStudio(): JSX.Element | null {
           .filter((g) => g.slug !== c.cat)
           .map((g) => ({ label: g.zh, onClick: () => moveCardToCategory(c.id, g.slug) }))
       },
+      // 移到本大类的某个子类（新建子分类后用它把卡片归进去）
+      ...(ownCat && ownCat.subs.length
+        ? [
+            {
+              label: '移到子类…',
+              children: ownCat.subs
+                .filter((s) => s.slug !== c.sub)
+                .map((s) => ({ label: s.zh, onClick: () => moveCardToCategory(c.id, c.cat, s.slug) }))
+            }
+          ]
+        : []),
       { label: userIds.has(c.id) ? '删除卡片' : '删除（隐藏）卡片', onClick: () => deleteCard(c.id) }
     ]);
   }
@@ -365,7 +431,7 @@ export function PromptMallStudio(): JSX.Element | null {
     setRecommending(true);
     const r = await recommendMallCategories(
       desc,
-      categories.map((c) => ({ slug: c.slug, zh: c.zh })),
+      categories.map((c) => ({ slug: c.slug, zh: c.zh, subs: c.subs.map((s) => ({ slug: s.slug, zh: s.zh })) })),
       d?.modelId || undefined
     );
     setRecommending(false);
@@ -373,15 +439,21 @@ export function PromptMallStudio(): JSX.Element | null {
       toast.error('推荐失败', r.reason);
       return;
     }
-    setRecommended(new Set(r.slugs));
-    // 自动跳到第一个推荐分类
-    const first = r.slugs[0];
-    if (first) {
-      setCat(first);
+    setRecommended(new Set(r.result.slugs));
+    setRecommendedSubs(new Set(r.result.subKeys));
+    // 自动跳到第一个推荐分类（优先有推荐子类的那个，并切到该子类）
+    const firstSub = r.result.subKeys[0];
+    if (firstSub) {
+      const [c, s] = firstSub.split('/');
+      setCat(c);
+      setSub(s);
+      setQuery('');
+    } else if (r.result.slugs[0]) {
+      setCat(r.result.slugs[0]);
       setSub('all');
       setQuery('');
     }
-    toast.success(`推荐 ${r.slugs.length} 个分类`, '已高亮，点击切换查看');
+    toast.success(`推荐 ${r.result.slugs.length} 个分类 · ${r.result.subKeys.length} 个子类`, '已高亮，点击切换查看');
   }
   function removeByUid(uid: string): void {
     setF({ cart: cart.filter((it) => it.uid !== uid) });
@@ -584,8 +656,14 @@ export function PromptMallStudio(): JSX.Element | null {
               >
                 {recommending ? '识别中…' : '✨ 推荐分类'}
               </button>
-              {recommended.size > 0 && (
-                <button className="mb-btn mb-btn-xs mb-btn-ghost" onClick={() => setRecommended(new Set())}>
+              {(recommended.size > 0 || recommendedSubs.size > 0) && (
+                <button
+                  className="mb-btn mb-btn-xs mb-btn-ghost"
+                  onClick={() => {
+                    setRecommended(new Set());
+                    setRecommendedSubs(new Set());
+                  }}
+                >
                   清除高亮
                 </button>
               )}
@@ -615,7 +693,31 @@ export function PromptMallStudio(): JSX.Element | null {
                   全部
                 </button>
                 {activeCat.subs.map((s) => (
-                  <button key={s.slug} className={`mb-sc-mall-subchip ${sub === s.slug ? 'is-on' : ''}`} onClick={() => setSub(s.slug)}>
+                  <button
+                    key={s.slug}
+                    className={`mb-sc-mall-subchip ${sub === s.slug ? 'is-on' : ''} ${recommendedSubs.has(`${cat}/${s.slug}`) ? 'is-recommended' : ''}`}
+                    onClick={() => setSub(s.slug)}
+                    // 把卡片拖到子类 chip = 归到该子类（新建子类后用它装卡片）
+                    onDragOver={(e) => {
+                      if (e.dataTransfer.types.includes(CARD_MIME)) e.preventDefault();
+                    }}
+                    onDrop={(e) => {
+                      const raw = e.dataTransfer.getData(CARD_MIME);
+                      if (!raw) return;
+                      e.preventDefault();
+                      try {
+                        const { cardId } = JSON.parse(raw) as { cardId: string };
+                        if (multiSel && selCards.size > 0) batchMoveSelected(cat, s.slug);
+                        else {
+                          moveCardToCategory(cardId, cat, s.slug);
+                          toast.success(`已移到「${s.zh}」子类`);
+                        }
+                      } catch {
+                        /* ignore */
+                      }
+                    }}
+                    title="单击筛选 · 把卡片拖到这里可归到该子类"
+                  >
                     {s.zh}
                   </button>
                 ))}
@@ -750,27 +852,81 @@ export function PromptMallStudio(): JSX.Element | null {
             </div>
             {addOpen && (
               <div className="mb-sc-mall-addform">
-                <div className="mb-sc-mall-addgrid">
-                  <select
-                    className="mb-select"
-                    value={nc.cat}
-                    onChange={(e) =>
-                      setNc({ ...nc, cat: e.target.value, sub: categories.find((c) => c.slug === e.target.value)?.subs[0]?.slug ?? '' })
-                    }
+                <div className="mb-sc-mall-addrow">
+                  {/* 左侧：缩略图方框（拖入 / 聚焦后粘贴 Ctrl+V / 点击选文件）；不填则用程序化卡片 */}
+                  <div
+                    className={`mb-sc-mall-thumbbox ${ncThumb ? 'has-img' : ''}`}
+                    tabIndex={0}
+                    title="卡片缩略图：拖入图片 / 聚焦后粘贴(Ctrl+V) / 点击选择文件（不填则用默认程序化卡片）"
+                    onDragOver={(e) => {
+                      if (Array.from(e.dataTransfer.types).includes('Files')) e.preventDefault();
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      void setThumbFromFile(e.dataTransfer.files?.[0]);
+                    }}
+                    onPaste={(e) => {
+                      const f = Array.from(e.clipboardData?.files ?? [])[0];
+                      if (f) {
+                        e.preventDefault();
+                        void setThumbFromFile(f);
+                      }
+                    }}
+                    onClick={() => thumbFileRef.current?.click()}
                   >
-                    {categories.map((c) => (
-                      <option key={c.slug} value={c.slug}>{c.zh}</option>
-                    ))}
-                  </select>
-                  <select className="mb-select" value={nc.sub} onChange={(e) => setNc({ ...nc, sub: e.target.value })}>
-                    {(categories.find((c) => c.slug === nc.cat)?.subs ?? []).map((s) => (
-                      <option key={s.slug} value={s.slug}>{s.zh}</option>
-                    ))}
-                  </select>
+                    {ncThumb ? (
+                      <>
+                        <img src={ncThumb} alt="缩略图" draggable={false} />
+                        <button
+                          className="mb-sc-mall-thumbclear"
+                          title="清除缩略图"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setNcThumb(null);
+                          }}
+                        >
+                          ✕
+                        </button>
+                      </>
+                    ) : (
+                      <span className="mb-sc-mall-thumbhint">＋ 缩略图<br />拖入 / 粘贴 / 选文件</span>
+                    )}
+                    <input
+                      ref={thumbFileRef}
+                      type="file"
+                      accept="image/*"
+                      hidden
+                      onChange={(e) => {
+                        void setThumbFromFile(e.target.files?.[0]);
+                        e.target.value = '';
+                      }}
+                    />
+                  </div>
+                  {/* 右侧：分类 / 子类 / 中英片段 / 生成提示词 */}
+                  <div className="mb-sc-mall-addfields">
+                    <div className="mb-sc-mall-addgrid">
+                      <select
+                        className="mb-select"
+                        value={nc.cat}
+                        onChange={(e) =>
+                          setNc({ ...nc, cat: e.target.value, sub: categories.find((c) => c.slug === e.target.value)?.subs[0]?.slug ?? '' })
+                        }
+                      >
+                        {categories.map((c) => (
+                          <option key={c.slug} value={c.slug}>{c.zh}</option>
+                        ))}
+                      </select>
+                      <select className="mb-select" value={nc.sub} onChange={(e) => setNc({ ...nc, sub: e.target.value })}>
+                        {(categories.find((c) => c.slug === nc.cat)?.subs ?? []).map((s) => (
+                          <option key={s.slug} value={s.slug}>{s.zh}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <input className="mb-input" placeholder="中文片段（如 波浪长发）" value={nc.zh} onChange={(e) => setNc({ ...nc, zh: e.target.value })} />
+                    <input className="mb-input" placeholder="English fragment (e.g. long wavy hair)" value={nc.en} onChange={(e) => setNc({ ...nc, en: e.target.value })} />
+                    <input className="mb-input" placeholder="缩略图生成提示词（英文，可空）" value={nc.genPrompt} onChange={(e) => setNc({ ...nc, genPrompt: e.target.value })} />
+                  </div>
                 </div>
-                <input className="mb-input" placeholder="中文片段（如 波浪长发）" value={nc.zh} onChange={(e) => setNc({ ...nc, zh: e.target.value })} />
-                <input className="mb-input" placeholder="English fragment (e.g. long wavy hair)" value={nc.en} onChange={(e) => setNc({ ...nc, en: e.target.value })} />
-                <input className="mb-input" placeholder="缩略图生成提示词（英文，可空）" value={nc.genPrompt} onChange={(e) => setNc({ ...nc, genPrompt: e.target.value })} />
                 <button className="mb-btn mb-btn-sm mb-btn-primary" onClick={saveNewCard}>保存到「{catLabel(nc.cat, 'zh')}」</button>
               </div>
             )}
@@ -936,26 +1092,45 @@ export function PromptMallStudio(): JSX.Element | null {
 
             {/* 合成设置 + 运行 */}
             <div className="mb-sc-mall-checkout nodrag">
+              {/* 组装方式：片段列表（逗号拼接，可选优化合并）/ 一整段自然语言（对话模型从头写） */}
+              <div className="mb-sc-mall-modetoggle" role="group" aria-label="组装方式">
+                <button
+                  className={`mb-sc-mall-modebtn ${(d.assembleMode ?? 'fragments') === 'fragments' ? 'is-on' : ''}`}
+                  title="逐段片段逗号拼接（可再勾「优化合并」让模型整理成连贯一条）"
+                  onClick={() => setF({ assembleMode: 'fragments' })}
+                >
+                  片段列表
+                </button>
+                <button
+                  className={`mb-sc-mall-modebtn ${d.assembleMode === 'paragraph' ? 'is-on' : ''}`}
+                  title="对话模型把所有元素从头写成一整段连贯自然语言描述（需选对话模型）"
+                  onClick={() => setF({ assembleMode: 'paragraph' })}
+                >
+                  整段自然语言
+                </button>
+              </div>
               <div className="mb-sc-mall-row">
                 <div className="mb-sc-mall-langtoggle" role="group" aria-label="输出语言">
                   <button className={`mb-sc-mall-langbtn ${lang === 'zh' ? 'is-on' : ''}`} onClick={() => setF({ lang: 'zh' })}>中文输出</button>
                   <button className={`mb-sc-mall-langbtn ${lang === 'en' ? 'is-on' : ''}`} onClick={() => setF({ lang: 'en' })}>English</button>
                 </div>
-                <label className="mb-sc-mall-opt" title="勾选=对话模型合并去重成更连贯的一条；不勾=纯拼接（零 API）">
-                  <input type="checkbox" checked={!!d.optimize} onChange={(e) => setF({ optimize: e.target.checked })} />
-                  优化合并
-                </label>
+                {d.assembleMode !== 'paragraph' && (
+                  <label className="mb-sc-mall-opt" title="勾选=对话模型合并去重成更连贯的一条；不勾=纯拼接（零 API）">
+                    <input type="checkbox" checked={!!d.optimize} onChange={(e) => setF({ optimize: e.target.checked })} />
+                    优化合并
+                  </label>
+                )}
               </div>
-              {d.optimize && (
+              {(d.optimize || d.assembleMode === 'paragraph') && (
                 <select className="mb-select" value={d.modelId} onChange={(e) => setF({ modelId: e.target.value })}>
-                  <option value="">（选对话模型 · 合并优化）</option>
+                  <option value="">（选对话模型 · {d.assembleMode === 'paragraph' ? '整段撰写' : '合并优化'}）</option>
                   {textModels.map((m) => (
                     <option key={m} value={m}>{m}</option>
                   ))}
                 </select>
               )}
               <button className="mb-btn mb-btn-primary mb-sc-run" disabled={d.status === 'running'} onClick={() => void runPromptMallNode(nodeId)}>
-                {d.status === 'running' ? '合成中…' : d.optimize ? '组装并优化' : '组装（纯拼接）'}
+                {d.status === 'running' ? '合成中…' : d.assembleMode === 'paragraph' ? '组装成整段' : d.optimize ? '组装并优化' : '组装（纯拼接）'}
               </button>
               {d.error && <div className="mb-sc-result-err">{d.error}</div>}
               {d.assembled?.trim() && (

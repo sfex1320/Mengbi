@@ -5,19 +5,19 @@
 
 // 能产出（可作连线起点）/ 能接收（可作连线终点）的节点类型。
 // result/scale 也是 producer：结果（图/文）、缩放（图）可继续连到下游节点。
-export const PRODUCERS = new Set(['image', 'prompt', 'llm', 'work', 'comfy', 'group', 'angle-prompt', 'light', 'palette', 'result', 'scale', 'video', 'image-reverse', 'video-reverse', 'video-source', 'frame-interp', 'video-clip', 'ratio', 'storyboard', 'prompt-mall', 'loop', 'folder-input', 'upscale', 'vectorize']);
-export const CONSUMERS = new Set(['work', 'comfy', 'result', 'llm', 'group', 'angle-prompt', 'light', 'palette', 'scale', 'ratio', 'compare', 'video', 'image-reverse', 'video-reverse', 'frame-interp', 'video-clip', 'storyboard', 'prompt-mall', 'folder-output', 'upscale', 'vectorize']);
+export const PRODUCERS = new Set(['image', 'prompt', 'llm', 'work', 'comfy', 'group', 'angle-prompt', 'light', 'palette', 'result', 'scale', 'video', 'image-reverse', 'video-reverse', 'video-source', 'frame-interp', 'video-clip', 'ratio', 'storyboard', 'prompt-mall', 'loop', 'folder-input', 'upscale', 'vectorize', 'segment', 'proof']);
+export const CONSUMERS = new Set(['work', 'comfy', 'result', 'llm', 'group', 'angle-prompt', 'light', 'palette', 'scale', 'ratio', 'compare', 'video', 'image-reverse', 'video-reverse', 'frame-interp', 'video-clip', 'storyboard', 'prompt-mall', 'folder-output', 'upscale', 'vectorize', 'segment', 'proof']);
 // 智能分镜：输入接 文本来源（故事素材）/ 图片来源（参考图自动反推并入故事）/ 提示词商城（合成提示词作素材）；
 // 输出（N 条分镜提示词）只给 生图/ComfyUI/视频/LLM/分组/结果
-export const STORYBOARD_SOURCES = new Set(['prompt', 'llm', 'image-reverse', 'video-reverse', 'group', 'result', 'storyboard', 'image', 'work', 'comfy', 'scale', 'prompt-mall', 'folder-input']);
+export const STORYBOARD_SOURCES = new Set(['prompt', 'llm', 'image-reverse', 'video-reverse', 'group', 'result', 'storyboard', 'image', 'work', 'comfy', 'scale', 'prompt-mall', 'folder-input', 'segment', 'proof']);
 export const STORYBOARD_TARGETS = new Set(['work', 'comfy', 'video', 'llm', 'group', 'result']);
 // 图片来源：图片/分组/生成/ComfyUI/结果/缩放/文件夹输入/保真放大 产出的图
 // 注意：vectorize 产出是 SVG（终端产物），不在图片来源里（不喂栅格管线，只连 结果/文件夹输出）
-export const IMAGE_SOURCES = new Set(['image', 'group', 'work', 'comfy', 'result', 'scale', 'folder-input', 'upscale']);
+export const IMAGE_SOURCES = new Set(['image', 'group', 'work', 'comfy', 'result', 'scale', 'folder-input', 'upscale', 'segment']);
 // 视频来源：视频上传/视频生成/结果/缩放(可输出视频)/插帧/视频处理/视频合并/文件夹输入(扫描含视频)/分组
 export const VIDEO_SOURCES = new Set(['video-source', 'video', 'result', 'scale', 'frame-interp', 'video-clip', 'folder-input', 'group']);
 // 只吃图片来源做输入的节点（视角 / 光源 / 配色 / 比例分析 / 对比 / 图像反推 / 保真放大 / 图像转矢量）。缩放=图或视频，单独判定。
-export const IMAGE_INPUT_ONLY = new Set(['angle-prompt', 'light', 'palette', 'ratio', 'compare', 'image-reverse', 'upscale', 'vectorize']);
+export const IMAGE_INPUT_ONLY = new Set(['angle-prompt', 'light', 'palette', 'ratio', 'compare', 'image-reverse', 'upscale', 'vectorize', 'segment', 'proof']);
 // 只吃视频来源做输入的节点（视频反推 / 插帧 / 视频处理 / 视频合并）。
 export const VIDEO_INPUT_ONLY = new Set(['video-reverse', 'frame-interp', 'video-clip']);
 // 产出是视频的节点（其输出只能连给视频消费节点）。注意 scale 不在内（它可输出图或视频，目标更宽）。
@@ -25,13 +25,13 @@ export const VIDEO_OUTPUT_KINDS = new Set(['video-source', 'video', 'frame-inter
 // 视频消费节点（可接收视频输出）。
 export const VIDEO_CONSUMER_TARGETS = new Set(['video-reverse', 'scale', 'frame-interp', 'video-clip', 'result']);
 // 能连进结果节点的来源：生成/ComfyUI/LLM/反推 写运行结果；图片/提示词/分组/缩放/视角/光源/视频=组合「实时预览」。
-export const RESULT_SOURCES = new Set(['work', 'comfy', 'llm', 'group', 'prompt', 'image', 'scale', 'angle-prompt', 'light', 'palette', 'video', 'image-reverse', 'video-reverse', 'video-source', 'frame-interp', 'video-clip', 'ratio', 'storyboard', 'prompt-mall', 'loop', 'folder-input', 'upscale', 'vectorize']);
-// 提示词商城：可选接 文本来源（提示词/LLM/反推/分组/结果/分镜）作为额外片段并入购物车（纯文本，不接图片/视频）
-export const PROMPT_MALL_SOURCES = new Set(['prompt', 'llm', 'image-reverse', 'video-reverse', 'group', 'result']);
+export const RESULT_SOURCES = new Set(['work', 'comfy', 'llm', 'group', 'prompt', 'image', 'scale', 'angle-prompt', 'light', 'palette', 'video', 'image-reverse', 'video-reverse', 'video-source', 'frame-interp', 'video-clip', 'ratio', 'storyboard', 'prompt-mall', 'loop', 'folder-input', 'upscale', 'vectorize', 'segment', 'proof']);
+// 提示词商城：可选接 文本来源（提示词/LLM/反推/对稿报告/分组/结果/分镜）作为额外片段并入购物车（纯文本，不接图片/视频）
+export const PROMPT_MALL_SOURCES = new Set(['prompt', 'llm', 'image-reverse', 'video-reverse', 'group', 'result', 'proof']);
 // 循环：输出只连 生图/ComfyUI/视频/结果（工作流控制节点）
 export const LOOP_TARGETS = new Set(['work', 'comfy', 'video', 'result']);
 // 文件夹输出：只接产图/产视频/产 SVG 的来源
-export const FOLDER_OUTPUT_SOURCES = new Set(['work', 'comfy', 'video', 'scale', 'frame-interp', 'video-clip', 'result', 'group', 'upscale', 'vectorize']);
+export const FOLDER_OUTPUT_SOURCES = new Set(['work', 'comfy', 'video', 'scale', 'frame-interp', 'video-clip', 'result', 'group', 'upscale', 'vectorize', 'segment']);
 
 /** 纯类型级连线校验（不依赖具体节点存在；插入连线时新节点尚未建，需用类型判断）。 */
 export function canConnectKinds(sk: string | undefined, tk: string | undefined): boolean {

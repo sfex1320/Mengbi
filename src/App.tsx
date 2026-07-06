@@ -1,5 +1,5 @@
 import { HashRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
-import { useEffect, useRef } from 'react';
+import { Suspense, lazy, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { Sidebar } from '@/components/Sidebar';
 import { ThemePicker } from '@/components/ThemePicker';
@@ -11,20 +11,23 @@ import { ContextMenuRoot } from '@/components/ContextMenu';
 import { ConfirmDialogRoot } from '@/components/ConfirmDialog';
 import { CursorHalo } from '@/components/CursorHalo';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
-import CreatePage from '@/pages/Create';
-import ManagerPage from '@/pages/Manager';
-import CanvasPage from '@/pages/Canvas';
-import SettingsPage from '@/pages/Settings';
-import ToolsPage from '@/pages/Tools';
-import ComfyUIPage from '@/pages/ComfyUI';
-import SmartCanvasPage from '@/pages/SmartCanvas';
+// 路由级代码分割（2026-07-07 启动提速）：7 个页面全部 React.lazy —— 原先静态 import 把
+// 全部页面（React Flow + Konva + 提示词商城 1.2MB 卡片数据…）打进一个 4.8MB 首屏 bundle，
+// 冷启动要整包解析执行。拆分后首屏只含 App 壳 + 当前路由 chunk，其余页面首次进入时再加载
+//（本地 file:// 读 chunk 是毫秒级，Suspense fallback 一闪而过）。
+const CreatePage = lazy(() => import('@/pages/Create'));
+const ManagerPage = lazy(() => import('@/pages/Manager'));
+const CanvasPage = lazy(() => import('@/pages/Canvas'));
+const SettingsPage = lazy(() => import('@/pages/Settings'));
+const ToolsPage = lazy(() => import('@/pages/Tools'));
+const ComfyUIPage = lazy(() => import('@/pages/ComfyUI'));
+const SmartCanvasPage = lazy(() => import('@/pages/SmartCanvas'));
 import { applyThemeToDocument, useThemeStore } from '@/store/themeStore';
 import { useSettingsStore } from '@/store/settingsStore';
 import { useNotificationStore } from '@/store/notificationStore';
 import { useShortcutsStore } from '@/store/shortcutsStore';
 import { useGalleryStore } from '@/store/galleryStore';
 import { toast } from '@/store/toastStore';
-import { registerSmartRunnerListeners } from '@/lib/smartCanvasRunner';
 import { speakNotification, isTaskCompletion } from '@/lib/voiceNotify';
 import type { NotificationAppendPayload } from '@shared/ipc';
 
@@ -74,9 +77,20 @@ function Shell(): JSX.Element {
 
   // 智能画布的任务推送监听（image:done / comfyui:run-done / video:* / chat:*）注册在 App 级：
   // 切到任何页面任务都不丢路由——页面只展示状态，不决定任务是否继续（任务生命周期规范）。
+  // 动态 import：smartCanvasRunner 连同它拖进的 store/视频/分镜依赖不进首屏 chunk（与
+  // SmartCanvas 页面共享同一 chunk 实例，模块级 pending Map 语义不变）；启动后毫秒级完成注册，
+  // 早于任何用户能提交的任务，不会漏事件。
   useEffect(() => {
-    const off = registerSmartRunnerListeners();
-    return off;
+    let off: (() => void) | undefined;
+    let disposed = false;
+    void import('@/lib/smartCanvasRunner').then((m) => {
+      if (disposed) return;
+      off = m.registerSmartRunnerListeners();
+    });
+    return () => {
+      disposed = true;
+      off?.();
+    };
   }, []);
 
   // 资产库常驻预加载（默认开）：启动即把「全部」列表拉进 App 级缓存，并在产物入库/生图完成时后台刷新，
@@ -84,7 +98,11 @@ function Shell(): JSX.Element {
   useEffect(() => {
     if (!window.electronAPI?.on) return;
     const enabled = (): boolean => useSettingsStore.getState().prefs.gallery_preload !== '0';
-    if (enabled()) void useGalleryStore.getState().preload();
+    // 首次预载延到首屏渲染之后（1.2s）：预载的 IPC 往返 + 列表反序列化不再与首屏解析/首帧
+    // 合成抢同一时间窗，低配机启动更跟手；后续增量刷新仍即时。
+    const warmup = window.setTimeout(() => {
+      if (enabled()) void useGalleryStore.getState().preload();
+    }, 1200);
     // image:done 往往紧跟一条 gallery:changed（产物自动入库广播）——300ms 去抖，避免一次完成触发两次 preload
     let timer: number | undefined;
     const refresh = (): void => {
@@ -96,6 +114,7 @@ function Shell(): JSX.Element {
     const off1 = window.electronAPI.on('gallery:changed', refresh);
     const off2 = window.electronAPI.on('image:done', refresh);
     return () => {
+      window.clearTimeout(warmup);
       if (timer) window.clearTimeout(timer);
       off1();
       off2();
@@ -282,15 +301,19 @@ function Shell(): JSX.Element {
             {/* 页面级错误边界：某页渲染崩溃只显示可恢复的错误卡，侧栏 / 顶栏仍可用，
                 切换功能页（pathname 变 → resetKey 变）自动恢复，杜绝「一处崩溃 → 整个应用白屏卡死」 */}
             <ErrorBoundary contained resetKey={location.pathname}>
-              <Routes location={location}>
-                <Route path="/" element={<CreatePage />} />
-                <Route path="/manager" element={<ManagerPage />} />
-                <Route path="/canvas" element={<CanvasPage />} />
-                <Route path="/tools" element={<ToolsPage />} />
-                <Route path="/comfyui" element={<ComfyUIPage />} />
-                <Route path="/smart-canvas" element={<SmartCanvasPage />} />
-                <Route path="/settings" element={<SettingsPage />} />
-              </Routes>
+              {/* lazy 页面 chunk 加载中的占位：本地磁盘读 chunk 毫秒级，空占位即可（无闪烁）。
+                  Suspense 放在 ErrorBoundary 内：chunk 加载失败同样落进页面级错误卡可恢复。 */}
+              <Suspense fallback={<div className="mb-page-motion" />}>
+                <Routes location={location}>
+                  <Route path="/" element={<CreatePage />} />
+                  <Route path="/manager" element={<ManagerPage />} />
+                  <Route path="/canvas" element={<CanvasPage />} />
+                  <Route path="/tools" element={<ToolsPage />} />
+                  <Route path="/comfyui" element={<ComfyUIPage />} />
+                  <Route path="/smart-canvas" element={<SmartCanvasPage />} />
+                  <Route path="/settings" element={<SettingsPage />} />
+                </Routes>
+              </Suspense>
             </ErrorBoundary>
           </motion.div>
         </div>

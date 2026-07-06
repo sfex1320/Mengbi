@@ -37,11 +37,42 @@ export function copyText(text: string): void {
     .catch(() => toast.error('复制失败'));
 }
 
+/** 把任意图片 blob 解码后重新编码成 PNG。
+ *  Chromium 异步剪贴板的图片写入只可靠支持 image/png——webp/jpeg 的 ClipboardItem 会被拒。 */
+async function blobToPngBlob(blob: Blob): Promise<Blob> {
+  if (blob.type === 'image/png') return blob;
+  const bmp = await createImageBitmap(blob);
+  const canvas = document.createElement('canvas');
+  canvas.width = bmp.width;
+  canvas.height = bmp.height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return blob;
+  ctx.drawImage(bmp, 0, 0);
+  bmp.close?.();
+  return await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('toBlob 失败'))), 'image/png');
+  });
+}
+
 export async function copyImage(url: string): Promise<void> {
+  // 关键：把 Promise<Blob> 直接交给 ClipboardItem（而不是先 await fetch 再 write）——
+  // 否则大图 fetch 期间用户手势的 transient activation 会过期 → clipboard.write 抛 NotAllowedError
+  // （表现就是「右键复制没反应/复制失败」）。同时统一转 PNG，规避非 PNG 类型被拒。
   try {
-    const res = await fetch(url);
-    const blob = await res.blob();
-    await navigator.clipboard.write([new ClipboardItem({ [blob.type || 'image/png']: blob })]);
+    const item = new ClipboardItem({
+      'image/png': fetch(url)
+        .then((r) => r.blob())
+        .then(blobToPngBlob)
+    });
+    await navigator.clipboard.write([item]);
+    toast.success('已复制图片');
+    return;
+  } catch {
+    /* 部分环境不支持把 Promise 交给 ClipboardItem → 回退到先取后写 */
+  }
+  try {
+    const blob = await blobToPngBlob(await (await fetch(url)).blob());
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
     toast.success('已复制图片');
   } catch {
     toast.error('复制图片失败');
@@ -130,6 +161,10 @@ async function materializeContentToFile(content: ShortcutContent): Promise<strin
 
 /** 把内容发送到某个侧栏快捷方式：软件→用该软件打开；文件夹→放进该文件夹。 */
 export async function sendToShortcut(shortcut: Shortcut, content: ShortcutContent): Promise<void> {
+  if (shortcut.kind === 'url') {
+    toast.error('网址链接不能作为发送目标', '请用文件夹或软件类型的快捷方式');
+    return;
+  }
   const filePath = await materializeContentToFile(content);
   if (!filePath) {
     toast.error('准备内容失败', '无法读取该内容');
@@ -150,14 +185,23 @@ export async function sendToShortcut(shortcut: Shortcut, content: ShortcutConten
   }
 }
 
-/** 构造右键菜单的「发送到快捷方式 ▸」子菜单项；无快捷方式时返回空数组（菜单不显示该项）。 */
+/** 构造右键菜单的「发送到快捷方式 ▸」子菜单项。
+ *  只有「文件夹 / 软件」类型的快捷方式可作发送目标（网址链接不能收文件）。
+ *  没有可用目标时不再隐藏整项，而是给一个禁用提示——否则用户看不到入口，会误以为功能「失效」。 */
 export function buildShortcutSendMenuItems(content: ShortcutContent): ContextMenuEntry[] {
-  const shortcuts = useShortcutsStore.getState().shortcuts;
-  if (!shortcuts.length) return [];
+  const targets = useShortcutsStore.getState().shortcuts.filter((s) => s.kind === 'app' || s.kind === 'folder');
+  if (!targets.length) {
+    return [
+      {
+        label: '发送到快捷方式（先在左侧栏添加 文件夹/软件 快捷方式）',
+        disabled: true
+      }
+    ];
+  }
   return [
     {
       label: '发送到快捷方式',
-      children: shortcuts.map((s) => ({
+      children: targets.map((s) => ({
         label: (s.kind === 'app' ? '▶ ' : '📁 ') + s.label,
         onClick: () => void sendToShortcut(s, content)
       }))

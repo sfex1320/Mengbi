@@ -67,6 +67,10 @@ function sanitize(doc: SmartCanvasDoc): SmartCanvasDoc {
           data: { ...d, runStatus: 'idle', batchIndex: undefined, totalBatches: undefined, doneCount: 0, failCount: 0, runLogs: [], runError: null, outBatch: undefined } as unknown as SmartNodeData
         };
       }
+      // 切分/对稿：running 归 idle（重载无编排器，否则成「运行中」幽灵）；识别/重绘/拼合/报告结果保留（小体积、磁盘路径）
+      if ((n.type === 'segment' || n.type === 'proof') && d.status === 'running') {
+        return { ...n, data: { ...d, status: 'idle', phase: undefined } as unknown as SmartNodeData };
+      }
       return n;
     })
   };

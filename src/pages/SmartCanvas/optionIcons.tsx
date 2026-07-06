@@ -61,6 +61,18 @@ const ICONS: Record<string, IconMap> = {
     fill: '<rect x="4" y="6" width="16" height="12" rx="1" fill="none"/><rect x="6" y="8" width="12" height="8" rx="1" fill="none"/>',
     negative: '<rect x="4" y="6" width="16" height="12" rx="1" fill="none"/><circle cx="15.5" cy="14" r="2.5" fill="none"/>'
   },
+  shotSize: {
+    // 取景框 + 不同大小/位置的人形：远→小、近→大、特写→面部充满
+    'extreme-long': '<rect x="4" y="5" width="16" height="14" rx="1" fill="none"/><circle cx="12" cy="13.2" r="0.8" fill="currentColor"/><line x1="12" y1="14" x2="12" y2="16.4"/>',
+    long: '<rect x="4" y="5" width="16" height="14" rx="1" fill="none"/><circle cx="12" cy="10.8" r="1.3" fill="none"/><line x1="12" y1="12.1" x2="12" y2="16"/><line x1="10.4" y1="14" x2="13.6" y2="14"/>',
+    full: '<rect x="4" y="5" width="16" height="14" rx="1" fill="none"/><circle cx="12" cy="8.8" r="1.6" fill="none"/><line x1="12" y1="10.4" x2="12" y2="16"/><line x1="9.4" y1="13" x2="14.6" y2="13"/>',
+    'full-body': '<rect x="4" y="4" width="16" height="16" rx="1" fill="none"/><circle cx="12" cy="7.4" r="1.8" fill="none"/><line x1="12" y1="9.2" x2="12" y2="16.2"/><line x1="9" y1="12.4" x2="15" y2="12.4"/><line x1="12" y1="16.2" x2="10" y2="18.4"/><line x1="12" y1="16.2" x2="14" y2="18.4"/>',
+    medium: '<rect x="4" y="6" width="16" height="12" rx="1" fill="none"/><circle cx="12" cy="11" r="2.2" fill="none"/><path d="M8.4 18 V16 a3.6 3.6 0 0 1 7.2 0 V18" fill="none"/>',
+    'medium-close': '<rect x="4" y="6" width="16" height="12" rx="1" fill="none"/><circle cx="12" cy="11" r="2.8" fill="none"/><path d="M6.8 18 V17 a5.2 4 0 0 1 10.4 0 V18" fill="none"/>',
+    close: '<rect x="4" y="6" width="16" height="12" rx="1" fill="none"/><circle cx="12" cy="10.6" r="3.2" fill="none"/><path d="M6.4 18 a5.6 4 0 0 1 11.2 0" fill="none"/>',
+    closeup: '<rect x="4" y="6" width="16" height="12" rx="1" fill="none"/><circle cx="12" cy="12" r="4.6" fill="none"/>',
+    'extreme-closeup': '<rect x="4" y="6" width="16" height="12" rx="1" fill="none"/><circle cx="12" cy="12" r="7" fill="none"/>'
+  },
   lightSource: {
     sunlight: '<circle cx="12" cy="12" r="4"/><line x1="12" y1="3" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="21"/><line x1="3" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="21" y2="12"/>',
     sunrise: '<line x1="3" y1="18" x2="21" y2="18"/><path d="M7 18a5 5 0 0 1 10 0"/><polyline points="9 8 12 5 15 8"/>',

@@ -277,6 +277,20 @@ export const CATALOG: Record<SmartNodeKind, AgentNodeSpec> = {
     tier: 'extended',
     purpose: '把上游产出的图片 / 视频自动落盘到一个文件夹（需用户后续指定文件夹）。',
     params: [{ key: 'prefix', desc: '文件名前缀（前缀+序号命名时用）' }]
+  },
+  segment: {
+    label: '切分工具',
+    tier: 'extended',
+    purpose: '接整图 → 视觉模型识别画面元素 → 逐元素反推 + 统一风格重绘 → 按原位 1:1 拼回整图（局部修复/重做元素）。识别+重绘在工作台里，参数较少。',
+    needsModel: 'text',
+    params: [{ key: 'stylePrompt', desc: '统一风格约束（拼进每个元素的重绘提示词，保证风格一致）' }]
+  },
+  proof: {
+    label: '对稿',
+    tier: 'extended',
+    purpose: '接海报/设计图 → 多模态模型逐元素检错（字体/元素/Logo/形态错误，如手只有4指、Logo 画崩、错别字）→ 输出审稿报告文本。',
+    needsModel: 'text',
+    params: []
   }
 };
 

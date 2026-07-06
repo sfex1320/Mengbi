@@ -244,6 +244,31 @@ function sanitizeTemplateNode(n: Node): Node {
     data.batchId = undefined;
     data.taskId = undefined;
   }
+  if (n.type === 'segment') {
+    // 保留 模型/统一风格 配置；清运行态与识别/重绘/拼合产物
+    data.status = 'idle';
+    data.phase = undefined;
+    data.elements = [];
+    data.composedSrc = undefined;
+    data.imgW = undefined;
+    data.imgH = undefined;
+    data.analysisSrc = undefined;
+    data.inputImage = null;
+    data.logs = [];
+    data.error = null;
+  }
+  if (n.type === 'proof') {
+    data.status = 'idle';
+    data.elements = [];
+    data.reportText = undefined;
+    data.annotatedSrc = undefined;
+    data.imgW = undefined;
+    data.imgH = undefined;
+    data.analysisSrc = undefined;
+    data.inputImage = null;
+    data.logs = [];
+    data.error = null;
+  }
   return { ...n, data };
 }
 
@@ -425,13 +450,17 @@ export function defaultNodeData(kind: SmartNodeKind): SmartNodeData {
       return { dir: '', files: [], error: null };
     case 'folder-output':
       return { dir: '', nameRule: 'original', prefix: 'output', seq: 1, enabled: true, savedCount: 0, failCount: 0, logs: [], error: null };
+    case 'segment':
+      return { modelId: '', genModelId: '', stylePrompt: '', inputImage: null, elements: [], status: 'idle', logs: [], error: null };
+    case 'proof':
+      return { modelId: '', inputImage: null, elements: [], status: 'idle', logs: [], error: null };
   }
 }
 
 const DEFAULT_SIZE: Record<SmartNodeKind, { width: number; height?: number }> = {
   image: { width: 220, height: 200 },
   group: { width: 360, height: 280 },
-  prompt: { width: 270, height: 560 },
+  prompt: { width: 270, height: 280 },
   work: { width: 268 },
   result: { width: 250 },
   llm: { width: 262 },
@@ -455,7 +484,9 @@ const DEFAULT_SIZE: Record<SmartNodeKind, { width: number; height?: number }> = 
   upscale: { width: 262 },
   vectorize: { width: 262 },
   'folder-input': { width: 260, height: 200 },
-  'folder-output': { width: 270, height: 240 }
+  'folder-output': { width: 270, height: 240 },
+  segment: { width: 284, height: 300 },
+  proof: { width: 284, height: 300 }
 };
 
 interface SmartCanvasState {

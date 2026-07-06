@@ -37,17 +37,27 @@ export const useMallThumbsStore = create<MallThumbsState>((set, get) => ({
     await get().load();
   },
   load: async () => {
-    const dir = get().dir;
-    if (!dir) {
-      set({ map: {} });
-      return;
-    }
     set({ loading: true });
     try {
-      // 缩略图按大类落到子文件夹（<总文件夹>/<cat>/<id>.png），故扫「总文件夹」本身（兼容旧的平铺布局）
-      // + 每个大类子文件夹。listImages 非递归，子文件夹不存在会报错 → 各自吞掉、互不影响。
-      const base = dir.replace(/[\\/]+$/, '');
-      const dirs = [dir, ...PROMPT_MALL_CATEGORIES.map((c) => `${base}/${c.slug}`)];
+      const dirs: string[] = [];
+      // 1. 内置缩略图目录（随包发，extraResources，平铺 <cardId>.webp）——默认来源，一次扫描全命中。
+      try {
+        const b = await window.electronAPI.storage.mallThumbsDir();
+        if (b.ok && b.data.dir) dirs.push(b.data.dir);
+      } catch {
+        /* 无内置目录（如未打包且没跑 build-mall-thumbs）→ 跳过 */
+      }
+      // 2. 用户自选目录（按大类落子文件夹 <总>/<cat>/<id>.png，兼容旧平铺布局）——后扫，覆盖内置。
+      const userDir = get().dir;
+      if (userDir) {
+        const base = userDir.replace(/[\\/]+$/, '');
+        dirs.push(userDir, ...PROMPT_MALL_CATEGORIES.map((c) => `${base}/${c.slug}`));
+      }
+      if (!dirs.length) {
+        set({ map: {} });
+        return;
+      }
+      // listImages 非递归，目录不存在会报错 → 各自吞掉、互不影响。
       const map: Record<string, string> = {};
       const results = await Promise.all(
         dirs.map((d) =>
@@ -59,7 +69,7 @@ export const useMallThumbsStore = create<MallThumbsState>((set, get) => ({
         for (const f of r.data.files) {
           if (f.kind === 'video') continue;
           const name = f.path.split(/[\\/]/).pop() ?? '';
-          map[cardIdFromFile(name)] = f.path; // 子文件夹命中优先覆盖平铺（后扫子文件夹）
+          map[cardIdFromFile(name)] = f.path; // 后扫覆盖先扫 → 用户目录覆盖内置
         }
       }
       set({ map });
@@ -165,6 +175,15 @@ export function PromptMallThumb({
   thumbUrl?: string;
 }): JSX.Element {
   const text = (lang === 'zh' ? card.zh : card.en) || card.en || card.zh;
+  // 用户卡片自带的缩略图（dataURI，新增卡片时拖入/粘贴/选文件）优先于文件夹生成图
+  if (card.thumb) {
+    return (
+      <div className="mb-sc-mall-thumb is-img">
+        <img src={card.thumb} alt={text} loading="lazy" decoding="async" draggable={false} />
+        <span className="mb-sc-mall-thumb-cap">{text}</span>
+      </div>
+    );
+  }
   if (thumbUrl) {
     return (
       <div className="mb-sc-mall-thumb is-img">

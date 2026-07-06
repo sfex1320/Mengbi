@@ -61,19 +61,31 @@ import {
   type FolderOutputNodeData,
   type UpscaleNodeData,
   type VectorizeNodeData,
+  type SegmentNodeData,
+  type SegElement,
+  type ProofNodeData,
   type SmartNodeData
 } from '@shared/smartCanvas';
 import { ratioOutputSize, nearestTier, nearestResolution } from './sizeSpec';
 import { extractJsonBlock } from './jsonPrompt';
 import { STORY_SYSTEM, shotsSystem, parseShots, buildFixedBlock, composeShotPrompt, transitionsSystem, transitionsUser, parseTransitions } from './storyboardPrompt';
 import { buildComfyControlValues, availableComfyModes } from './comfyDispatch';
-import { assembleCartGrouped, PROMPT_MALL_SYSTEM, stripFences } from './promptMall/assemble';
+import { assembleCartGrouped, PROMPT_MALL_SYSTEM, PROMPT_MALL_PARAGRAPH_SYSTEM, stripFences } from './promptMall/assemble';
 import { buildThumbGenPrompt, THUMB_SEED } from './promptMall/thumbGen';
 import type { PromptMallCard } from './promptMall/cardTypes';
 import { buildLoopItems, chunkImages, type LoopItem } from './loopItems';
 import { buildOutputName, srcBaseName } from './folderNaming';
 import { beginLocalLlmBusy } from './localLlmBusy';
 import { reconcileSegments, sameSegmentSrcs } from './videoClip';
+import {
+  SEGMENT_DETECT_SYSTEM,
+  PROOF_SYSTEM,
+  parseSegElements,
+  parseProofElements,
+  buildProofReport,
+  severityColor
+} from './visionSegment';
+import { loadImageCors, cropToDataUri, compositeAtBoxes, drawAnnotated } from './imageCompose';
 import type { OutputFile, InputControl } from '@shared/comfyui';
 import type { VideoProgressPayload, VideoDonePayload, InterpProgressPayload, VecTaskProgressPayload } from '@shared/ipc';
 
@@ -261,6 +273,20 @@ function collectOwnOutput(n: Node, images: string[], prompts: string[], refs: In
       if (fd.videoFiles?.length) videos.push(...fd.videoFiles);
       break;
     }
+    case 'segment': {
+      // 切分节点：拼合后的整图作图片来源喂下游
+      const sd = n.data as unknown as SegmentNodeData;
+      if (sd.composedSrc) {
+        images.push(sd.composedSrc);
+        refs.push({ kind: 'image', from: n.id, preview: '拼合图' });
+      }
+      break;
+    }
+    case 'proof': {
+      // 对稿节点：审稿报告作文本喂下游（如指导重绘）
+      pushText((n.data as unknown as ProofNodeData).reportText, n.id);
+      break;
+    }
     case 'work':
     case 'comfy':
     case 'result': {
@@ -446,8 +472,14 @@ export function computeUpstream(nodes: Node[], edges: Edge[], workId: string): C
         // 尺寸来源：只取其 SizeSpec 输出，不递归它接的分析图（图不泄漏给下游当参考图）
         const sp = ratioOutputSize(n.data as unknown as RatioNodeData);
         if (sp) sizes.push(sp);
-      } else if (n.type === 'prompt-mall' || n.type === 'loop' || n.type === 'folder-input') {
-        // 提示词商城产物/循环当前项/文件夹图片：与分组子节点同一套自身产出识别
+      } else if (
+        n.type === 'prompt-mall' ||
+        n.type === 'loop' ||
+        n.type === 'folder-input' ||
+        n.type === 'segment' ||
+        n.type === 'proof'
+      ) {
+        // 提示词商城产物/循环当前项/文件夹图片/切分拼合图/对稿报告：与分组子节点同一套自身产出识别
         collectOwnOutput(n, images, prompts, refs, videos, sizes);
       }
     }
@@ -535,6 +567,21 @@ const pendingWork = new Map<number, (p: ImageDonePayload) => void>();
 const cancelledWork = new Set<string>();
 // 工作节点 → 本轮全部在途 taskId（多条提示词并发时同节点可有多个任务；取消要一锅端）
 const activeWorkTasks = new Map<string, Set<number>>();
+// 会话内「正在跑」的工作节点 id（跨文档重载存活）：切档 / 回启动页时 sanitize 会把 running 落盘成 idle，
+// resync 据此把仍在跑的节点拉回 running（比 activeWorkTasks 多覆盖「提交前的构建窗口」）。
+const liveRunningNodes = new Set<string>();
+function endWorkRun(workId: string): void {
+  activeWorkTasks.delete(workId);
+  liveRunningNodes.delete(workId);
+}
+/**
+ * 把节点终态补丁也写进「当前文档」的持久化存储。否则切档 / 回启动页重载时用 sanitize 后的 idle
+ * 覆盖了内存里的 success/error → 完成的结果在重载后丢失、节点显示「待运行」（本次 bug 的根因）。
+ * result 里的图是磁盘路径（非 base64），体积可控；sanitize 只清 running 态、不动 success，故可安全 round-trip。
+ */
+function persistActiveDocTerminal(docId: string | null, nodeId: string, patch: Record<string, unknown>): void {
+  if (docId) patchDocNodes(docId, [{ nodeId, patch }]);
+}
 // 工作节点 → 最近一次「逐条/逐张生图」的批次快照（内存态，重启清空；合集卡「重试此条」用）
 // 每个 task = 一次完整生成（一条提示词 + 一组参考图）；逐张模式下各 task 的 refs 是不同的单张图。
 interface WorkBatchSnapshot {
@@ -672,12 +719,17 @@ function currentDocId(): string | null {
   return useSmartDocsStore.getState().activeDocId;
 }
 
-/** 当前画布名（资产库分组用：生成的图归入以画布名命名的文件夹）；无活动画布/匿名则返回 null。 */
-function currentDocName(): string | null {
-  const s = useSmartDocsStore.getState();
-  const doc = s.docs.find((d) => d.id === s.activeDocId);
+/** 按文档 id 取画布名（资产库分组用）；后台文档（在途任务结果回灌）也能取到正确的画布名。 */
+function docNameById(docId: string | null): string | null {
+  if (!docId) return null;
+  const doc = useSmartDocsStore.getState().docs.find((d) => d.id === docId);
   const t = doc?.title?.trim();
   return t ? t.slice(0, 120) : null;
+}
+
+/** 当前画布名（资产库分组用：生成的图归入以画布名命名的文件夹）；无活动画布/匿名则返回 null。 */
+function currentDocName(): string | null {
+  return docNameById(useSmartDocsStore.getState().activeDocId);
 }
 
 /**
@@ -729,13 +781,16 @@ function placeWorkResult(
     return;
   }
   const st = useSmartCanvasStore.getState();
-  setWork(workId, {
+  const termPatch = {
     status: result.ok ? 'success' : 'error',
     result,
     logs: result.logs,
     error: result.error ?? null,
     taskId: undefined
-  });
+  } as const;
+  setWork(workId, termPatch);
+  // 终态也落盘到当前文档：防切档 / 回启动页重载时被 sanitize 后的 idle 覆盖（节点显示「待运行」）。
+  persistActiveDocTerminal(docId, workId, { ...termPatch });
   for (const e of st.edges.filter((x) => x.source === workId)) {
     const tgt = st.nodes.find((n) => n.id === e.target);
     if (tgt?.type === 'result') {
@@ -772,7 +827,7 @@ export async function runWorkNode(
 
   // 记录上游输入快照（显式 inputRefs 字段）；新一轮运行清掉上次的取消标记与在途任务记录
   cancelledWork.delete(workId);
-  activeWorkTasks.delete(workId);
+  endWorkRun(workId);
   setWork(workId, { inputRefs: inputs.refs, status: 'running', result: null, error: null, logs: [], taskId: undefined, lastRunAt: Date.now() });
 
   // 计时：从这里到出结果的耗时，注入到 WorkResult.durationMs（结果区显示「用时 X.Xs」）
@@ -925,6 +980,9 @@ export async function runWorkNode(
     baseParams.inpaint_mask = maskUri;
   }
 
+  // 标记「正在跑」：从此刻（验证已过、即将提交）到终态，resync 据此在切档重载后把节点拉回 running。
+  liveRunningNodes.add(workId);
+
   // 多轮规则：loop = 跑 n 次（每次 1 张，累积）；batch/serial/continue = 一次 n 张；single = 1 张
   const rounds = d.runMode === 'loop' ? Math.max(1, Math.min(8, d.n || 1)) : 1;
   const perN = d.runMode === 'loop' ? 1 : d.runMode === 'single' ? 1 : clampN(d.n);
@@ -1004,10 +1062,10 @@ export async function runWorkNode(
   // 用户中途取消：cancelWork 已把节点重置 idle，这里直接收尾不写结果
   if (cancelledWork.has(workId)) {
     cancelledWork.delete(workId);
-    activeWorkTasks.delete(workId);
+    endWorkRun(workId);
     return;
   }
-  activeWorkTasks.delete(workId);
+  endWorkRun(workId);
   const allImages = perTask.flat();
 
   if (firstErr && allImages.length === 0) {
@@ -1080,7 +1138,7 @@ export function cancelWork(workId: string): void {
       cb({ taskId: tid, cancelled: true });
     }
   }
-  activeWorkTasks.delete(workId);
+  endWorkRun(workId);
   setWork(workId, { status: 'idle', result: null, error: null, logs: ['已取消，可重新运行'], taskId: undefined });
 }
 
@@ -1106,6 +1164,7 @@ export async function retryPromptIndex(workId: string, pi: number): Promise<void
   const docId = currentDocId();
   const t0 = Date.now();
   cancelledWork.delete(workId);
+  liveRunningNodes.add(workId);
   setWork(workId, { status: 'running', error: null, logs: [`重试第 ${pi + 1}/${batch.tasks.length} 个任务…`] });
   // 重放该任务的全部轮次（loop 运行方式 rounds>1 时每个任务原本就出 rounds×perN 张；只跑一次会张数对不上）
   const rounds = Math.max(1, batch.rounds || 1);
@@ -1126,7 +1185,7 @@ export async function retryPromptIndex(workId: string, pi: number): Promise<void
     }
     imgs.push(...res.images);
   }
-  activeWorkTasks.delete(workId);
+  endWorkRun(workId);
   if (cancelledWork.has(workId)) return void cancelledWork.delete(workId);
   const now = Date.now();
   const base = retryErr && imgs.length === 0 ? errResult(d, retryErr) : imgResult(d, imgs, [`重试第 ${pi + 1} 个`]);
@@ -1809,7 +1868,9 @@ async function submitComfyAndWait(
   defer: boolean,
   skipGallery = false
 ): Promise<ComfySubmitResult> {
-  const r = await window.electronAPI.comfyui.runSingle({ workflowId, controlValues: cv, skipGallery });
+  // 出图归入「以画布名命名」的文件夹（与生图节点一致）；skipGallery（商城缩略图）不分组。
+  const galleryGroup = skipGallery ? undefined : (docNameById(docId) ?? undefined);
+  const r = await window.electronAPI.comfyui.runSingle({ workflowId, controlValues: cv, skipGallery, galleryGroup });
   if (!r.ok) return { kind: 'submit-error', message: r.error.message, hint: r.error.hint };
   const runId = r.data.runId;
   pendingComfy.set(runId, { comfyId, docId, startedAt: Date.now(), defer });
@@ -2106,13 +2167,16 @@ function placeComfyResult(comfyId: string, result: WorkResult, docId: string | n
     return;
   }
   const st = useSmartCanvasStore.getState();
-  setComfy(comfyId, {
+  const termPatch = {
     status: result.ok ? 'success' : 'error',
     result,
     logs: result.logs,
     error: result.error ?? null,
     runId: undefined
-  });
+  } as const;
+  setComfy(comfyId, termPatch);
+  // 终态落盘当前文档：防切档 / 回启动页重载时被 sanitize 后的 idle 覆盖。
+  persistActiveDocTerminal(docId, comfyId, { ...termPatch });
   for (const e of st.edges.filter((x) => x.source === comfyId)) {
     const tgt = st.nodes.find((n) => n.id === e.target);
     if (tgt?.type === 'result') {
@@ -2363,16 +2427,19 @@ export async function runPromptMallNode(id: string): Promise<void> {
     toast.error('没有可用片段', '购物车里的片段文本为空');
     return;
   }
-  // 不勾「优化」：直接用原始拼接，零 API
-  if (!d.optimize) {
+  // 组装方式：'paragraph'=一整段自然语言（必走对话模型从头写）/ 'fragments'=逐段片段（可选优化合并）
+  const paragraph = d.assembleMode === 'paragraph';
+  const useLlm = paragraph || d.optimize;
+  // 片段模式且不勾「优化」：直接用原始拼接，零 API
+  if (!useLlm) {
     setMall(id, { status: 'success', assembled: raw, error: null, logs: ['原始拼接（未优化）'] });
     pushTextDownstream(id, raw, '提示词商城');
     toast.success('已合成提示词', '未优化 · 直接拼接');
     return;
   }
-  // 勾「优化」：交给对话模型合并去重
+  // 走对话模型（合并去重 或 整段自然语言）
   if (!d.modelId) {
-    toast.error('请先选一个对话模型', '或关掉「优化」直接用原始拼接');
+    toast.error('请先选一个对话模型', paragraph ? '「整段自然语言」需要对话模型撰写' : '或关掉「优化」直接用原始拼接');
     return;
   }
   const sset = useSettingsStore.getState();
@@ -2387,12 +2454,12 @@ export async function runPromptMallNode(id: string): Promise<void> {
     return;
   }
   const t0 = Date.now();
-  setMall(id, { status: 'running', error: null, logs: ['合并优化提示词…'] });
+  setMall(id, { status: 'running', error: null, logs: [paragraph ? '撰写整段自然语言描述…' : '合并优化提示词…'] });
   const r = await window.electronAPI.chat.optimizePrompt({
     planId: sset.activePlanId,
     modelId: d.modelId,
     userInput: raw,
-    systemPrompt: PROMPT_MALL_SYSTEM[lang]
+    systemPrompt: (paragraph ? PROMPT_MALL_PARAGRAPH_SYSTEM : PROMPT_MALL_SYSTEM)[lang]
   });
   if (!r.ok || r.data.optimizedBy === null) {
     const msg = (!r.ok ? r.error.message : r.data.reason) || '合成提示词失败（上游超时/报错）';
@@ -2786,7 +2853,7 @@ function topoOrder(nodes: Node[], edges: Edge[]): string[] {
 }
 
 // loop 有意不进 RUNNABLE：运行全部跳过循环节点（与循环驱动器双向互斥，防死锁）
-const RUNNABLE = new Set(['work', 'comfy', 'llm', 'storyboard', 'prompt-mall', 'frame-interp', 'video-clip', 'upscale', 'vectorize']);
+const RUNNABLE = new Set(['work', 'comfy', 'llm', 'storyboard', 'prompt-mall', 'frame-interp', 'video-clip', 'upscale', 'vectorize', 'segment', 'proof']);
 // 运行全部时「当前正在跑」的节点（点停止时据此终止在途任务，而非等它自然跑完）
 let currentRunNode: { id: string; type: string } | null = null;
 
@@ -2868,6 +2935,11 @@ export async function runAllNodes(): Promise<void> {
       else if (n.type === 'video-clip') await runVideoClipNode(id);
       else if (n.type === 'upscale') await runUpscaleNode(id);
       else if (n.type === 'vectorize') await runVectorizeNode(id);
+      // 切分/对稿在「运行全部」里按 needsRun 跳过已完成的（status==='success'）——它们每跑一次都烧钱
+      // （切分=N 次重绘、对稿=1 次视觉调用），否则在已完成的画布上点「运行全部」会重复扣费。
+      // 显式触发（工作台按钮 / 右键运行此节点）直接调用 runSegmentNode/runProofNode，不经此门控，照常可重跑。
+      else if (n.type === 'segment') { if (needsRun(n)) await runSegmentNode(id); }
+      else if (n.type === 'proof') { if (needsRun(n)) await runProofNode(id); }
       currentRunNode = null;
     }
     useSmartRunStore.getState().tick();
@@ -2896,7 +2968,9 @@ function needsRun(node: Node): boolean {
     t !== 'storyboard' &&
     t !== 'prompt-mall' &&
     t !== 'upscale' &&
-    t !== 'vectorize'
+    t !== 'vectorize' &&
+    t !== 'segment' &&
+    t !== 'proof'
   )
     return false; // loop 有意不收：下游单点运行不会反向触发整个循环
   const status = (node.data as unknown as { status?: string }).status;
@@ -2916,6 +2990,8 @@ async function runOne(node: Node, allowCascade = true): Promise<void> {
   else if (node.type === 'prompt-mall') await runPromptMallNode(node.id);
   else if (node.type === 'upscale') await runUpscaleNode(node.id);
   else if (node.type === 'vectorize') await runVectorizeNode(node.id);
+  else if (node.type === 'segment') await runSegmentNode(node.id);
+  else if (node.type === 'proof') await runProofNode(node.id);
 }
 
 // ───────────────────────── 图像 / 视频反推（复用 api:lab:reverse）─────────────────────────
@@ -3000,6 +3076,318 @@ export async function runVideoReverseNode(id: string): Promise<void> {
 }
 
 /** 视频缩放/补帧：上游视频 → 主进程 ffmpeg 重编码到目标宽高（可选 minterpolate 补帧到 30/60fps）→ 输出本地 mp4 喂下游。 */
+// ───────────────────────── 切分 / 对稿（视觉元素分析 → 重绘拼合 / 逐元素检错）─────────────────────────
+
+/** 切分重绘的「取消」标记（项间生效：在跑的元素跑完，不再发新的）。 */
+const cancelledSeg = new Set<string>();
+
+/** 写节点数据：当前文档走 live store；非当前文档（后台）走 doc 存储（跨文档不丢）。 */
+function patchSmartNode(docId: string | null, id: string, patch: Partial<SmartNodeData>): void {
+  if (!docId || docId === currentDocId()) {
+    useSmartCanvasStore.getState().updateNodeData(id, patch);
+  } else {
+    patchDocNodes(docId, [{ nodeId: id, patch: patch as unknown as Record<string, unknown> }]);
+  }
+}
+
+/** 切分/对稿的输入图（上游图片优先；本地上传兜底）。 */
+function visionInputSrc(d: { inputImage?: { url: string } | null }, up: CollectedInputs): string | undefined {
+  return up.images[0] || d.inputImage?.url || undefined;
+}
+
+/** 量图片自然尺寸（crossOrigin 安全）。 */
+async function measureImage(src: string): Promise<{ w: number; h: number }> {
+  const img = await loadImageCors(src);
+  return { w: img.naturalWidth || 1, h: img.naturalHeight || 1 };
+}
+
+/** 落盘 dataURI → 磁盘路径（节点数据存路径不存大 base64，防 localStorage 配额爆）。失败回退原 dataURI。 */
+async function persistDataUri(dataUri: string): Promise<string> {
+  if (!dataUri.startsWith('data:')) return dataUri;
+  try {
+    const r = await window.electronAPI.storage.saveCanvasAsset({ dataUri });
+    if (r.ok && r.data.filePath) return r.data.filePath;
+  } catch {
+    /* 落盘失败：保留 dataURI */
+  }
+  return dataUri;
+}
+
+/** 视觉模型可用性预检（返回不可用原因，可用返回 null）。 */
+function visionModelGuard(modelId: string | undefined): string | null {
+  if (!modelId) return '未选视觉模型：在工作台选一个支持识图的多模态对话模型';
+  const sset = useSettingsStore.getState();
+  return diagnoseChatModel(sset.configs, sset.plans, sset.activePlanId, modelId);
+}
+
+/** 切分：识别元素（一次视觉调用，含逐元素重绘提示词）。写 elements + 源图尺寸。 */
+export async function runSegmentDetect(id: string): Promise<void> {
+  const st = useSmartCanvasStore.getState();
+  const node = st.nodes.find((n) => n.id === id);
+  if (!node) return;
+  const d = node.data as unknown as SegmentNodeData;
+  const docId = currentDocId();
+  const why = visionModelGuard(d.modelId);
+  if (why) {
+    patchSmartNode(docId, id, { status: 'error', error: why, logs: [why] });
+    toast.error('视觉模型不可用', why);
+    return;
+  }
+  const up = computeUpstream(st.nodes, st.edges, id);
+  const src = visionInputSrc(d, up);
+  if (!src) {
+    toast.error('切分需要一张图', '连一个图片来源，或在工作台上传一张图');
+    return;
+  }
+  patchSmartNode(docId, id, { status: 'running', phase: '识别元素中…', error: null });
+  liveRunningNodes.add(id);
+  try {
+    const dim = await measureImage(src);
+    const sendable = await sendableUrl(src);
+    if (!sendable) throw new Error('读取图片失败');
+    const r = await window.electronAPI.lab.visionAnalyze({
+      imagePaths: [sendable],
+      modelId: d.modelId as string,
+      systemPrompt: SEGMENT_DETECT_SYSTEM
+    });
+    if (!r.ok) throw new Error(r.error.message);
+    const els = parseSegElements(r.data.text, dim.w, dim.h);
+    if (!els.length) throw new Error('没有识别到元素（可换更强的视觉模型，或在工作台手动加框）');
+    patchSmartNode(docId, id, {
+      status: 'idle',
+      phase: undefined,
+      imgW: dim.w,
+      imgH: dim.h,
+      elements: els,
+      analysisSrc: src,
+      composedSrc: undefined,
+      error: null,
+      logs: [`识别到 ${els.length} 个元素 · ${d.modelId}`]
+    });
+  } catch (e) {
+    const msg = (e as Error).message;
+    patchSmartNode(docId, id, { status: 'error', phase: undefined, error: msg, logs: [msg] });
+    toast.error('识别元素失败', msg);
+  } finally {
+    liveRunningNodes.delete(id);
+  }
+}
+
+/** 切分：重绘单个元素（裁出该元素 → 图生图 → 写回 regenSrc）。studio 单元素按钮用。 */
+export async function runSegmentRegenOne(id: string, index: number): Promise<void> {
+  const st = useSmartCanvasStore.getState();
+  const node = st.nodes.find((n) => n.id === id);
+  if (!node) return;
+  const d = node.data as unknown as SegmentNodeData;
+  const els = d.elements ?? [];
+  const el = els[index];
+  if (!el) return;
+  const docId = currentDocId();
+  const up = computeUpstream(st.nodes, st.edges, id);
+  const src = visionInputSrc(d, up);
+  if (!src) {
+    toast.error('缺少源图');
+    return;
+  }
+  const genModel = (d.genModelId || firstImageModel()).trim();
+  if (!genModel) {
+    toast.error('未配置生图模型', '设置页加一个绘画模型');
+    return;
+  }
+  const writeEl = (patch: Partial<SegElement>): void => {
+    const cur = (useSmartCanvasStore.getState().nodes.find((n) => n.id === id)?.data as unknown as SegmentNodeData)?.elements ?? els;
+    const next = cur.map((x, i) => (i === index ? { ...x, ...patch } : x));
+    patchSmartNode(docId, id, { elements: next });
+  };
+  writeEl({ status: 'running', error: null });
+  liveRunningNodes.add(id);
+  try {
+    const img = await loadImageCors(src);
+    const cropUri = cropToDataUri(img, el.box, 'png');
+    const prompt = [d.stylePrompt?.trim(), el.prompt?.trim()].filter(Boolean).join('，') || el.label;
+    const res = await generateOnce(genModel, prompt, { source: 'smart-canvas' }, cropUri ? [cropUri] : []);
+    if (res.error || !res.images.length) writeEl({ status: 'error', error: res.error || '无输出' });
+    else writeEl({ status: 'done', regenSrc: res.images[res.images.length - 1], error: null });
+  } catch (e) {
+    writeEl({ status: 'error', error: (e as Error).message });
+  } finally {
+    liveRunningNodes.delete(id);
+  }
+}
+
+/** 切分：逐元素重绘（顺序，项间可取消）。 */
+export async function runSegmentRegenAll(id: string): Promise<void> {
+  const st = useSmartCanvasStore.getState();
+  const node = st.nodes.find((n) => n.id === id);
+  if (!node) return;
+  const d = node.data as unknown as SegmentNodeData;
+  const docId = currentDocId();
+  const up = computeUpstream(st.nodes, st.edges, id);
+  const src = visionInputSrc(d, up);
+  const els = d.elements ?? [];
+  if (!src || !els.length) {
+    toast.error('先识别元素', '工作台里先「识别元素」');
+    return;
+  }
+  const genModel = (d.genModelId || firstImageModel()).trim();
+  if (!genModel) {
+    toast.error('未配置生图模型', '设置页加一个绘画模型');
+    return;
+  }
+  cancelledSeg.delete(id);
+  liveRunningNodes.add(id);
+  patchSmartNode(docId, id, { status: 'running', phase: '逐元素重绘中…', error: null });
+  let img: HTMLImageElement;
+  try {
+    img = await loadImageCors(src);
+  } catch {
+    liveRunningNodes.delete(id);
+    patchSmartNode(docId, id, { status: 'error', phase: undefined, error: '读取源图失败' });
+    return;
+  }
+  const work = els.map((e) => ({ ...e }));
+  for (let i = 0; i < work.length; i++) {
+    if (cancelledSeg.has(id)) break;
+    const el = work[i];
+    work[i] = { ...el, status: 'running', error: null };
+    patchSmartNode(docId, id, { elements: work.map((x) => ({ ...x })), phase: `重绘 ${i + 1}/${work.length}：${el.label}` });
+    const cropUri = cropToDataUri(img, el.box, 'png');
+    const prompt = [d.stylePrompt?.trim(), el.prompt?.trim()].filter(Boolean).join('，') || el.label;
+    const res = await generateOnce(genModel, prompt, { source: 'smart-canvas' }, cropUri ? [cropUri] : []);
+    if (res.error || !res.images.length) work[i] = { ...el, status: 'error', error: res.error || '无输出' };
+    else work[i] = { ...el, status: 'done', regenSrc: res.images[res.images.length - 1], error: null };
+    patchSmartNode(docId, id, { elements: work.map((x) => ({ ...x })) });
+  }
+  liveRunningNodes.delete(id);
+  const okCount = work.filter((x) => x.status === 'done').length;
+  patchSmartNode(docId, id, { status: 'idle', phase: undefined, elements: work, logs: [`重绘完成 ${okCount}/${work.length}`] });
+}
+
+/** 切分：把重绘好的元素按原框 1:1 拼回整图（输出 composedSrc）。 */
+export async function runSegmentCompose(id: string): Promise<void> {
+  const st = useSmartCanvasStore.getState();
+  const node = st.nodes.find((n) => n.id === id);
+  if (!node) return;
+  const d = node.data as unknown as SegmentNodeData;
+  const docId = currentDocId();
+  const up = computeUpstream(st.nodes, st.edges, id);
+  const src = visionInputSrc(d, up);
+  const els = d.elements ?? [];
+  if (!src || !d.imgW || !d.imgH) {
+    toast.error('先识别元素');
+    return;
+  }
+  const pieces = els.filter((e) => e.regenSrc).map((e) => ({ src: e.regenSrc as string, box: e.box }));
+  patchSmartNode(docId, id, { status: 'running', phase: '拼合中…' });
+  try {
+    const dataUri = await compositeAtBoxes(src, d.imgW, d.imgH, pieces, 'png');
+    if (!dataUri) throw new Error('合成失败');
+    const out = await persistDataUri(dataUri);
+    const patch = { status: 'success' as const, phase: undefined, composedSrc: out, error: null, logs: [`拼合完成 · ${pieces.length} 个元素`] };
+    patchSmartNode(docId, id, patch);
+    persistActiveDocTerminal(docId, id, { status: 'success', composedSrc: out });
+  } catch (e) {
+    const msg = (e as Error).message;
+    patchSmartNode(docId, id, { status: 'error', phase: undefined, error: msg });
+  }
+}
+
+/** 切分：一键全流程（识别 → 逐元素重绘 → 拼回整图）。RUNNABLE / 运行此节点 / 运行全部 走它。 */
+export async function runSegmentNode(id: string): Promise<void> {
+  const d0 = useSmartCanvasStore.getState().nodes.find((n) => n.id === id)?.data as unknown as SegmentNodeData | undefined;
+  if (!d0?.elements?.length) {
+    await runSegmentDetect(id);
+    const da = useSmartCanvasStore.getState().nodes.find((n) => n.id === id)?.data as unknown as SegmentNodeData | undefined;
+    if (!da?.elements?.length) return; // 识别失败
+  }
+  await runSegmentRegenAll(id);
+  if (cancelledSeg.has(id)) {
+    cancelledSeg.delete(id);
+    return;
+  }
+  await runSegmentCompose(id);
+}
+
+/** 切分：取消逐元素重绘（项间生效）。 */
+export function cancelSegment(id: string): void {
+  cancelledSeg.add(id);
+  liveRunningNodes.delete(id);
+  patchSmartNode(currentDocId(), id, { status: 'idle', phase: undefined });
+}
+
+/** 对稿：多模态模型逐元素检错 → 元素清单 + 审稿报告 + 标注图。 */
+export async function runProofNode(id: string): Promise<void> {
+  const st = useSmartCanvasStore.getState();
+  const node = st.nodes.find((n) => n.id === id);
+  if (!node) return;
+  const d = node.data as unknown as ProofNodeData;
+  const docId = currentDocId();
+  const why = visionModelGuard(d.modelId);
+  if (why) {
+    patchSmartNode(docId, id, { status: 'error', error: why, logs: [why] });
+    toast.error('视觉模型不可用', why);
+    return;
+  }
+  const up = computeUpstream(st.nodes, st.edges, id);
+  const src = visionInputSrc(d, up);
+  if (!src) {
+    toast.error('对稿需要一张图', '连一个图片来源，或在工作台上传一张图');
+    return;
+  }
+  patchSmartNode(docId, id, { status: 'running', error: null });
+  liveRunningNodes.add(id);
+  try {
+    const dim = await measureImage(src);
+    const sendable = await sendableUrl(src);
+    if (!sendable) throw new Error('读取图片失败');
+    const r = await window.electronAPI.lab.visionAnalyze({
+      imagePaths: [sendable],
+      modelId: d.modelId as string,
+      systemPrompt: PROOF_SYSTEM
+    });
+    if (!r.ok) throw new Error(r.error.message);
+    const els = parseProofElements(r.data.text, dim.w, dim.h);
+    // 解析不到任何元素 = 视觉模型多半没返回有效 JSON：当作失败抛出，
+    // 否则 buildProofReport([]) 会给出「未发现问题」的假「全清」结论，误导用户（与 runSegmentDetect 行为一致）。
+    if (!els.length) throw new Error('未解析到元素（视觉模型可能没返回有效 JSON）——可换更强的多模态模型重试');
+    const report = buildProofReport(els);
+    const problems = els.filter((e) => !e.ok);
+    let annotated: string | undefined;
+    if (problems.length) {
+      try {
+        const dataUri = await drawAnnotated(
+          src,
+          dim.w,
+          dim.h,
+          problems.map((e) => ({ box: e.box, color: severityColor(e.severity), label: e.label }))
+        );
+        if (dataUri) annotated = await persistDataUri(dataUri);
+      } catch {
+        /* 标注图失败不影响报告 */
+      }
+    }
+    const patch = {
+      status: 'success' as const,
+      imgW: dim.w,
+      imgH: dim.h,
+      elements: els,
+      reportText: report,
+      annotatedSrc: annotated,
+      analysisSrc: src,
+      error: null,
+      logs: [`检查 ${els.length} 个元素 · 发现 ${problems.length} 处问题`]
+    };
+    patchSmartNode(docId, id, patch);
+    persistActiveDocTerminal(docId, id, patch as unknown as Record<string, unknown>);
+  } catch (e) {
+    const msg = (e as Error).message;
+    patchSmartNode(docId, id, { status: 'error', error: msg, logs: [msg] });
+    toast.error('对稿分析失败', msg);
+  } finally {
+    liveRunningNodes.delete(id);
+  }
+}
+
 export async function runScaleVideo(
   id: string,
   width: number | null,
@@ -3933,6 +4321,8 @@ export function routeVideoDone(payload: unknown): void {
     }
   } else {
     setVideo(ent.nodeId, patch);
+    // 终态落盘当前文档：防切档 / 回启动页重载时被 sanitize 后的 idle 覆盖。
+    persistActiveDocTerminal(ent.docId, ent.nodeId, patch as Record<string, unknown>);
     if (p.ok) {
       const st = useSmartCanvasStore.getState();
       const node = st.nodes.find((n) => n.id === ent.nodeId);
@@ -3998,6 +4388,36 @@ export async function runWithUpstream(nodeId: string): Promise<void> {
 // 修法：监听上移到 App 级一次性注册（路由函数与 pending Map 同为模块级，天然配套）；
 // 「结果回来时不在该画布」由 patchDocNodes 跨文档回灌兜住，互不冲突。
 let runnerListenersOff: (() => void) | null = null;
+
+/**
+ * 重挂画布时把「仍有在途任务」的节点状态拉回 running（修「切页回来节点状态被重置成 待运行，
+ * 后台却还在跑」）。根因：切页 unmount → sanitize 把 running 落盘成 idle / 重载时再 sanitize；
+ * 而 pendingWork/pendingComfy/pendingVideo/pendingInterp 是模块级、任务其实还活着。
+ * 本函数按 node.id 与这些 Map 对账，只「补回 running」（纯增量、幂等、绝不清状态/丢结果）。
+ * 因 CanvasWorkspace `key={activeDocId}` —— 任何切页 / 切档都会重挂它，是统一的对账时机。
+ */
+export function resyncRunningNodesFromPending(): void {
+  const st = useSmartCanvasStore.getState();
+  if (!st.nodes.length) return;
+  // 各 Map 里「正在跑」的节点 id 集合（按 node.id 比对；node id 全局随机唯一，跨文档不串）
+  const comfyRunning = new Set<string>();
+  for (const v of pendingComfy.values()) comfyRunning.add(v.comfyId);
+  const videoRunning = new Set<string>();
+  for (const v of pendingVideo.values()) videoRunning.add(v.nodeId);
+  const interpRunning = new Set<string>(pendingInterp.values());
+  for (const n of st.nodes) {
+    const d = n.data as unknown as Record<string, unknown>;
+    const live =
+      (n.type === 'work' && (liveRunningNodes.has(n.id) || (activeWorkTasks.get(n.id)?.size ?? 0) > 0)) ||
+      (n.type === 'comfy' && comfyRunning.has(n.id)) ||
+      (n.type === 'video' && videoRunning.has(n.id)) ||
+      (n.type === 'frame-interp' && interpRunning.has(n.id)) ||
+      ((n.type === 'segment' || n.type === 'proof') && liveRunningNodes.has(n.id));
+    if (live && d.status !== 'running') {
+      st.updateNodeData(n.id, { status: 'running' } as Partial<SmartNodeData>);
+    }
+  }
+}
 
 /** 在 App 根组件注册全部智能画布推送监听（防重；返回统一注销函数）。 */
 export function registerSmartRunnerListeners(): () => void {

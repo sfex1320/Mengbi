@@ -79,4 +79,18 @@ describe('buildCameraPrompt', () => {
     void _omit;
     expect(buildCameraPrompt(noMode)).toBe('保持原始拍摄方式');
   });
+
+  it('景别：两种模式通用且排在最前', () => {
+    const photo = buildCameraPrompt({ ...base, shotSize: 'full-body', cameraType: 'dslr' });
+    expect(photo).toContain('全身镜头');
+    expect(photo.indexOf('全身镜头')).toBeLessThan(photo.indexOf('单反')); // 景别在相机之前
+    const video = buildCameraPrompt({ ...base, camMode: 'video', shotSize: 'extreme-long', movement: 'push' });
+    expect(video).toContain('超远景');
+    expect(video).toContain('推近');
+  });
+
+  it('景别 none / 缺省 → 不输出景别短语', () => {
+    expect(buildCameraPrompt({ ...base, shotSize: 'none' })).toBe('保持原始拍摄方式');
+    expect(buildCameraPrompt(base)).toBe('保持原始拍摄方式');
+  });
 });

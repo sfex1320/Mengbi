@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import sharp from 'sharp';
+import { getSharp } from '../services/sharpLazy';
 import ffmpegPath from 'ffmpeg-static';
 import { register, ok, err, appendNotification, parseModelRef } from './helpers';
 import { VideoGenerateSchema, VideoCancelSchema, VideoScaleSchema, VideoSaveThumbSchema, VideoUploadAssetSchema, VideoEditSchema } from './schemas';
@@ -100,6 +100,7 @@ export function registerVideoHandlers(): void {
     const out = thumbPathFor(row.file_path);
     try {
       await fs.mkdir(path.dirname(out), { recursive: true });
+      const sharp = await getSharp();
       await sharp(Buffer.from(m[1], 'base64'), { failOn: 'none' })
         .resize({ width: 512, height: 512, fit: 'inside', withoutEnlargement: true })
         .webp({ quality: 80 })

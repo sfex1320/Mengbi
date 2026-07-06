@@ -21,6 +21,8 @@ export interface PromptMallCard {
   en: string;
   /** 自带的英文「生成提示词」——用于让用户自行批量生成该卡缩略图（ComfyUI / 绘画模型） */
   genPrompt: string;
+  /** 用户卡片可自带缩略图 dataURI（新增卡片时拖入/粘贴/选文件，已压到 ≤256px，直接显示，无需缩略图文件夹） */
+  thumb?: string;
 }
 
 /** 子类。 */
@@ -50,7 +52,8 @@ export const PROMPT_MALL_CATEGORIES: PromptMallCategory[] = [
   {
     slug: 'character', zh: '人物', en: 'Character', grad: ['#f4a98c', '#d96a8a'], glyph: 'person',
     subs: [
-      S('gender-age', '性别年龄', 'Gender & Age'),
+      // 「性别年龄」与「年龄段」原本两个子分类描述同一件事，已合并为一个（age-stage 卡片在 cards.ts 重映射进此 sub）
+      S('gender-age', '性别·年龄段', 'Gender & Age'),
       S('face-shape', '脸型轮廓', 'Face Shape'),
       S('eyes', '眼睛', 'Eyes'),
       S('nose-mouth', '鼻嘴', 'Nose & Mouth'),
@@ -67,7 +70,6 @@ export const PROMPT_MALL_CATEGORIES: PromptMallCategory[] = [
       S('hands', '手势', 'Hands & Gesture'),
       S('occupation', '职业身份', 'Occupation'),
       S('field', '学识·专业领域', 'Field & Expertise'),
-      S('age-stage', '年龄段', 'Age Stage'),
       S('race', '种族幻想', 'Race & Fantasy'),
       S('temperament', '气质', 'Temperament')
     ]
@@ -93,55 +95,12 @@ export const PROMPT_MALL_CATEGORIES: PromptMallCategory[] = [
       S('uniform', '制服职业装', 'Uniform'),
       S('socks', '袜子', 'Socks & Hosiery'),
       S('suit', '套装', 'Suits & Sets'),
-      S('gloves', '手套', 'Gloves')
-    ]
-  },
-  {
-    slug: 'china-female', zh: '中国风-女', en: 'Chinese Style · Female', grad: ['#e07a9a', '#a23a6a'], glyph: 'shirt',
-    subs: [
-      S('pre-qin-han', '先秦·汉', 'Pre-Qin & Han'),
-      S('wei-jin', '魏晋·南北朝', 'Wei-Jin'),
-      S('tang', '唐制', 'Tang'),
-      S('song', '宋制', 'Song'),
-      S('ming', '明制', 'Ming'),
-      S('qing', '清·旗装', 'Qing'),
-      S('republic', '民国', 'Republic'),
-      S('modern-guofeng', '现代国风', 'Modern Guofeng')
-    ]
-  },
-  {
-    slug: 'china-male', zh: '中国风-男', en: 'Chinese Style · Male', grad: ['#5a7ac0', '#2a3a7a'], glyph: 'shirt',
-    subs: [
-      S('pre-qin-han', '先秦·汉', 'Pre-Qin & Han'),
-      S('wei-jin', '魏晋·南北朝', 'Wei-Jin'),
-      S('tang', '唐制', 'Tang'),
-      S('song', '宋制', 'Song'),
-      S('ming', '明制', 'Ming'),
-      S('qing', '清', 'Qing'),
-      S('republic', '民国·长衫', 'Republic'),
-      S('modern-guofeng', '现代国风', 'Modern Guofeng')
-    ]
-  },
-  {
-    slug: 'swimwear', zh: '泳衣', en: 'Swimwear', grad: ['#4ec5d9', '#2a8fb0'], glyph: 'shirt',
-    subs: [
-      S('one-piece', '连体泳衣', 'One-piece'),
-      S('bikini', '比基尼', 'Bikini'),
-      S('tankini', '分体泳衣', 'Tankini'),
-      S('sporty', '运动泳衣', 'Sporty'),
-      S('men', '男士泳裤', 'Men'),
-      S('vintage', '复古泳装', 'Vintage')
-    ]
-  },
-  {
-    slug: 'wedding', zh: '婚服', en: 'Wedding Attire', grad: ['#e8b4c8', '#c06a8a'], glyph: 'spark',
-    subs: [
-      S('chinese-xiuhe', '中式秀禾', 'Xiuhe'),
-      S('qungua', '龙凤褂', 'Qungua'),
-      S('hanfu-wedding', '汉式婚服', 'Hanfu Wedding'),
-      S('western-gown', '西式婚纱', 'Western Gown'),
-      S('groom', '男士礼服', 'Groom'),
-      S('modern', '现代轻婚纱', 'Modern')
+      S('gloves', '手套', 'Gloves'),
+      // 中国风女/男·泳衣·婚服 原为独立大类，现并入「服饰」作子分类（卡片在 cards.ts 重映射进这几个 sub）
+      S('china-female', '中国风·女', 'Chinese Female'),
+      S('china-male', '中国风·男', 'Chinese Male'),
+      S('swimwear', '泳衣', 'Swimwear'),
+      S('wedding', '婚服', 'Wedding Attire')
     ]
   },
   {
@@ -329,7 +288,7 @@ export const PROMPT_MALL_CATEGORIES: PromptMallCategory[] = [
 
 /** 合成时的大类排序（一条合理的绘画提示词顺序：主体 → 服饰 → 场景 → 画风 → 镜头 → 光色 → 质感 → 氛围 → 质量）。 */
 export const PROMPT_MALL_ASSEMBLY_ORDER: string[] = [
-  'character', 'clothing', 'china-female', 'china-male', 'swimwear', 'wedding', 'props',
+  'character', 'clothing', 'props',
   'nature-arch', 'environment', 'interior',
   'art-style', 'camera', 'lighting', 'color', 'material', 'mood', 'effects', 'quality'
 ];

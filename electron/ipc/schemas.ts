@@ -467,7 +467,9 @@ export const ComfyuiRunSingleSchema = z
     bindings: z.array(z.unknown()).optional(),
     outputNodeIds: z.array(z.string().min(1)).max(500).optional(),
     // true=输出图不进资产库（提示词商城缩略图生成走 ComfyUI 时用）
-    skipGallery: z.boolean().optional()
+    skipGallery: z.boolean().optional(),
+    // 入库分组名（资产库文件夹）——智能画布出图归入以画布名命名的文件夹
+    galleryGroup: z.string().max(120).optional()
   })
   .refine((v) => !!v.workflowId || !!v.workflowJson, {
     message: '需要 workflowId 或 workflowJson'

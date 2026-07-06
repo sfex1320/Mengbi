@@ -32,7 +32,7 @@ function persist(cards: PromptMallCard[]): void {
 interface MallUserCardsState {
   cards: PromptMallCard[];
   /** 新增（或按 id 覆盖）一张用户卡片；返回落定的卡片。 */
-  add: (c: { id?: string; cat: string; sub: string; zh: string; en: string; genPrompt?: string }) => PromptMallCard;
+  add: (c: { id?: string; cat: string; sub: string; zh: string; en: string; genPrompt?: string; thumb?: string }) => PromptMallCard;
   remove: (id: string) => void;
 }
 
@@ -42,6 +42,7 @@ export const useMallUserCardsStore = create<MallUserCardsState>((set, get) => ({
     const slug = (c.zh || c.en || 'card').toLowerCase().replace(/[^a-z0-9一-龥]+/g, '-').slice(0, 16) || 'card';
     const id = c.id || `user.${c.cat}.${slug}-${Math.random().toString(36).slice(2, 7)}`;
     const card: PromptMallCard = { id, cat: c.cat, sub: c.sub, zh: c.zh.trim(), en: c.en.trim(), genPrompt: (c.genPrompt ?? '').trim() };
+    if (c.thumb) card.thumb = c.thumb;
     const cards = [...get().cards.filter((x) => x.id !== id), card];
     persist(cards);
     set({ cards });

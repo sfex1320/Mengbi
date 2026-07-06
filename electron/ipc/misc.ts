@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { app, dialog, BrowserWindow, shell } from 'electron';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import sharp from 'sharp';
+import { getSharp } from '../services/sharpLazy';
 import { register, ok, err } from './helpers';
 import { ThemeSaveSchema } from './schemas';
 import { getDb } from '../services/db';
@@ -21,7 +21,10 @@ const MIME_TO_EXT: Record<string, string> = {
   'image/jpeg': 'jpg',
   'image/png': 'png',
   'image/webp': 'webp',
-  'image/gif': 'gif'
+  'image/gif': 'gif',
+  'video/mp4': 'mp4',
+  'video/webm': 'webm',
+  'video/quicktime': 'mov'
 };
 
 export function registerMiscHandlers(): void {
@@ -163,6 +166,28 @@ export function registerMiscHandlers(): void {
     }
   );
 
+  // 内置「提示词商城缩略图」目录（随包发，extraResources）。
+  // 打包后在 process.resourcesPath/prompt-mall-thumbs；dev 下用仓库 mall-thumbs-bundled（跑过 build-mall-thumbs 才有）。
+  // 不存在则回 null（商城回退到程序化 SVG 占位图 / 用户自选目录）。
+  register('api:storage:mall-thumbs-dir', null, async () => {
+    const candidates = app.isPackaged
+      ? [path.join(process.resourcesPath, 'prompt-mall-thumbs')]
+      : [path.join(app.getAppPath(), 'mall-thumbs-bundled'), path.join(process.cwd(), 'mall-thumbs-bundled')];
+    let dir: string | null = null;
+    for (const d of candidates) {
+      try {
+        const st = await fs.stat(d);
+        if (st.isDirectory()) {
+          dir = d;
+          break;
+        }
+      } catch {
+        /* 不存在 → 试下一个 */
+      }
+    }
+    return ok({ dir });
+  });
+
   // 批量把图片复制/写入到目标文件夹（文件夹批量处理：folder-output 节点落盘用）。
   // src 支持 本地路径（fs.copyFile 零转码）或 data: URI（解码写入）；目标重名自动 -2/-3 兜底。
   register(
@@ -247,6 +272,7 @@ export function registerMiscHandlers(): void {
           const imgRes = await chromiumFetch(imgUrl, { signal: ac.signal });
           if (imgRes.ok) {
             const buf = Buffer.from(await imgRes.arrayBuffer());
+            const sharp = await getSharp();
             const webp = await sharp(buf, { failOn: 'none', limitInputPixels: false })
               .resize(512, 512, { fit: 'inside', withoutEnlargement: true })
               .webp({ quality: 78 })
@@ -298,10 +324,10 @@ export function registerMiscHandlers(): void {
     'api:storage:save-temp-image',
     z.object({ dataUri: z.string().min(10), suggestedName: z.string().optional() }),
     async (input) => {
-      const m = input.dataUri.match(/^data:(image\/[\w+.-]+);base64,(.*)$/);
+      const m = input.dataUri.match(/^data:((?:image|video)\/[\w+.-]+);base64,(.*)$/);
       if (!m) {
         return err(
-          makeError('VALIDATION_FAILED', '不是合法 image dataUri', { severity: 'toast' })
+          makeError('VALIDATION_FAILED', '不是合法 image/video dataUri', { severity: 'toast' })
         );
       }
       const mime = m[1];

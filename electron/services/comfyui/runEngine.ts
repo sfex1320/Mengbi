@@ -51,6 +51,8 @@ export interface RunIterationParams {
   fileTaskId: number;
   /** true=不把输出图同步进资产库（提示词商城缩略图生成走 ComfyUI 时用，避免缩略图污染图库） */
   skipGallery?: boolean;
+  /** 入库分组名（资产库文件夹）——智能画布出图归入以画布名命名的文件夹 */
+  galleryGroup?: string | null;
   signal: AbortSignal;
   onPromptId?: (promptId: string) => void;
   onUploaded?: (map: Record<string, string>) => void;
@@ -195,7 +197,8 @@ export async function runIteration(params: RunIterationParams): Promise<OutputFi
       }
       await addImagesToGallery(outputs, {
         prompt: (variables.prompt as string) || null,
-        paramsJson: JSON.stringify(slim)
+        paramsJson: JSON.stringify(slim),
+        groupName: params.galleryGroup ?? null
       });
     } catch {
       /* 入库失败不影响出图返回 */

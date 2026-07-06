@@ -9,7 +9,7 @@
  */
 import path from 'node:path';
 import fs from 'node:fs/promises';
-import sharp from 'sharp';
+import { getSharp } from '../../sharpLazy';
 import { app } from 'electron';
 import type { VecMode } from '../types';
 
@@ -36,6 +36,7 @@ export async function preprocessForMode(
   const ts = Date.now();
   const out = path.join(tempBase, `pp-${mode}-${ts}.png`);
 
+  const sharp = await getSharp();
   let pipeline = sharp(inputPath);
 
   // 通用:强制最大边长

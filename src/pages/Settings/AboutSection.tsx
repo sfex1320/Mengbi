@@ -67,7 +67,7 @@ const ENTRIES: LicenseEntry[] = [
 export function AboutSection(): JSX.Element {
   const [filter, setFilter] = useState<'all' | 'library' | 'model' | 'runtime'>('all');
   const filtered = filter === 'all' ? ENTRIES : ENTRIES.filter((e) => e.kind === filter);
-  const appVersion = '0.0.10'; // 写死，避免引 package.json（与 package.json/electron-builder 版本保持一致）
+  const appVersion = '0.0.12'; // 写死，避免引 package.json（与 package.json/electron-builder 版本保持一致）
   // 构建标识（构建期注入）：用户据此确认「正在运行的包就是最新源码构建的」，
   // 排查「打包后新功能没进去」时先看这里——若哈希/时间是旧的，说明 out/ 没重新构建就打了包。
   const gitHash = typeof __GIT_HASH__ === 'string' ? __GIT_HASH__ : 'dev';

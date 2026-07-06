@@ -9,6 +9,7 @@ import {
   MOVEMENT_LABELS,
   FOCAL_LABELS,
   COMPOSITION_LABELS,
+  SHOT_SIZE_LABELS,
   type AnglePromptNodeData,
   type SmartNodeData
 } from '@shared/smartCanvas';
@@ -30,6 +31,7 @@ function imgUrl(src?: string): string | null {
 function summaryChips(d: AnglePromptNodeData): { icon: JSX.Element | null; label: string }[] {
   const mode = d.camMode ?? 'photo';
   const out: { icon: JSX.Element | null; label: string }[] = [];
+  if (d.shotSize && d.shotSize !== 'none') out.push({ icon: optionIcon('shotSize', d.shotSize, 14), label: SHOT_SIZE_LABELS[d.shotSize] });
   if (mode === 'photo') {
     if (d.cameraType && d.cameraType !== 'none') out.push({ icon: optionIcon('cameraType', d.cameraType, 14), label: CAMERA_TYPE_LABELS[d.cameraType] });
     if (d.aperture && d.aperture !== 'none') out.push({ icon: optionIcon('aperture', d.aperture, 14), label: APERTURE_LABELS[d.aperture] });

@@ -25,6 +25,15 @@ const ReverseSchema = z.object({
   resultType: z.enum(['description', 'tags', 'style'])
 });
 
+// 通用视觉分析：自定义系统提示词 + 自定义指令，支持多图（切分/对稿节点的「元素检测 / 逐元素检错」用）。
+// 返回原始文本（节点侧自行 extractJsonBlock + 解析），不固定 description/tags/style 三档。
+const VisionAnalyzeSchema = z.object({
+  imagePaths: z.array(z.string()).min(1).max(8),
+  modelId: z.string().min(1),
+  systemPrompt: z.string().min(1).max(20_000),
+  instruction: z.string().max(20_000).optional()
+});
+
 export function registerLabHandlers(): void {
   register('api:lab:reverse', ReverseSchema, async (input) => {
     if (isMockMode()) {
@@ -51,6 +60,29 @@ export function registerLabHandlers(): void {
       return err(
         makeError('API_FAILED', `反推失败：${(e as Error).message}`, { severity: 'modal' })
       );
+    }
+  });
+
+  register('api:lab:vision-analyze', VisionAnalyzeSchema, async (input) => {
+    if (isMockMode()) {
+      return ok({ text: mockVisionAnalyze() });
+    }
+    try {
+      const cfg = findTextConfigByModel(input.modelId);
+      if (!cfg) {
+        return err(
+          makeError(
+            'NOT_IMPLEMENTED',
+            `没找到模型「${input.modelId}」的对话配置，先在设置页加一个多模态(vision)对话模型并把它加到 model_mapping`,
+            { severity: 'modal' }
+          )
+        );
+      }
+      const text = await runVisionAnalyze(cfg, input.imagePaths, input.systemPrompt, input.instruction);
+      return ok({ text });
+    } catch (e) {
+      logger.error('lab.visionAnalyze failed', e);
+      return err(makeError('API_FAILED', `视觉分析失败：${(e as Error).message}`, { severity: 'modal' }));
     }
   });
 
@@ -258,6 +290,96 @@ async function runReverseOnce(
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** 从「可能是 JSON、也可能是 SSE 流」的响应文本里抽出 assistant 正文。 */
+function chatContentFromResponseText(text: string): string {
+  let json: { choices?: Array<{ message?: { content?: string } }> } | null = null;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    let assembled = '';
+    for (const line of text.split('\n')) {
+      if (!line.startsWith('data:')) continue;
+      const payload = line.slice(5).trim();
+      if (!payload || payload === '[DONE]') continue;
+      try {
+        const j = JSON.parse(payload) as {
+          choices?: Array<{ delta?: { content?: string }; message?: { content?: string } }>;
+        };
+        assembled += j.choices?.[0]?.delta?.content ?? j.choices?.[0]?.message?.content ?? '';
+      } catch {
+        /* ignore */
+      }
+    }
+    json = { choices: [{ message: { content: assembled } }] };
+  }
+  return json?.choices?.[0]?.message?.content?.trim() ?? '';
+}
+
+/** 通用视觉分析：自定义 system + instruction，支持多图，返回原始文本。 */
+async function runVisionAnalyze(
+  cfg: TextCfg,
+  imagePaths: string[],
+  systemPrompt: string,
+  instruction?: string
+): Promise<string> {
+  const url = joinApiUrl(cfg.base_url, 'chat/completions');
+  const apiKey = decryptString(cfg.api_key_encrypted);
+  const dataUris = await Promise.all(imagePaths.map(imagePathToDataUri));
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 180_000);
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: applyHeaderOverrides(
+        { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        cfg.header_overrides_json,
+        { key: apiKey, model: cfg.actualModelId }
+      ),
+      body: JSON.stringify({
+        model: cfg.actualModelId,
+        stream: false,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: instruction || '请按要求分析这张图，只输出 JSON。' },
+              ...dataUris.map((u) => ({ type: 'image_url', image_url: { url: u } }))
+            ]
+          }
+        ]
+      }),
+      signal: ctrl.signal
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      const hint = isContentModeration(text) ? moderationHint(res.status) : httpStatusHint(res.status);
+      throw new Error(`HTTP ${res.status}（${hint}）：${text.slice(0, 200)}`);
+    }
+    const out = chatContentFromResponseText(await res.text());
+    if (!out) throw new Error('上游没返回内容');
+    return out;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function mockVisionAnalyze(): string {
+  return JSON.stringify([
+    { label: '主体', box: [0.1, 0.1, 0.5, 0.6], prompt: '画面主体', ok: true, issue_types: [], severity: 'ok' },
+    {
+      label: '左手',
+      box: [0.55, 0.4, 0.15, 0.2],
+      prompt: '一只手',
+      ok: false,
+      issue_types: ['shape'],
+      severity: 'high',
+      description: '手部只有 4 根手指',
+      suggestion: '重绘为 5 指正常手部'
+    }
+  ]);
 }
 
 function mockReverse(type: 'description' | 'tags' | 'style'): unknown {

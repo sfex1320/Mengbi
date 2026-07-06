@@ -25,7 +25,9 @@ import {
   UpscaleNodeIcon,
   VectorizeNodeIcon,
   FolderInputNodeIcon,
-  FolderOutputNodeIcon
+  FolderOutputNodeIcon,
+  SegmentNodeIcon,
+  ProofNodeIcon
 } from '../icons';
 
 type IconC = (p: { size?: number }) => JSX.Element;
@@ -56,7 +58,9 @@ const ACCENT_ICON: Record<string, IconC> = {
   'is-upscale': UpscaleNodeIcon,
   'is-vectorize': VectorizeNodeIcon,
   'is-folder-input': FolderInputNodeIcon,
-  'is-folder-output': FolderOutputNodeIcon
+  'is-folder-output': FolderOutputNodeIcon,
+  'is-segment': SegmentNodeIcon,
+  'is-proof': ProofNodeIcon
 };
 
 /**

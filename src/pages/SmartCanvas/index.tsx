@@ -19,6 +19,8 @@ import { ImageEditorModal, useImageEditorStore } from './ImageEditorModal';
 import { PromptMallStudio, usePromptMallStudioStore } from './PromptMallStudio';
 import { StoryboardStudio, useStoryboardStudioStore } from './StoryboardStudio';
 import { VideoClipStudio, useVideoClipStudioStore } from './VideoClipStudio';
+import { SegmentStudio, useSegmentStudioStore } from './SegmentStudio';
+import { ProofStudio, useProofStudioStore } from './ProofStudio';
 import './SmartCanvas.css';
 
 /**
@@ -100,6 +102,8 @@ export default function SmartCanvasPage(): JSX.Element {
       usePromptMallStudioStore.getState().close();
       useStoryboardStudioStore.getState().close();
       useVideoClipStudioStore.getState().close();
+      useSegmentStudioStore.getState().close();
+      useProofStudioStore.getState().close();
       useSmartPreviewStore.getState().close();
       useSmartTextStore.getState().close();
     };
@@ -135,6 +139,9 @@ export default function SmartCanvasPage(): JSX.Element {
       <PromptMallStudio />
       <StoryboardStudio />
       <VideoClipStudio />
+      {/* 切分 / 对稿 工作台弹窗（视觉元素分析 + 框编辑；portal 到 body） */}
+      <SegmentStudio />
+      <ProofStudio />
       {/* 便携资产库（非模态中心悬浮窗）：portal 到 body，躲开路由级 transform */}
       <SmartGalleryPanel />
       {/* AI 智能体（一句话 → 自动建图 / 生成）：portal 到 body */}

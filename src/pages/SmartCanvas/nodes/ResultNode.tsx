@@ -11,6 +11,8 @@ import type { PreviewItem } from '@/components/Lightbox';
 import { NodeShell } from './NodeShell';
 import { MeasuredThumb, thumbPair } from '../MeasuredThumb';
 import { areaMenu, copyImage, copyText, imageSaveAs, fmtDur, autoGrowNode, dragOutNative, showInFolder, imageAsCreateRef, hoverPreviewProps, useBackdropClose } from '../nodeArea';
+import { buildShortcutSendMenuItems } from '@/lib/mediaActions';
+import type { ContextMenuEntry } from '@/components/ContextMenu';
 
 function mediaUrl(src: string): string {
   return src.startsWith('data:') ? src : localPathToImageUrl(src);
@@ -219,6 +221,29 @@ export function ResultNode({ id, data }: NodeProps): JSX.Element {
     ]);
   }
 
+  /** 上游「传入」图片（还没生成结果时的组合预览）的右键菜单。
+   *  修复：传入结果节点的图原先只有 onClick、无 onContextMenu，右键冒泡到节点级菜单，
+   *  而节点级菜单对 result 节点只看累积结果（accum），传入图不在其中 → 完全没有右键操作。 */
+  function previewImageMenu(e: React.MouseEvent, p: string, i: number): void {
+    const items: ContextMenuEntry[] = [
+      { label: '放大预览', onClick: () => openPreview(up.images.map((x) => ({ src: mediaUrl(x) })), i) },
+      { label: '复制图片', onClick: () => void copyImage(mediaUrl(p)) },
+      { label: '另存…', onClick: () => void imageSaveAs(p, 'smart-canvas-input.png') },
+      {
+        label: '作参考图（发到生图页）',
+        onClick: () =>
+          void imageAsCreateRef(p).then((okk) => {
+            if (okk) navigate('/');
+          })
+      }
+    ];
+    if (!p.startsWith('data:')) {
+      items.push({ separator: true }, { label: '打开文件所在目录', onClick: () => void showInFolder(p) });
+    }
+    items.push(...buildShortcutSendMenuItems({ kind: 'image', src: p }));
+    areaMenu(e, items);
+  }
+
   /** 在累积全图列表里找某张图的下标（合集封面点开预览用）。 */
   function previewIndexOf(p: string): number {
     return Math.max(0, images.indexOf(p));
@@ -273,6 +298,7 @@ export function ResultNode({ id, data }: NodeProps): JSX.Element {
                       measureFull
                       alt={`预览 ${i + 1}`}
                       onClick={() => openPreview(up.images.map((x) => ({ src: mediaUrl(x) })), i)}
+                      onContextMenu={(e) => previewImageMenu(e, p, i)}
                     />
                   );
                 })}

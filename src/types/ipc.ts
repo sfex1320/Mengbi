@@ -101,6 +101,8 @@ export interface ComfyuiAPI {
     outputNodeIds?: string[];
     /** true=输出图不进资产库（提示词商城缩略图生成用） */
     skipGallery?: boolean;
+    /** 入库分组名（资产库文件夹）——智能画布 ComfyUI 节点出图归入「以画布名命名」的文件夹 */
+    galleryGroup?: string;
   }): Promise<Result<RunSingleResult>>;
   runBatch(input: {
     workflowId?: string;
@@ -794,6 +796,12 @@ export interface AlbumAPI {
 
 export interface LabAPI {
   reverse(input: { imagePaths: string[]; modelId: string; resultType: string }): Promise<Result<unknown>>;
+  visionAnalyze(input: {
+    imagePaths: string[];
+    modelId: string;
+    systemPrompt: string;
+    instruction?: string;
+  }): Promise<Result<{ text: string }>>;
   translate(input: { text: string; direction: 'zh-to-en' | 'en-to-zh' }): Promise<Result<unknown>>;
   history(input?: { operation_type?: string }): Promise<Result<unknown[]>>;
 }
@@ -856,6 +864,8 @@ export interface StorageAPI {
   /** 把智能画布图片节点的大 base64 落盘到 userData/canvas-assets（sha1 去重），返回磁盘路径，
    *  用于持久化前外置 base64、避免撑爆 localStorage 配额。 */
   saveCanvasAsset(input: { dataUri: string }): Promise<Result<{ filePath: string }>>;
+  /** 内置「提示词商城缩略图」目录（随包发，extraResources）；不存在回 null（商城回退 SVG 占位） */
+  mallThumbsDir(): Promise<Result<{ dir: string | null }>>;
   /** 列出文件夹中的图片/视频文件（folder-input 节点扫描；只回元数据不回字节；kinds 缺省=仅图片） */
   listImages(input: {
     dir: string;

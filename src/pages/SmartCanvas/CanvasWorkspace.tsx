@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { useSmartCanvasStore, useSmartCanvasUiStore } from '@/store/smartCanvasStore';
 import { useSmartDocsStore } from '@/store/smartDocsStore';
 import { writeDocContent, externalizeImageNodes } from '@/lib/smartDocStorage';
+import { resyncRunningNodesFromPending } from '@/lib/smartCanvasRunner';
 import { CanvasViewport } from './CanvasViewport';
 import { CanvasDock } from './CanvasDock';
 import { NodeInspector } from './NodeInspector';
@@ -14,7 +15,7 @@ import { NodeLightConsole } from './nodePanel/NodeLightConsole';
  *  提示词/图片=卡内直接编辑文本 / 上传图；分组=卡内改分组名；
  *  结果=纯展示（图/文本/视频 + 拖出 + 右键都在卡上，弹窗作用不大反而干扰）。
  *  注意：镜头(angle-prompt) 用 NodeCameraConsole 弹窗、光源(light) 用 NodeLightConsole 弹窗（卡片只放基础调整）。 */
-const ON_NODE_TYPES = new Set(['palette', 'prompt', 'image', 'group', 'compare', 'image-reverse', 'video-source', 'video-reverse', 'frame-interp', 'video-clip', 'ratio', 'result', 'storyboard', 'prompt-mall', 'loop', 'upscale', 'vectorize', 'folder-input', 'folder-output']);
+const ON_NODE_TYPES = new Set(['palette', 'prompt', 'image', 'group', 'compare', 'image-reverse', 'video-source', 'video-reverse', 'frame-interp', 'video-clip', 'ratio', 'result', 'storyboard', 'prompt-mall', 'loop', 'upscale', 'vectorize', 'folder-input', 'folder-output', 'segment', 'proof']);
 
 /** 点在这些元素上视为「操作卡上控件」：选中节点但不弹属性面板（设定已完成，弹窗只会拖慢+干扰）。 */
 const CONTROL_SELECTOR = 'button, select, input, textarea, a, video, img, [role="slider"], .mb-np-seg, .mb-sc-runbtn';
@@ -47,7 +48,9 @@ const NODE_OPS: Record<string, string> = {
   upscale: '接入图片 → 本地 Real-ESRGAN 保真放大 2/3/4×（不烧中转站）→ 输出放大图喂下游（首次用需装引擎）',
   vectorize: '接入图片 → 本地 VTracer（彩色）/ Potrace（单色）转 SVG · 输出连「结果 / 文件夹输出」查看·另存',
   'folder-input': '选输入文件夹 → 扫描全部图片作多图来源 · 配合 ComfyUI「逐张图执行」做文件夹批处理',
-  'folder-output': '选输出文件夹 → 上游每出一张结果自动落盘（命名规则可选）· 失败记日志不中断生成'
+  'folder-output': '选输出文件夹 → 上游每出一张结果自动落盘（命名规则可选）· 失败记日志不中断生成',
+  segment: '切分工具：接整图 → 打开工作台 自动识别元素框（可拖拽调整位置/大小）→ 逐元素反推 + 统一风格 → 逐元素重绘 → 按原位 1:1 拼回整图喂下游',
+  proof: '对稿：接海报/设计图 → 多模态模型逐元素检错（字体/元素/Logo/形态）→ 工作台叠框 + 问题清单 + 审稿报告（喂下游）+ 可导出标注图'
 };
 const HELP_KEYS = 'Ctrl+Z 撤销 · Ctrl+C/V 复制粘贴 · Ctrl+D 再制 · Ctrl+F 搜索 · Del 删除';
 
@@ -78,6 +81,14 @@ export function CanvasWorkspace({ docId }: { docId: string }): JSX.Element {
     const cur = useSmartCanvasUiStore.getState().panelSuppressed;
     if (cur !== isControl) useSmartCanvasUiStore.getState().setPanelSuppressed(isControl);
   }
+
+  // 切页/切档重挂时对账：把仍有在途任务（pending Map 里）的节点状态拉回 running，
+  // 修「从资产库回来后节点显示待运行、后台却还在跑」（详见 resyncRunningNodesFromPending）。
+  // 放在挂载后下一帧，确保此时缓冲区已是目标文档内容。
+  useEffect(() => {
+    const id = requestAnimationFrame(() => resyncRunningNodesFromPending());
+    return () => cancelAnimationFrame(id);
+  }, [docId]);
 
   // 自动保存：订阅画布变化 → 500ms 去抖写回本文档（去抖即避免拖动每帧 stringify 大图）。
   // 切换/卸载前再立即落一次盘，防丢最近 500ms 的改动。

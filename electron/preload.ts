@@ -118,6 +118,7 @@ const api: ElectronAPI = {
   // 实验室页面已下线；reverse/translate 后端保留（智能画布 LLM 节点「图片反推」复用 reverse）
   lab: {
     reverse: (input) => invoke('api:lab:reverse', input),
+    visionAnalyze: (input) => invoke('api:lab:vision-analyze', input),
     translate: (input) => invoke('api:lab:translate', input),
     history: (input) => invoke('api:lab:history', input)
   },
@@ -137,6 +138,7 @@ const api: ElectronAPI = {
     pathInfo: (input) => invoke('api:storage:path-info', input),
     saveAs: (input) => invoke('api:storage:save-as', input),
     saveCanvasAsset: (input) => invoke('api:storage:save-canvas-asset', input),
+    mallThumbsDir: () => invoke('api:storage:mall-thumbs-dir'),
     listImages: (input) => invoke('api:storage:list-images', input),
     copyInto: (input) => invoke('api:storage:copy-into', input),
     openUrl: (url) => invoke('api:storage:open-url', url),

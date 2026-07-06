@@ -35,6 +35,8 @@ export interface QueuedRun {
   fileTaskId: number;
   /** true=输出图不进资产库（提示词商城缩略图生成用） */
   skipGallery?: boolean;
+  /** 入库分组名（资产库文件夹）——智能画布出图归入以画布名命名的文件夹 */
+  galleryGroup?: string | null;
   sender: WebContents;
   /** feedback 模式：把上一轮输出路径回灌到这个输入控件 */
   feedbackToControlId?: string;
@@ -206,6 +208,7 @@ class SerialRunQueue {
         outputNodeIds: item.outputNodeIds,
         fileTaskId: item.fileTaskId,
         skipGallery: item.skipGallery,
+        galleryGroup: item.galleryGroup,
         signal: ctrl.signal,
         onPromptId: (promptId) => updateRun(item.runId, { promptId }),
         onUploaded: (map) => updateRun(item.runId, { uploadedFiles: map }),

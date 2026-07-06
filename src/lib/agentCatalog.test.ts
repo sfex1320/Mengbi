@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { CATALOG, ALL_AGENT_KINDS, isNodeKind, consumeKinds, produceKinds, buildAgentSystemPrompt } from './agentCatalog';
 
 describe('agentCatalog 完整性', () => {
-  it('覆盖全部 27 类节点', () => {
-    expect(ALL_AGENT_KINDS).toHaveLength(27);
+  it('覆盖全部 29 类节点', () => {
+    expect(ALL_AGENT_KINDS).toHaveLength(29);
     expect(isNodeKind('work')).toBe(true);
     expect(isNodeKind('nonsense')).toBe(false);
     expect(isNodeKind(123)).toBe(false);

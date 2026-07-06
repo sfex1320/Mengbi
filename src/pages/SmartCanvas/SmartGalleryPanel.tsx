@@ -33,6 +33,10 @@ interface AlbumRow {
   id: number;
   name: string;
 }
+interface GroupRow {
+  name: string;
+  count: number;
+}
 
 /**
  * 智能画布的「便携资产库」：完整复用资产库数据通道（api:gallery:list + 相册筛选 + 搜索 + 缩略图），
@@ -43,6 +47,8 @@ interface AlbumRow {
 const VIDEO_PATH_RE = /\.(mp4|webm|mov|mkv|m4v|avi)$/i;
 /** 分批渲染步长：一次性挂 500 张 <img> 是面板卡顿来源之一，先渲一屏多一点、按需加载更多。 */
 const SHOW_STEP = 160;
+/** 便携资产库只作临时查看：只拉最近 100 张（主资产库 Manager 才无限滚动加载全部）。 */
+const PORTABLE_LIMIT = 100;
 
 export function SmartGalleryPanel(): JSX.Element | null {
   const open = useSmartGalleryPanelStore((s) => s.open);
@@ -51,6 +57,9 @@ export function SmartGalleryPanel(): JSX.Element | null {
   const [rows, setRows] = useState<GalleryRow[]>([]);
   const [albums, setAlbums] = useState<AlbumRow[]>([]);
   const [albumId, setAlbumId] = useState<number | 'all'>('all');
+  // 分组（资产库文件夹）：'all'=全部 / '__home__'=未分组散图 / 具体分组名
+  const [groups, setGroups] = useState<GroupRow[]>([]);
+  const [groupSel, setGroupSel] = useState<'all' | '__home__' | string>('all');
   const [kind, setKind] = useState<'all' | 'image' | 'video'>('all');
   const [q, setQ] = useState('');
   const [loading, setLoading] = useState(false);
@@ -59,13 +68,16 @@ export function SmartGalleryPanel(): JSX.Element | null {
   // 响应竞态守卫：快速打字时多个 refresh 在途，旧响应后到会覆盖新结果——只认最后一次请求
   const reqSeq = useRef(0);
 
-  async function refresh(album: number | 'all', search: string): Promise<void> {
+  async function refresh(album: number | 'all', search: string, group: 'all' | '__home__' | string): Promise<void> {
     const seq = ++reqSeq.current;
     setLoading(true);
     try {
       const r = await window.electronAPI.gallery.list({
         album_id: album === 'all' ? undefined : album,
-        search: search.trim() || undefined
+        search: search.trim() || undefined,
+        // 选了相册时不按分组（相册与分组互斥，与 Manager 一致）
+        group: album !== 'all' || group === 'all' ? undefined : group,
+        limit: PORTABLE_LIMIT // 临时查看：只拉最近 100 张
       });
       if (seq !== reqSeq.current) return; // 已有更新的请求在途/完成，丢弃旧响应
       if (r.ok) {
@@ -77,20 +89,29 @@ export function SmartGalleryPanel(): JSX.Element | null {
     }
   }
 
-  // 打开面板：拉相册列表 + 首屏图
+  async function refreshGroups(): Promise<void> {
+    const r = await window.electronAPI.gallery.listGroups();
+    if (r.ok) setGroups(r.data as unknown as GroupRow[]);
+  }
+
+  // 打开面板：拉相册列表 + 分组列表 + 首屏图
   useEffect(() => {
     if (!open) return;
     void window.electronAPI.album.list().then((r) => {
       if (r.ok) setAlbums(r.data as unknown as AlbumRow[]);
     });
-    void refresh(albumId, q);
+    void refreshGroups();
+    void refresh(albumId, q, groupSel);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, albumId]);
+  }, [open, albumId, groupSel]);
 
   // 已打开时 生图完成 / 资产库内容有变（产物自动入库广播）自动刷新（独立订阅，避免闭包里 albumId/q 过期）
   useEffect(() => {
     if (!open) return;
-    const doRefresh = (): void => void refresh(albumId, q);
+    const doRefresh = (): void => {
+      void refreshGroups();
+      void refresh(albumId, q, groupSel);
+    };
     const offDone = window.electronAPI.on('image:done', doRefresh);
     const offChanged = window.electronAPI.on('gallery:changed', doRefresh);
     return () => {
@@ -98,7 +119,7 @@ export function SmartGalleryPanel(): JSX.Element | null {
       offChanged();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, albumId, q]);
+  }, [open, albumId, q, groupSel]);
 
   // Esc 关闭（非模态面板没有背板可点）
   useEffect(() => {
@@ -113,7 +134,7 @@ export function SmartGalleryPanel(): JSX.Element | null {
   // 搜索去抖
   useEffect(() => {
     if (!open) return;
-    const t = setTimeout(() => void refresh(albumId, q), 300);
+    const t = setTimeout(() => void refresh(albumId, q, groupSel), 300);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [q]);
@@ -199,7 +220,23 @@ export function SmartGalleryPanel(): JSX.Element | null {
               </option>
             ))}
           </select>
-          <button className="mb-btn mb-btn-sm mb-btn-ghost" onClick={() => void refresh(albumId, q)}>
+          {/* 文件夹（分组）筛选——与主资产库同步：全部 / 首页散图 / 各文件夹。选了相册时禁用（互斥）。 */}
+          <select
+            className="mb-select mb-sc-glp-album"
+            value={groupSel}
+            disabled={albumId !== 'all'}
+            title="按文件夹（分组）筛选"
+            onChange={(e) => setGroupSel(e.target.value)}
+          >
+            <option value="all">全部文件夹</option>
+            <option value="__home__">📂 首页（未分组）</option>
+            {groups.map((g) => (
+              <option key={g.name} value={g.name}>
+                📁 {g.name}（{g.count}）
+              </option>
+            ))}
+          </select>
+          <button className="mb-btn mb-btn-sm mb-btn-ghost" onClick={() => void refresh(albumId, q, groupSel)}>
             刷新
           </button>
         </div>
@@ -262,7 +299,9 @@ export function SmartGalleryPanel(): JSX.Element | null {
             )}
           </div>
         )}
-        <div className="mb-sc-glp-hint">拖图到画布空白=建图片节点 · 拖到其他软件=原文件直接使用 · 右键有更多操作 · Esc 关闭</div>
+        <div className="mb-sc-glp-hint">
+          临时查看 · 仅显示最近 100 张（完整资产库在「图库」页）· 拖图到画布=建图片节点 · 拖到其他软件=原文件直接用 · Esc 关闭
+        </div>
     </div>,
     document.body
   );

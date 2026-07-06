@@ -257,6 +257,24 @@ export const VectorizeNodeIcon = (p: P): JSX.Element => (
     <path d="M6.4 18.5h4.2" />
   </I>
 );
+// 切分工具：外框 + 识别出的两个元素子框（元素分割）
+export const SegmentNodeIcon = (p: P): JSX.Element => (
+  <I {...p}>
+    <rect x="3" y="3" width="18" height="18" rx="2" strokeDasharray="2.6 2.2" />
+    <rect x="6" y="6" width="7" height="7" rx="1" />
+    <rect x="13.5" y="13" width="5.5" height="5.5" rx="1" />
+  </I>
+);
+// 对稿：放大镜审稿 + 校对勾（逐元素检错）
+export const ProofNodeIcon = (p: P): JSX.Element => (
+  <I {...p}>
+    <rect x="3.5" y="3" width="12" height="18" rx="2" />
+    <path d="M6.5 8h6M6.5 12h3.5" />
+    <circle cx="15.5" cy="15" r="4.2" />
+    <path d="M18.6 18.1L21 20.5" />
+    <path d="M13.7 15.1l1.2 1.2 2.1-2.4" />
+  </I>
+);
 export const NODE_ICONS: Record<SmartNodeKind, (p: P) => JSX.Element> = {
   image: ImageNodeIcon,
   prompt: PromptNodeIcon,
@@ -284,7 +302,9 @@ export const NODE_ICONS: Record<SmartNodeKind, (p: P) => JSX.Element> = {
   upscale: UpscaleNodeIcon,
   vectorize: VectorizeNodeIcon,
   'folder-input': FolderInputNodeIcon,
-  'folder-output': FolderOutputNodeIcon
+  'folder-output': FolderOutputNodeIcon,
+  segment: SegmentNodeIcon,
+  proof: ProofNodeIcon
 };
 
 // ── 动作图标 ──
