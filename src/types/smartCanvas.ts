@@ -121,7 +121,8 @@ export interface NodeMeta {
    *  右键「恢复自适应大小」清除。优先级：手动 > 自适应。 */
   manualSize?: boolean;
   /** true=节点被跳过（Alt+点击切换）：灰显；运行全部/链式补跑/循环驱动/cascade 一律绕过它，
-   *  已有输出仍照常喂下游（= ComfyUI mute 的「不执行但不断流」语义）。卡上按钮直跑不受限。 */
+   *  且它自己的产出**不再喂下游**——computeUpstream 走透传（= ComfyUI Bypass 语义：
+   *  它的上游直接穿过去，2026-07-14 起）。卡上按钮直跑不受限。 */
   skipped?: boolean;
 }
 
@@ -433,15 +434,17 @@ export type CameraType =
   | 'none' | 'dslr' | 'mirrorless' | 'film35' | 'mediumformat' | 'polaroid' | 'phone' | 'cinema' | 'drone' | 'action';
 /** 光圈（拍照模式，决定景深虚化）。 */
 export type ApertureSetting = 'none' | 'f1.4' | 'f2.8' | 'f4' | 'f8' | 'f16';
-/** 运镜方式（视频模式）。 */
+/** 运镜方式（视频模式）。2026-07-14 补全：升降直移 / 光学变焦推拉 / 甩镜。 */
 export type CameraMovement =
   | 'none' | 'push' | 'pull' | 'panleft' | 'panright' | 'tiltup' | 'tiltdown'
-  | 'truck' | 'orbit' | 'handheld' | 'crane' | 'dollyzoom' | 'tracking' | 'static';
-/** 焦距（视频模式）。 */
-export type FocalLength = 'none' | 'ultrawide' | 'wide' | 'standard' | 'tele' | 'macro';
-/** 构图（两种模式通用）。 */
+  | 'truck' | 'pedestal' | 'orbit' | 'handheld' | 'crane' | 'dollyzoom'
+  | 'zoomin' | 'zoomout' | 'whippan' | 'tracking' | 'static';
+/** 焦距（视频模式）。2026-07-14 补全：鱼眼 / 移轴。 */
+export type FocalLength = 'none' | 'fisheye' | 'ultrawide' | 'wide' | 'standard' | 'tele' | 'macro' | 'tiltshift';
+/** 构图（两种模式通用）。2026-07-14 补全：过肩 / 主观视角(POV)。 */
 export type ShotComposition =
-  | 'none' | 'thirds' | 'centered' | 'symmetry' | 'diagonal' | 'leadinglines' | 'frameinframe' | 'golden' | 'fill' | 'negative';
+  | 'none' | 'thirds' | 'centered' | 'symmetry' | 'diagonal' | 'leadinglines' | 'frameinframe' | 'golden' | 'fill' | 'negative'
+  | 'ots' | 'pov';
 /** 景别 / 景构（两种模式通用）：从超远景到大特写的取景范围。 */
 export type ShotSize =
   | 'none' | 'extreme-long' | 'long' | 'full' | 'full-body' | 'medium' | 'medium-close' | 'close' | 'closeup' | 'extreme-closeup';
@@ -482,25 +485,30 @@ export const MOVEMENT_LABELS: Record<CameraMovement, string> = {
   tiltup: '上摇',
   tiltdown: '下摇',
   truck: '横移',
+  pedestal: '升降直移',
   orbit: '环绕',
   handheld: '手持跟随',
   crane: '升降摇臂',
   dollyzoom: '滑动变焦',
+  zoomin: '变焦推近',
+  zoomout: '变焦拉远',
+  whippan: '甩镜',
   tracking: '跟拍',
   static: '固定机位'
 };
 export const MOVEMENT_ICON: Record<CameraMovement, string> = {
   none: '○', push: '🔎', pull: '🔭', panleft: '⬅️', panright: '➡️', tiltup: '⬆️', tiltdown: '⬇️',
-  truck: '↔️', orbit: '🔄', handheld: '🤳', crane: '🏗️', dollyzoom: '🌀', tracking: '🏃', static: '⏹️'
+  truck: '↔️', pedestal: '↕️', orbit: '🔄', handheld: '🤳', crane: '🏗️', dollyzoom: '🌀',
+  zoomin: '➕', zoomout: '➖', whippan: '💨', tracking: '🏃', static: '⏹️'
 };
 export const FOCAL_LABELS: Record<FocalLength, string> = {
-  none: '未指定', ultrawide: '超广角', wide: '广角', standard: '标准', tele: '长焦', macro: '微距'
+  none: '未指定', fisheye: '鱼眼', ultrawide: '超广角', wide: '广角', standard: '标准', tele: '长焦', macro: '微距', tiltshift: '移轴'
 };
 export const FOCAL_SUB: Record<FocalLength, string> = {
-  none: '', ultrawide: '14mm', wide: '24mm', standard: '50mm', tele: '85-200mm', macro: '微距'
+  none: '', fisheye: '8mm 球面', ultrawide: '14mm', wide: '24mm', standard: '50mm', tele: '85-200mm', macro: '微距', tiltshift: '微缩感'
 };
 export const FOCAL_ICON: Record<FocalLength, string> = {
-  none: '○', ultrawide: '🌐', wide: '🏞️', standard: '👁️', tele: '🔭', macro: '🔬'
+  none: '○', fisheye: '🐟', ultrawide: '🌐', wide: '🏞️', standard: '👁️', tele: '🔭', macro: '🔬', tiltshift: '🏘️'
 };
 export const COMPOSITION_LABELS: Record<ShotComposition, string> = {
   none: '未指定',
@@ -512,11 +520,13 @@ export const COMPOSITION_LABELS: Record<ShotComposition, string> = {
   frameinframe: '框中框',
   golden: '黄金螺旋',
   fill: '充满画面',
-  negative: '留白构图'
+  negative: '留白构图',
+  ots: '过肩镜头',
+  pov: '主观视角'
 };
 export const COMPOSITION_ICON: Record<ShotComposition, string> = {
   none: '○', thirds: '#️⃣', centered: '🎯', symmetry: '🪞', diagonal: '⤢', leadinglines: '🛤️',
-  frameinframe: '🖼️', golden: '🌀', fill: '🔳', negative: '⬜'
+  frameinframe: '🖼️', golden: '🌀', fill: '🔳', negative: '⬜', ots: '🫂', pov: '👀'
 };
 export const SHOT_SIZE_LABELS: Record<ShotSize, string> = {
   none: '未指定',
@@ -1161,6 +1171,8 @@ export interface StoryboardNodeData extends NodeMeta {
   modelId: string;
   /** 卡上补充素材（角色描述 / 简短故事均可；与上游文本合并） */
   input: string;
+  /** 手动上传的参考图（2026-07-14：人物形象图 / 分镜片段图，与上游图片来源合并后经视觉模型读图并入素材） */
+  inputImage?: { url: string; name?: string };
   /** 视频总时长（秒）。预设 15/30/60/120 或自定义（4-600，缺省 30），时间轴按它铺 */
   videoDurationSec?: number;
   /** 每个时间段约几秒（2-15，缺省 5；决定时间轴颗粒度） */

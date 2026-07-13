@@ -9,9 +9,11 @@ export const PRODUCERS = new Set(['image', 'prompt', 'llm', 'work', 'comfy', 'gr
 export const CONSUMERS = new Set(['work', 'comfy', 'result', 'llm', 'group', 'angle-prompt', 'light', 'palette', 'scale', 'ratio', 'compare', 'video', 'image-reverse', 'frame-interp', 'video-clip', 'storyboard', 'character-card', 'prompt-mall', 'folder-output', 'upscale', 'vectorize', 'segment', 'proof']);
 // 纯文本产出来源（输出是一段文本，可作提示词/素材）：分镜/角色卡/反推/商城/对稿 的文字素材入口共用
 export const TEXT_SOURCES = new Set(['prompt', 'llm', 'image-reverse', 'group', 'result', 'prompt-mall', 'proof', 'storyboard', 'character-card']);
-// 智能分镜（2026-07-12 重做）：输入只接 文本来源（角色描述 + 简短故事）；
-// 输出（一整段时间轴分镜脚本）只给 视频/生图/ComfyUI/LLM/分组/结果
-export const STORYBOARD_SOURCES = TEXT_SOURCES;
+// 智能分镜（2026-07-12 重做；2026-07-14 增参考图）：输入接 文本来源（角色描述 + 简短故事）
+// 或 图片来源（人物形象图 / 分镜片段参考图，运行时经视觉模型读图并入素材）；
+// 输出（一整段时间轴分镜脚本）只给 视频/生图/ComfyUI/LLM/分组/结果。
+// 注：IMAGE_SOURCES 在下方定义，模块求值顺序上不能直接展开引用，故用字面量并集（成员保持一致）。
+export const STORYBOARD_SOURCES = new Set([...TEXT_SOURCES, 'image', 'work', 'comfy', 'scale', 'folder-input', 'upscale', 'segment']);
 export const STORYBOARD_TARGETS = new Set(['work', 'comfy', 'video', 'llm', 'group', 'result']);
 // 角色卡（2026-07-12）：输入接 图片来源（人物照片）或 文本来源（简单描述）；
 // 输出（角色卡生图提示词）给 生图/ComfyUI/视频/LLM/分镜/商城/分组/结果
@@ -86,7 +88,7 @@ export function invalidReason(sk: string | undefined, tk: string | undefined): s
   if (tk === 'image-reverse' && sk && !IMAGE_SOURCES.has(sk) && !VIDEO_SOURCES.has(sk) && !TEXT_SOURCES.has(sk)) return '反推节点只接 图片 / 视频 / 文本（角色素材）来源';
   if (VIDEO_OUTPUT_KINDS.has(sk ?? '') && tk !== 'folder-output' && !VIDEO_CONSUMER_TARGETS.has(tk ?? '')) return '视频的输出只能连到 反推 / 缩放 / 插帧 / 视频剪辑 / 结果 / 文件夹输出 节点';
   if (sk === 'ratio' && !(tk === 'work' || tk === 'comfy' || tk === 'video' || tk === 'result')) return '尺寸来源的输出只能连到 生图 / ComfyUI / 视频 / 结果 节点';
-  if (tk === 'storyboard' && sk && !STORYBOARD_SOURCES.has(sk)) return '智能分镜只接文本来源（提示词 / LLM / 反推 / 角色卡 / 分组 / 结果——角色描述 + 简短故事）';
+  if (tk === 'storyboard' && sk && !STORYBOARD_SOURCES.has(sk)) return '智能分镜接 文本来源（角色描述 + 简短故事）或 图片来源（人物形象 / 分镜片段参考图）';
   if (sk === 'storyboard' && tk && !STORYBOARD_TARGETS.has(tk)) return '分镜脚本只能连到 视频 / 生图 / ComfyUI / LLM / 分组 / 结果 节点';
   if (tk === 'character-card' && sk && !IMAGE_SOURCES.has(sk) && !TEXT_SOURCES.has(sk)) return '角色卡只接 图片来源（人物照片）或 文本来源（简单描述）';
   if (sk === 'character-card' && tk && !CHARACTER_CARD_TARGETS.has(tk)) return '角色卡提示词只能连到 生图 / ComfyUI / 视频 / LLM / 分镜 / 提示词商城 / 分组 / 结果 节点';

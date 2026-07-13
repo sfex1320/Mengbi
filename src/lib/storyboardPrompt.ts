@@ -54,12 +54,22 @@ export function resolveTimelinePlan(d: { videoDurationSec?: number; secPerShot?:
  * 按时间轴「第X-Y秒：…」推进的分镜段（每个时间段独立成段）。
  * 版式最终由 formatTimelineText 兜底（时间段挤成一坨时由代码拆开）。
  */
-export function timelineSystem(opts: { durationSec: number; secPerShot: number; count: number; extraNote?: string }): string {
-  const { durationSec, secPerShot, count, extraNote } = opts;
+export function timelineSystem(opts: {
+  durationSec: number;
+  secPerShot: number;
+  count: number;
+  extraNote?: string;
+  /** 素材里带「【参考图视觉设定】」段（来自参考图的视觉分析）→ 注入一致性硬约束（2026-07-14） */
+  hasRefImages?: boolean;
+}): string {
+  const { durationSec, secPerShot, count, extraNote, hasRefImages } = opts;
   const note = (extraNote ?? '').trim();
   return (
     `你是专业视频导演兼分镜师。用户素材里包含角色描述与一个简短的故事（可能分多条给出），请把它设计成一段总时长 ${durationSec} 秒的完整视频分镜脚本。输出分两部分：` +
     '第一段是定调段：以「【定调】」开头，用一段话固定整个视频的 画面风格（媒介/质感/画质）、场景与环境（地点/时代/氛围）、主要内容物与人物外观、光线与色彩基调——后续所有镜头都遵循这段定调，保证整个剧本与画面稳定统一。' +
+    (hasRefImages
+      ? '素材开头的「【参考图视觉设定】」来自用户提供的参考图（人物形象图 / 场景或分镜片段图）——人物外观、画面风格、场景与色彩基调必须严格与该设定保持一致，【定调】段要完整吸收它。'
+      : '') +
     `之后按时间顺序输出约 ${count} 个时间段（每段约 ${secPerShot} 秒，可按叙事需要浮动）：**每个时间段独立成段（单独一行）**，以「第X-Y秒：」开头（X、Y 为秒数；第一段从 0 秒开始、最后一段到 ${durationSec} 秒结束，相邻段首尾相接、不重叠不留空），段内依次写清：` +
     '①场景与环境（地点、时间、光线氛围，场景里有什么）；' +
     '②人物在做什么（动作、表情神态、位置变化——人物外观特征必须与素材里的角色描述一致，且每一段保持一致，不许用「同上」等省略）；' +
@@ -68,6 +78,23 @@ export function timelineSystem(opts: { durationSec: number; secPerShot: number; 
     '格式要求：【定调】一段 + 每个时间段各占一段（段内是连续文本）；不要列表符号、不要编号标题、不要 Markdown。' +
     (note ? `额外要求：${note}。` : '') +
     '不要输出任何解释、前言或结尾，只输出脚本本身。'
+  );
+}
+
+/**
+ * 参考图视觉分析的系统提示词（2026-07-14）：把 人物形象图 / 场景概念图 / 已生成的分镜片段画面
+ * 读成可直接并入分镜素材的「视觉设定」文本（与 timelineSystem 的 hasRefImages 约束配套）。
+ */
+export function storyboardRefSystem(): string {
+  return (
+    '你是资深视频美术指导。用户会给你若干张参考图（可能是 人物形象图/角色三视图、场景概念图、已生成的分镜片段画面）。' +
+    '请逐张观察后综合输出一段「视觉设定」文本，依次涵盖：' +
+    '①每个出现的人物/角色的外观（发型发色、五官特征、体型、服装配饰与配色——务必具体到可复现）；' +
+    '②画面风格（媒介/质感/渲染方式/画质，如 3D 渲染、水彩、胶片实拍等）；' +
+    '③场景与环境（地点、时代、光线氛围、标志性内容物）；' +
+    '④色彩基调与构图倾向。' +
+    '只写图里真实可见的信息，不要臆造；多张图信息冲突时以更清晰/出现次数更多的为准。' +
+    '输出为连续段落文本，不用列表符号、不用 Markdown，不要任何前言或解释。'
   );
 }
 

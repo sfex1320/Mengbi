@@ -3,6 +3,7 @@ import {
   resolveTimelinePlan,
   timelineSystem,
   formatTimelineText,
+  storyboardRefSystem,
   DURATION_PRESETS,
   DURATION_MIN,
   DURATION_MAX,
@@ -70,6 +71,23 @@ describe('timelineSystem（整段时间轴分镜脚本的系统提示词）', ()
     expect(timelineSystem({ ...base, extraNote: '赛博朋克霓虹风' })).toContain('额外要求：赛博朋克霓虹风');
     expect(timelineSystem(base)).not.toContain('额外要求');
     expect(timelineSystem({ ...base, extraNote: '  ' })).not.toContain('额外要求');
+  });
+
+  it('hasRefImages=true 注入参考图一致性硬约束；缺省不出现（2026-07-14）', () => {
+    expect(timelineSystem({ ...base, hasRefImages: true })).toContain('【参考图视觉设定】');
+    expect(timelineSystem(base)).not.toContain('【参考图视觉设定】');
+  });
+});
+
+describe('storyboardRefSystem（参考图视觉分析系统提示词，2026-07-14）', () => {
+  it('涵盖 人物外观 / 画面风格 / 场景环境 / 色彩基调 四要素，且禁列表禁臆造', () => {
+    const s = storyboardRefSystem();
+    expect(s).toContain('外观');
+    expect(s).toContain('画面风格');
+    expect(s).toContain('场景与环境');
+    expect(s).toContain('色彩基调');
+    expect(s).toContain('不要臆造');
+    expect(s).toContain('不用列表符号');
   });
 });
 

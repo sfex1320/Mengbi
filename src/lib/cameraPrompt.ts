@@ -41,20 +41,26 @@ const MOVEMENT_PHRASE: Record<CameraMovement, string> = {
   tiltup: '镜头向上摇起（上摇）',
   tiltdown: '镜头向下俯摇（下摇）',
   truck: '镜头水平横移（移镜）',
+  pedestal: '镜头垂直升降平移（升降镜头），视点高度直上直下变化',
   orbit: '镜头环绕主体旋转（环绕运镜）',
   handheld: '手持跟随，轻微晃动的纪实感',
   crane: '摇臂升降运动，视点高度变化',
   dollyzoom: '滑动变焦（希区柯克变焦），背景透视压缩',
+  zoomin: '光学变焦推近（zoom in），机位不动、焦距拉长聚焦主体',
+  zoomout: '光学变焦拉远（zoom out），机位不动、焦距变广展开画面',
+  whippan: '快速甩镜（whip pan），画面急速横扫带动势与转场感',
   tracking: '镜头跟拍移动的主体',
   static: '固定机位，稳定不动'
 };
 const FOCAL_PHRASE: Record<FocalLength, string> = {
   none: '',
+  fisheye: '鱼眼镜头，球面畸变、极端广角的夸张视觉',
   ultrawide: '超广角镜头，强透视张力与广阔视野',
   wide: '广角镜头，开阔的环境交代',
   standard: '标准镜头（约 50mm），接近人眼的自然视角',
   tele: '长焦镜头，压缩空间、突出主体',
-  macro: '微距镜头，极近距离放大细节'
+  macro: '微距镜头，极近距离放大细节',
+  tiltshift: '移轴镜头，焦平面倾斜形成微缩模型般的玩具感'
 };
 const SHOT_SIZE_PHRASE: Record<ShotSize, string> = {
   none: '',
@@ -78,7 +84,9 @@ const COMPOSITION_PHRASE: Record<ShotComposition, string> = {
   frameinframe: '框中框构图，用前景框住主体',
   golden: '黄金螺旋构图，自然流动的视觉引导',
   fill: '主体充满画面，强冲击力特写',
-  negative: '大量留白构图，意境与呼吸感'
+  negative: '大量留白构图，意境与呼吸感',
+  ots: '过肩镜头（OTS），越过前景人物肩膀拍摄对面主体，营造对话与对峙关系',
+  pov: '主观视角（POV）第一人称镜头，观众即角色之眼'
 };
 
 /** 视角（水平/垂直/距离）→ 短句数组（与 anglePrompt 同规则）。 */

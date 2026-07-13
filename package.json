@@ -1,6 +1,6 @@
 {
   "name": "mengbi",
-  "version": "0.0.13",
+  "version": "0.0.14",
   "description": "梦笔（mengbi）绘画工具箱 — 梦中之笔，绘未来之画",
   "main": "out/main/main.js",
   "author": "mengbi contributors",

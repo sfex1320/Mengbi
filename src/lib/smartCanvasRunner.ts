@@ -72,7 +72,7 @@ import {
 } from '@shared/smartCanvas';
 import { ratioOutputSize, nearestTier, nearestResolution } from './sizeSpec';
 import { extractJsonBlock } from './jsonPrompt';
-import { resolveTimelinePlan, timelineSystem, formatTimelineText } from './storyboardPrompt';
+import { resolveTimelinePlan, timelineSystem, formatTimelineText, storyboardRefSystem } from './storyboardPrompt';
 import { stripImageRefs } from './promptImageRefs';
 import { characterAnalysisSystem, characterSheetSystem, cardStyleLabel, sheetTypeLabel } from './characterCardPrompt';
 import { buildComfyControlValues, availableComfyModes } from './comfyDispatch';
@@ -383,6 +383,12 @@ export function computeUpstream(nodes: Node[], edges: Edge[], workId: string): C
       const vkey = n.type === 'character-card' ? `${sid}#${e.sourceHandle === 'out-desc' ? 'desc' : 'out'}` : sid;
       if (visited.has(vkey)) continue;
       visited.add(vkey);
+      // Alt+点击跳过的节点（2026-07-14）：自己的产出**不**喂下游（此前只是不执行、旧输出仍下发，
+      // 用户实测反直觉）。语义对齐 ComfyUI Bypass / 本文件 group 分支的透传：它自己的上游穿过去。
+      if ((n.data as unknown as { skipped?: boolean } | undefined)?.skipped) {
+        walk(sid);
+        continue;
+      }
       if (n.type === 'image' || n.type === 'prompt') {
         // 图片/提示词节点：列表模式（多图/多条）与单值统一走 collectOwnOutput
         collectOwnOutput(n, images, prompts, refs, videos, sizes, imageFroms);
@@ -1037,7 +1043,7 @@ export async function runWorkNode(
     if (e !== 'aspect') {
       baseParams.width = upSize.width;
       baseParams.height = upSize.height;
-      baseParams.image_size = nearestTier(upSize.width * upSize.height);
+      baseParams.image_size = nearestTier(upSize.width, upSize.height);
     }
   }
   // 「自动」比例的解析结果回写节点供展示（运行后在节点「运行」按钮旁标注）：
@@ -1852,22 +1858,49 @@ export async function runStoryboardNode(id: string): Promise<void> {
   }
   const up = computeUpstream(st.nodes, st.edges, id);
   const material = [d.input.trim(), ...up.prompts].filter(Boolean).join('\n\n');
-  if (!material) {
-    toast.error('没有素材', '连上游文本（角色描述 / 简短故事）进来，或在节点里输入素材');
+  // 参考图（2026-07-14）：上游图片来源 + 卡上传兜底 → 视觉模型读图（人物形象 / 场景 / 分镜片段），
+  // 读出的「视觉设定」并入素材，让定调段与人物描写贴合已做好的形象。接法与角色卡一致（lab.visionAnalyze，≤8 张）。
+  const refImgs = [...up.images];
+  if (d.inputImage?.url) refImgs.push(d.inputImage.url);
+  if (!material && !refImgs.length) {
+    toast.error('没有素材', '连上游文本（角色描述 / 简短故事）或参考图进来，或在节点里输入素材');
     return;
   }
   const plan = resolveTimelinePlan(d);
   const t0 = Date.now();
-  setSb(id, { status: 'running', error: null, resultText: '', logs: [`按 ${plan.durationSec}s 时间轴生成分镜脚本…`] });
+  setSb(id, {
+    status: 'running',
+    error: null,
+    resultText: '',
+    logs: [refImgs.length ? `1/2 视觉模型读取 ${Math.min(refImgs.length, 8)} 张参考图…` : `按 ${plan.durationSec}s 时间轴生成分镜脚本…`]
+  });
+  let refAnalysis = '';
+  if (refImgs.length) {
+    const rv = await window.electronAPI.lab.visionAnalyze({
+      imagePaths: refImgs.slice(0, 8),
+      modelId: d.modelId,
+      systemPrompt: storyboardRefSystem(),
+      instruction: '这些是本片的参考图（人物形象图 / 场景概念图 / 分镜片段画面）。请按系统要求综合提取可用于分镜的视觉设定，直接输出结果。'
+    });
+    if (!rv.ok) {
+      setSb(id, { status: 'error', error: rv.error.message, logs: [rv.error.message] });
+      toast.error('参考图读取失败', rv.error.hint || '需要支持识图的对话模型；或断开参考图只用文字素材');
+      return;
+    }
+    refAnalysis = cleanReversePrompt((rv.data as { text?: unknown }).text);
+    setSb(id, { logs: [`2/2 按 ${plan.durationSec}s 时间轴生成分镜脚本…`] });
+  }
+  const userInput = [refAnalysis && `【参考图视觉设定】\n${refAnalysis}`, material].filter(Boolean).join('\n\n');
   const r = await window.electronAPI.chat.optimizePrompt({
     planId,
     modelId: d.modelId,
-    userInput: material,
+    userInput,
     systemPrompt: timelineSystem({
       durationSec: plan.durationSec,
       secPerShot: plan.secPerShot,
       count: plan.count,
-      extraNote: d.extraNote
+      extraNote: d.extraNote,
+      hasRefImages: !!refAnalysis
     })
   });
   if (!r.ok || r.data.optimizedBy === null) {
@@ -4372,6 +4405,50 @@ export async function sendableUrl(src: string): Promise<string | null> {
   }
 }
 
+/** 视频链路认为「上传即安全」的图片 MIME（各中转站上传端点普遍接受）。 */
+const VIDEO_SAFE_IMAGE_MIME = new Set(['image/png', 'image/jpeg']);
+
+/**
+ * 视频参考图 dataURI 规范化（2026-07-14）：webp / avif / gif / bmp 等格式在不少视频中转站的
+ * 图片上传端点会被拒收（表现为「参考图格式无法识别」类报错）→ 统一用 canvas 重编码成 PNG。
+ * png/jpeg 原样返回；http(s) URL 原样返回（远端已可访问）；解码失败原样返回（不因转码毁掉可用图）。
+ */
+export async function normalizeImageDataUri(u: string): Promise<string> {
+  if (!u || !u.startsWith('data:')) return u;
+  const mime = (/^data:([^;,]*)/.exec(u)?.[1] ?? '').toLowerCase();
+  if (!mime.startsWith('image/') || VIDEO_SAFE_IMAGE_MIME.has(mime)) return u;
+  try {
+    const img = new Image();
+    await new Promise<void>((res, rej) => {
+      img.onload = () => res();
+      img.onerror = () => rej(new Error('decode failed'));
+      img.src = u;
+    });
+    if (!img.naturalWidth || !img.naturalHeight) return u;
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return u;
+    ctx.drawImage(img, 0, 0);
+    return canvas.toDataURL('image/png');
+  } catch {
+    return u;
+  }
+}
+
+/** 把视频请求里的全部图片（首/尾帧 roleImages + 多参考 imageUrls）规范化；顺序逐个处理，保序。 */
+async function normalizeRequestImages(req: VideoGenerationRequest): Promise<void> {
+  if (req.images) {
+    for (const im of req.images) im.url = await normalizeImageDataUri(im.url);
+  }
+  if (req.imageUrls) {
+    for (let i = 0; i < req.imageUrls.length; i++) {
+      req.imageUrls[i] = await normalizeImageDataUri(req.imageUrls[i]);
+    }
+  }
+}
+
 export interface VideoDryRun {
   ok: boolean;
   legacy: boolean;
@@ -4519,6 +4596,8 @@ export async function runVideoNode(videoId: string): Promise<void> {
       inputs.audioUrls,
       sizeOverride
     );
+    // 参考图统一规范化（webp/avif/gif/bmp → PNG）：覆盖 上游喂入 + 卡上传的历史存量 dataURI
+    await normalizeRequestImages(req);
     // 无能力模板（第三方/自定义视频模型 id）→ 宽松校验：有输入即放行（对齐 dryRunVideo）。
     // 否则严格按能力模板校验。修复：第三方中转站视频模型未导入模板时被硬拒、无法提交。
     let validOk: boolean;
@@ -4564,6 +4643,10 @@ export async function runVideoNode(videoId: string): Promise<void> {
       toast.error('视频节点没有输入', '连一个提示词节点，或（图生视频）连一张图片');
       return;
     }
+    // legacy 协议只有单图字段（kling: image/image_tail；sora: input_reference）——多连了要明说，不静默丢
+    if (inputs.upImages.length > 1) {
+      toast.info('该视频协议只支持 1 张参考图', `已取第 1 张，其余 ${inputs.upImages.length - 1} 张不会发送（多图参考请换支持 reference_images 的模型）`);
+    }
     const resolution = (sizeOverride?.resolution || d.resolution || '720p').trim();
     let sentImage: string | undefined;
     if (image) {
@@ -4573,7 +4656,7 @@ export async function runVideoNode(videoId: string): Promise<void> {
         toast.error('图片读取失败', '上游图片无法转换为可发送格式，已中止');
         return;
       }
-      sentImage = conv;
+      sentImage = await normalizeImageDataUri(conv);
     }
     inputImages = sentImage ? [sentImage] : [];
     genInput = {

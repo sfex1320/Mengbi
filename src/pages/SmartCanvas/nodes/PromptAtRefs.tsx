@@ -5,7 +5,8 @@
  *   参考图列表不变时提示词节点不重渲（否则整画布拖动每帧全量重渲提示词节点 = 卡顿元凶）。
  * - AtRefStrip：参考图缩略条（图1..图N），点击往输入框插入 `@图N`。
  * - AtRefPicker：输入 `@` 时弹出的选图浮层（点击补全成 `@图N`）。
- * - AtRefOverlay：镜像测量 textarea 里每个 `@图N` 标记的位置，在其上方悬浮一张小图（视觉连接）。
+ * - AtRefOverlay：镜像测量 textarea 里每个 `@图N` 标记的位置，在「图N」文字后面同一行贴一张小图
+ *   （带底部深色编号标注）。2026-07-14：从「悬浮在标记上方」改为行内跟随——悬浮会遮住上一行文字。
  *   两者都以「textarea 的定位祖先」（.mb-sc-area / .mb-sc-plist-row）为参照绝对定位、按 ta.offset* 偏移——
  *   **不额外包 wrapper**，不动提示词节点原有布局/自适应（历史教训：包一层 host 曾破坏输入框高度与节点自适应）。
  * 标记只在 UI 层带 @；发给模型前由 promptNodeOutputs 统一剥成「图N」（lib/promptImageRefs.ts）。
@@ -108,8 +109,9 @@ interface Mark {
 }
 
 /**
- * @ 标记上方的悬浮小图层：用「镜像 div」复刻 textarea 的排版（同字体/宽度/内边距/换行），
- * 把每个 `@图N` 包成 span 量出坐标 → 在标记正上方悬浮一张 22px 小图。
+ * @ 标记的行内小图层：用「镜像 div」复刻 textarea 的排版（同字体/宽度/内边距/换行），
+ * 把每个 `@图N` 包成 span 量出坐标 → 在「图N」文字**后面同一行**贴一张 22px 小图，
+ * 小图底部叠一个深色编号标注（图N）。
  * 层覆盖整个定位祖先（inset:0），坐标已含 ta.offset* 偏移；纯展示（pointer-events:none）。
  */
 export function AtRefOverlay({
@@ -182,7 +184,8 @@ export function AtRefOverlay({
     const baseY = ta.offsetTop;
     const out: Mark[] = [];
     mirror.querySelectorAll('span').forEach((sp) => {
-      out.push({ left: baseX + sp.offsetLeft + sp.offsetWidth / 2, top: baseY + sp.offsetTop, index: Number(sp.dataset.i) });
+      // left = 标记右缘（小图跟在「图N」文字后面），top = 标记所在行顶
+      out.push({ left: baseX + sp.offsetLeft + sp.offsetWidth, top: baseY + sp.offsetTop, index: Number(sp.dataset.i) });
     });
     document.body.removeChild(mirror);
     setMarks(out);
@@ -197,24 +200,19 @@ export function AtRefOverlay({
         // 滚出输入框可视区的标记不画（textarea 内滚时）
         if (top - taTop < -4 || top - taTop > ta.clientHeight + 4) return null;
         const src = images[m.index - 1];
-        return src ? (
-          <img
-            key={i}
-            className="mb-sc-atref-thumb"
-            style={{ left: m.left - 11, top: Math.max(taTop - 16, top - 24) }}
-            src={thumbUrl(src)}
-            alt={`图${m.index}`}
-            title={`引用 图${m.index}`}
-            draggable={false}
-          />
-        ) : (
+        return (
           <span
             key={i}
-            className="mb-sc-atref-thumb is-miss"
-            style={{ left: m.left - 11, top: Math.max(taTop - 16, top - 24) }}
-            title={`没有第 ${m.index} 张参考图`}
+            className={`mb-sc-atref-inline${src ? '' : ' is-miss'}`}
+            style={{ left: m.left + 3, top: top - 2 }}
+            title={src ? `引用 图${m.index}` : `没有第 ${m.index} 张参考图`}
           >
-            ?
+            {src ? (
+              <img src={thumbUrl(src)} alt={`图${m.index}`} draggable={false} />
+            ) : (
+              <span className="mb-sc-atref-inline-q">?</span>
+            )}
+            <span className="mb-sc-atref-inline-no">图{m.index}</span>
           </span>
         );
       })}

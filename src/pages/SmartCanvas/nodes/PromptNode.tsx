@@ -3,7 +3,7 @@ import { NodeResizer, type NodeProps } from '@xyflow/react';
 import { useSmartCanvasStore } from '@/store/smartCanvasStore';
 import type { PromptNodeData } from '@shared/smartCanvas';
 import { NodeShell } from './NodeShell';
-import { CopyButton, areaMenu, copyText, autoGrowNode, savePromptToLibrary } from '../nodeArea';
+import { areaMenu, copyText, autoGrowNode, savePromptToLibrary } from '../nodeArea';
 import { usePromptPickerStore } from '../PromptPickerDialog';
 import { usePromptListStudioStore } from '../PromptListStudio';
 import { TranslateBox } from '../TranslateBox';
@@ -143,7 +143,6 @@ export function PromptNode({ id, data }: NodeProps): JSX.Element {
         <div className="mb-sc-prompt-fit nowheel" ref={fitRef}>
           {!d.listMode ? (
             <div className="mb-sc-area">
-              <CopyButton onClick={() => copyText(d.text ?? '')} />
               {/* 下游生图节点的参考图缩略条：点击插入 @图N 引用（输入框里直接输 @ 也会弹选图） */}
               <AtRefStrip images={refImages} onPick={(n) => insertAtRef(-1, n)} />
               <textarea
@@ -185,6 +184,7 @@ export function PromptNode({ id, data }: NodeProps): JSX.Element {
               {atOpen === -1 && (
                 <AtRefPicker ta={taRef.current} images={refImages} onPick={(n) => insertAtRef(-1, n)} onClose={() => setAtOpen(null)} />
               )}
+              {/* 工具行在文档流里（输入框下方），不悬浮在输入框内——不遮文字（2026-07-14） */}
               <div className="mb-sc-prompt-toolrow nodrag">
                 <button className="mb-sc-prompt-lib nodrag" title="从提示词库选择并插入" onClick={() => openPicker(id)}>
                   📚 提示词库
@@ -202,6 +202,9 @@ export function PromptNode({ id, data }: NodeProps): JSX.Element {
                   onClick={() => openStudio(id)}
                 >
                   🗖 工作台
+                </button>
+                <button className="mb-sc-prompt-lib nodrag" title="复制全文" onClick={() => copyText(d.text ?? '')}>
+                  ⧉ 复制
                 </button>
               </div>
               {showTr && (

@@ -36,17 +36,17 @@ const ITEMS: Array<[SmartNodeKind, string]> = [
 
 /** 从「输出口」拖出 → 能接到哪些下游节点（图片/提示词无输入口，不作目标；结果/缩放可作来源继续往下连）。 */
 const DOWNSTREAM: Record<SmartNodeKind, SmartNodeKind[]> = {
-  image: ['work', 'comfy', 'video', 'llm', 'character-card', 'group', 'angle-prompt', 'light', 'palette', 'scale', 'ratio', 'result', 'compare', 'image-reverse', 'upscale', 'vectorize', 'segment', 'proof'],
+  image: ['work', 'comfy', 'video', 'llm', 'storyboard', 'character-card', 'group', 'angle-prompt', 'light', 'palette', 'scale', 'ratio', 'result', 'compare', 'image-reverse', 'upscale', 'vectorize', 'segment', 'proof'],
   prompt: ['work', 'comfy', 'video', 'llm', 'prompt-mall', 'storyboard', 'character-card', 'image-reverse', 'group', 'result'],
   llm: ['work', 'comfy', 'video', 'llm', 'prompt-mall', 'storyboard', 'character-card', 'image-reverse', 'group', 'result'],
   'angle-prompt': ['work', 'comfy', 'video', 'llm', 'group', 'result'],
   light: ['work', 'comfy', 'video', 'llm', 'group', 'result'],
   palette: ['work', 'comfy', 'video', 'llm', 'group', 'result'],
-  work: ['result', 'folder-output', 'work', 'comfy', 'video', 'llm', 'character-card', 'angle-prompt', 'light', 'palette', 'scale', 'ratio', 'compare', 'image-reverse', 'upscale', 'vectorize', 'segment', 'proof'],
-  comfy: ['result', 'folder-output', 'work', 'comfy', 'video', 'llm', 'character-card', 'angle-prompt', 'light', 'palette', 'scale', 'ratio', 'compare', 'image-reverse', 'upscale', 'vectorize', 'segment', 'proof'],
+  work: ['result', 'folder-output', 'work', 'comfy', 'video', 'llm', 'storyboard', 'character-card', 'angle-prompt', 'light', 'palette', 'scale', 'ratio', 'compare', 'image-reverse', 'upscale', 'vectorize', 'segment', 'proof'],
+  comfy: ['result', 'folder-output', 'work', 'comfy', 'video', 'llm', 'storyboard', 'character-card', 'angle-prompt', 'light', 'palette', 'scale', 'ratio', 'compare', 'image-reverse', 'upscale', 'vectorize', 'segment', 'proof'],
   group: ['work', 'comfy', 'video', 'llm', 'prompt-mall', 'storyboard', 'character-card', 'angle-prompt', 'light', 'palette', 'scale', 'ratio', 'result', 'folder-output', 'compare', 'image-reverse', 'frame-interp', 'video-clip', 'upscale', 'vectorize', 'segment', 'proof'],
   result: ['work', 'comfy', 'video', 'llm', 'prompt-mall', 'storyboard', 'character-card', 'group', 'angle-prompt', 'light', 'palette', 'scale', 'ratio', 'folder-output', 'compare', 'image-reverse', 'frame-interp', 'video-clip', 'upscale', 'vectorize', 'segment', 'proof'],
-  scale: ['work', 'comfy', 'video', 'llm', 'character-card', 'group', 'angle-prompt', 'light', 'palette', 'scale', 'ratio', 'result', 'folder-output', 'compare', 'image-reverse', 'frame-interp', 'video-clip', 'upscale', 'vectorize', 'segment', 'proof'],
+  scale: ['work', 'comfy', 'video', 'llm', 'storyboard', 'character-card', 'group', 'angle-prompt', 'light', 'palette', 'scale', 'ratio', 'result', 'folder-output', 'compare', 'image-reverse', 'frame-interp', 'video-clip', 'upscale', 'vectorize', 'segment', 'proof'],
   ratio: ['work', 'comfy', 'video', 'result'],
   text: [],
   compare: [],
@@ -59,12 +59,12 @@ const DOWNSTREAM: Record<SmartNodeKind, SmartNodeKind[]> = {
   'character-card': ['work', 'comfy', 'video', 'llm', 'storyboard', 'prompt-mall', 'group', 'result'],
   'prompt-mall': ['storyboard', 'character-card', 'work', 'comfy', 'video', 'llm', 'group', 'result'],
   loop: ['work', 'comfy', 'video', 'result'],
-  'folder-input': ['work', 'comfy', 'scale', 'upscale', 'vectorize', 'image-reverse', 'character-card', 'frame-interp', 'video-clip', 'group', 'result', 'compare', 'ratio', 'angle-prompt', 'light', 'palette', 'segment', 'proof'],
-  upscale: ['work', 'comfy', 'video', 'llm', 'character-card', 'group', 'angle-prompt', 'light', 'palette', 'scale', 'upscale', 'vectorize', 'ratio', 'result', 'folder-output', 'compare', 'image-reverse', 'segment', 'proof'],
+  'folder-input': ['work', 'comfy', 'scale', 'upscale', 'vectorize', 'image-reverse', 'storyboard', 'character-card', 'frame-interp', 'video-clip', 'group', 'result', 'compare', 'ratio', 'angle-prompt', 'light', 'palette', 'segment', 'proof'],
+  upscale: ['work', 'comfy', 'video', 'llm', 'storyboard', 'character-card', 'group', 'angle-prompt', 'light', 'palette', 'scale', 'upscale', 'vectorize', 'ratio', 'result', 'folder-output', 'compare', 'image-reverse', 'segment', 'proof'],
   vectorize: ['result', 'folder-output'],
   'folder-output': [],
   // 切分=图片产出（像 scale 但只产图，不接视频类下游）；对稿=文本产出（像 image-reverse）
-  segment: ['work', 'comfy', 'video', 'llm', 'character-card', 'group', 'angle-prompt', 'light', 'palette', 'scale', 'ratio', 'result', 'folder-output', 'compare', 'image-reverse', 'upscale', 'vectorize', 'segment', 'proof'],
+  segment: ['work', 'comfy', 'video', 'llm', 'storyboard', 'character-card', 'group', 'angle-prompt', 'light', 'palette', 'scale', 'ratio', 'result', 'folder-output', 'compare', 'image-reverse', 'upscale', 'vectorize', 'segment', 'proof'],
   proof: ['work', 'comfy', 'video', 'llm', 'prompt-mall', 'storyboard', 'group', 'result']
 };
 
@@ -90,8 +90,8 @@ const UPSTREAM: Record<SmartNodeKind, SmartNodeKind[]> = {
   'video-source': [],
   'frame-interp': ['video-source', 'video', 'result', 'scale', 'frame-interp', 'video-clip', 'folder-input', 'group'],
   'video-clip': ['video-source', 'video', 'result', 'scale', 'frame-interp', 'video-clip', 'folder-input', 'group'],
-  // 智能分镜（重做后）：只接文本来源（角色描述 + 简短故事）
-  storyboard: ['prompt', 'llm', 'image-reverse', 'character-card', 'prompt-mall', 'group', 'result', 'proof'],
+  // 智能分镜（2026-07-14 增参考图）：文本来源（角色描述 + 简短故事）+ 图片来源（人物形象/分镜片段参考图）
+  storyboard: ['prompt', 'llm', 'image-reverse', 'character-card', 'prompt-mall', 'group', 'result', 'proof', 'image', 'folder-input', 'work', 'comfy', 'scale', 'upscale', 'segment'],
   // 角色卡：图片来源（人物照片）+ 文本来源（简单描述）
   'character-card': ['image', 'folder-input', 'prompt', 'llm', 'image-reverse', 'prompt-mall', 'group', 'work', 'comfy', 'result', 'scale', 'upscale', 'segment'],
   'prompt-mall': ['prompt', 'llm', 'image-reverse', 'character-card', 'group', 'result', 'proof'],

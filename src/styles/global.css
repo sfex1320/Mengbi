@@ -241,8 +241,8 @@ a:hover {
 }
 
 ::selection {
-  background: var(--mb-accent-soft);
-  color: var(--mb-text-primary);
+  background: var(--mb-selection-bg);
+  color: var(--mb-selection-text);
 }
 
 /* ────────────────────────── 卡片 ────────────────────────── */

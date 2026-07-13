@@ -122,16 +122,22 @@ describe('emit 透传', () => {
   });
 });
 
-describe('nearestTier', () => {
+describe('nearestTier（最长边口径）', () => {
   it('精确档位值命中各自档', () => {
-    expect(nearestTier(1_048_576)).toBe('1K');
-    expect(nearestTier(4_194_304)).toBe('2K');
-    expect(nearestTier(8_294_400)).toBe('4K');
+    expect(nearestTier(1024, 1024)).toBe('1K');
+    expect(nearestTier(2048, 2048)).toBe('2K');
+    expect(nearestTier(4096, 4096)).toBe('4K');
   });
-  it('档间按最近取', () => {
-    expect(nearestTier(2_000_000)).toBe('1K');
-    expect(nearestTier(3_500_000)).toBe('2K');
-    expect(nearestTier(7_000_000)).toBe('4K');
+  it('宽/竖比例不再被面积口径降档（历史 bug：2K×16:9 曾静默发成 1K）', () => {
+    expect(nearestTier(2048, 1152)).toBe('2K');
+    expect(nearestTier(1152, 2048)).toBe('2K');
+    expect(nearestTier(4096, 2304)).toBe('4K');
+    expect(nearestTier(1024, 576)).toBe('1K');
+  });
+  it('档间最近取、平手向上、超 4K 封顶', () => {
+    expect(nearestTier(1408, 1408)).toBe('1K');
+    expect(nearestTier(3072, 3072)).toBe('4K');
+    expect(nearestTier(8192, 8192)).toBe('4K');
   });
 });
 

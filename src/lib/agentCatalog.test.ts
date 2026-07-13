@@ -55,14 +55,15 @@ describe('连线推导（与 canvasConnectRules 单一真相一致）', () => {
     expect(c).toContain('prompt');
     expect(c).toContain('llm');
   });
-  it('智能分镜（重做后）只接文本来源、不接图片；输出可到视频节点', () => {
+  it('智能分镜接 文本来源 + 图片来源（2026-07-14 参考图）；输出可到视频节点', () => {
     const c = consumeKinds('storyboard');
     expect(c).toContain('prompt');
     expect(c).toContain('llm');
     expect(c).toContain('image-reverse');
     expect(c).toContain('character-card');
-    expect(c).not.toContain('image');
-    expect(c).not.toContain('work');
+    expect(c).toContain('image');
+    expect(c).toContain('work');
+    expect(c).not.toContain('video-source');
     expect(produceKinds('storyboard')).toContain('video');
   });
   it('角色卡接受 图片（人物照片）+ 文本（简单描述）来源；输出可到生图/分镜', () => {

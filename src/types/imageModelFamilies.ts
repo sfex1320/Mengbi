@@ -310,6 +310,10 @@ const GPT_IMAGE_2: FamilyManifest = {
   }
 };
 
+/** nano-banana 系列各自识别的比例列表（manifest 与 buildBody 共用同一份，保证吸附口径一致） */
+const NB_ASPECTS_FULL = [...COMMON_ASPECTS, '1:4', '4:1', '1:8', '8:1'];
+const NB_ASPECTS_FLASH = [...COMMON_ASPECTS, '1:4', '4:1'];
+
 const NANO_BANANA_PRO: FamilyManifest = {
   id: 'nano-banana-pro',
   label: 'Nano Banana Pro',
@@ -317,13 +321,13 @@ const NANO_BANANA_PRO: FamilyManifest = {
     'Pro 系列：image_size + aspect_ratio 字面量；不算 WxH（避免误降分辨率）。' +
     '模型最大 4K，支持 quality。',
   supportedTiers: ['1K', '2K', '4K'],
-  supportedAspects: [...COMMON_ASPECTS, '1:4', '4:1', '1:8', '8:1'],
+  supportedAspects: NB_ASPECTS_FULL,
   supportsQuality: true,
   supportsNegativePrompt: true,
   maxN: 4,
   pixelBudget: 0,
   matches: (id) => /nano[\s\-_]*banana[\s\-_]*pro/i.test(id),
-  buildBody: buildNanoBananaBody
+  buildBody: (input) => buildNanoBananaBody(input, NB_ASPECTS_FULL, '4K')
 };
 
 const NANO_BANANA_FLASH: FamilyManifest = {
@@ -332,14 +336,14 @@ const NANO_BANANA_FLASH: FamilyManifest = {
   description:
     'Flash 轻量版：仅 1K/2K，不支持 quality。aspect_ratio + image_size 字面量。',
   supportedTiers: ['1K', '2K'],
-  supportedAspects: [...COMMON_ASPECTS, '1:4', '4:1'],
+  supportedAspects: NB_ASPECTS_FLASH,
   supportsQuality: false,
   supportsNegativePrompt: true,
   maxN: 4,
   pixelBudget: 0,
   // "nano-banana-flash" 或 "nano-banana-2.5-flash" 都识别
   matches: (id) => /nano[\s\-_]*banana[\s\-_]*(\d[\d.]*[\s\-_]*)?flash/i.test(id),
-  buildBody: buildNanoBananaBody
+  buildBody: (input) => buildNanoBananaBody(input, NB_ASPECTS_FLASH, '2K')
 };
 
 const NANO_BANANA_2: FamilyManifest = {
@@ -347,7 +351,7 @@ const NANO_BANANA_2: FamilyManifest = {
   label: 'Nano Banana 2',
   description: '标准款：1K/2K/4K + aspect_ratio。不发 quality。',
   supportedTiers: ['1K', '2K', '4K'],
-  supportedAspects: [...COMMON_ASPECTS, '1:4', '4:1', '1:8', '8:1'],
+  supportedAspects: NB_ASPECTS_FULL,
   supportsQuality: false,
   supportsNegativePrompt: true,
   maxN: 4,
@@ -356,7 +360,7 @@ const NANO_BANANA_2: FamilyManifest = {
   matches: (id) =>
     /nano[\s\-_]*banana/i.test(id) &&
     !/pro|flash/i.test(id),
-  buildBody: buildNanoBananaBody
+  buildBody: (input) => buildNanoBananaBody(input, NB_ASPECTS_FULL, '4K')
 };
 
 const DEFAULT: FamilyManifest = {
@@ -432,7 +436,46 @@ export function getFamilyById(id: ImageFamily): FamilyManifest {
 // 内部工具
 // ────────────────────────────────────────────────────
 
-function buildNanoBananaBody(input: BodyBuilderInput): Record<string, unknown> {
+/** 比例字符串 "W:H" → 数值；非法返 null。 */
+function parseAspectRatio(aspect: string | undefined): number | null {
+  const m = /^(\d+)\s*:\s*(\d+)$/.exec(aspect ?? '');
+  if (!m) return null;
+  const aw = Number(m[1]);
+  const ah = Number(m[2]);
+  if (!Number.isFinite(aw) || !Number.isFinite(ah) || aw <= 0 || ah <= 0) return null;
+  return aw / ah;
+}
+
+/**
+ * 把任意比例吸附到 supported 里最近的一档（log 比值距离，横竖对称）；已在列表内原样返回，
+ * 解析失败返回 null（调用方不发 aspect_ratio 字段）。
+ * 背景（2026-07-14）：尺寸节点的 3:1 / 1:3 / 9:21 与自定义宽高化简出的 137:100 之类
+ * family 不识别的比例此前原样发出 → 上游 400「尺寸被拒绝」的直接原因之一。
+ */
+export function nearestSupportedAspect(aspect: string | undefined, supported: string[]): string | null {
+  if (!aspect || aspect === 'auto') return null;
+  if (supported.includes(aspect)) return aspect;
+  const target = parseAspectRatio(aspect);
+  if (target == null) return null;
+  let best: string | null = null;
+  let bestDiff = Infinity;
+  for (const s of supported) {
+    const v = parseAspectRatio(s);
+    if (v == null) continue;
+    const diff = Math.abs(Math.log(v / target));
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      best = s;
+    }
+  }
+  return best;
+}
+
+function buildNanoBananaBody(
+  input: BodyBuilderInput,
+  supportedAspects: string[],
+  maxTier: '2K' | '4K'
+): Record<string, unknown> {
   const body: Record<string, unknown> = {
     model: input.modelId,
     prompt: input.prompt,
@@ -440,16 +483,22 @@ function buildNanoBananaBody(input: BodyBuilderInput): Record<string, unknown> {
     response_format: 'b64_json'
   };
   // Nano Banana：直接用字面量；模型自己出真分辨率
-  if (
+  let tier =
     input.params.image_size === '1K' ||
     input.params.image_size === '2K' ||
     input.params.image_size === '4K'
-  ) {
-    body.image_size = input.params.image_size;
+      ? input.params.image_size
+      : undefined;
+  // 只有精确宽高没档位（尺寸节点 custom/原尺寸等路径）→ 按最长边折算档位。
+  // nano-banana 不认 WxH，此前直接丢弃 → 静默回默认 1K（「尺寸节点没有真实缩放」的元凶之一）。
+  if (!tier && input.params.width && input.params.height) {
+    const longest = Math.max(input.params.width, input.params.height);
+    tier = longest >= 3072 ? '4K' : longest >= 1536 ? '2K' : '1K';
   }
-  if (input.params.aspect && input.params.aspect !== 'auto') {
-    body.aspect_ratio = input.params.aspect;
-  }
+  if (tier === '4K' && maxTier === '2K') tier = '2K'; // flash 只有 1K/2K
+  if (tier) body.image_size = tier;
+  const aspect = nearestSupportedAspect(input.params.aspect, supportedAspects);
+  if (aspect) body.aspect_ratio = aspect;
   if (input.negativePrompt && input.negativePrompt.trim()) {
     body.negative_prompt = input.negativePrompt.trim();
   }

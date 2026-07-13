@@ -38,12 +38,22 @@ export function StoryboardNode({ id, data }: NodeProps): JSX.Element {
   const openText = useSmartTextStore((s) => s.open);
   const d = data as unknown as StoryboardNodeData;
   const models = useTextModelItems();
+  const fileRef = useRef<HTMLInputElement>(null);
   const setF = (p: Partial<StoryboardNodeData>): void => update(id, p as Partial<SmartNodeData>);
   const up = useMemo(() => computeUpstream(nodes, edges, id), [nodes, edges, id]);
   const running = d.status === 'running';
   const upFed = up.prompts.length > 0;
+  const hasUpImg = up.images.length > 0;
+  const hasLocal = !!d.inputImage?.url;
   const plan = resolveTimelinePlan(d);
   const result = (d.resultText ?? '').trim();
+
+  function loadFile(file?: File | null): void {
+    if (!file || !file.type.startsWith('image/')) return;
+    const r = new FileReader();
+    r.onload = () => setF({ inputImage: { url: String(r.result), name: file.name } });
+    r.readAsDataURL(file);
+  }
 
   // 节点高度贴合真实内容（fitwrap 实测，选项变化/结果/报错都自动跟随；手动 > 自适应）
   const fitRef = useRef<HTMLDivElement>(null);
@@ -115,6 +125,20 @@ export function StoryboardNode({ id, data }: NodeProps): JSX.Element {
             onChange={(e) => setF({ extraNote: e.target.value })}
           />
 
+          {/* 参考图（2026-07-14）：上游图片来源优先，卡上传兜底；运行时经视觉模型读图（人物形象/分镜片段）并入素材 */}
+          {hasUpImg ? (
+            <div className="mb-sc-fromup is-fed">🖼 参考图由上游输入（{up.images.length} 张：人物形象 / 场景 / 分镜片段）</div>
+          ) : (
+            <button className="mb-btn mb-btn-sm mb-btn-ghost" onClick={() => fileRef.current?.click()}>
+              {hasLocal ? `换参考图（${d.inputImage?.name ?? '已上传'}）` : '上传参考图（可选：人物形象 / 分镜片段图）'}
+            </button>
+          )}
+          {hasLocal && !hasUpImg && (
+            <button className="mb-btn mb-btn-sm mb-btn-ghost" onClick={() => setF({ inputImage: undefined })}>
+              ✕ 移除参考图
+            </button>
+          )}
+
           {upFed ? (
             <div
               className="mb-sc-fromup is-fed"
@@ -164,6 +188,7 @@ export function StoryboardNode({ id, data }: NodeProps): JSX.Element {
           </div>
         )}
         {result && <div className="mb-sc-note nodrag">【定调】+ 按时间段逐段分镜 · 整份连视频节点直接生成</div>}
+        <input ref={fileRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { loadFile(e.target.files?.[0]); e.target.value = ''; }} />
         </div>
       </NodeShell>
     </>

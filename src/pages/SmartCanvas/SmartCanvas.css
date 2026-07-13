@@ -1716,12 +1716,9 @@
   display: block;
 }
 
-/* 提示词节点：输入框左下角「提示词库」按钮 */
+/* 提示词节点：输入框下方工具行按钮（提示词库/翻译/工作台/复制）。
+   2026-07-14：从「悬浮在输入框左下角」改为文档流普通一行——悬浮会遮住输入框底部文字 */
 .mb-sc-prompt-lib {
-  position: absolute;
-  left: 4px;
-  bottom: 4px;
-  z-index: 2;
   display: inline-flex;
   align-items: center;
   gap: 3px;
@@ -1742,15 +1739,10 @@
   border-color: var(--mb-accent);
 }
 .mb-sc-prompt-toolrow {
-  position: absolute;
-  left: 4px;
-  bottom: 4px;
-  z-index: 2;
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
-}
-.mb-sc-prompt-toolrow .mb-sc-prompt-lib {
-  position: static;
+  flex: 0 0 auto;
 }
 .mb-sc-prompt-lib.is-on {
   opacity: 1;
@@ -8521,8 +8513,17 @@ html[data-idle='true'] .mb-sc-video-prog-track i.is-indeterminate {
   overflow: visible;
   z-index: 3;
 }
-.mb-sc-atref-thumb {
+/* @图N 行内缩略图（2026-07-14）：跟在「图N」文字后面同一行（不再悬浮遮上一行），
+   底部叠一个深色编号标注（图N）标明引用的是哪张 */
+.mb-sc-atref-inline {
   position: absolute;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: none;
+  line-height: 0;
+}
+.mb-sc-atref-inline img {
   width: 22px;
   height: 22px;
   object-fit: cover;
@@ -8530,13 +8531,28 @@ html[data-idle='true'] .mb-sc-video-prog-track i.is-indeterminate {
   border: 1.5px solid var(--mb-accent);
   background: var(--mb-bg-card);
   box-shadow: var(--mb-shadow-card);
+  display: block;
 }
-.mb-sc-atref-thumb.is-miss {
+.mb-sc-atref-inline-no {
+  margin-top: -6px;
+  font-size: 9px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 4px;
+  background: var(--mb-badge-dark-bg);
+  color: var(--mb-badge-dark-text);
+  white-space: nowrap;
+}
+.mb-sc-atref-inline-q {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  border: 1.5px solid var(--mb-danger, #ef4444);
+  background: var(--mb-bg-card);
   color: var(--mb-danger, #ef4444);
-  border-color: var(--mb-danger, #ef4444);
   font-size: 12px;
   line-height: 1;
 }

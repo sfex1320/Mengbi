@@ -126,6 +126,9 @@ export function VideoClipStudio(): JSX.Element | null {
   }
   // 直接拖片段块右边缘裁切出点：基线几何 + 固定比例尺 px 预览（右边贴手、左边钉住=与真实串联布局一致，松手不跳）。
   // 入点裁切走源监视器的入点手柄（在无缝串联时间轴上左边由前序片段钉死，拖左缘要么松手跳、要么脱手，故只在时间轴提供右缘裁切）。
+  // 性能（2026-07-14）：拖动全程只更新本地 px 预览（rAF 每帧最多一次），**绝不写全局 store**——
+  // 此前每次 pointermove 都 patchSeg → updateNodeData 重建整个 nodes 数组 → 全画布重渲染（红卡拖动卡顿主因）。
+  // 松手才把最终出点一次性 commit 回节点数据。
   const startEdgeTrim = (i: number) => (e: React.PointerEvent): void => {
     e.preventDefault();
     e.stopPropagation();
@@ -142,18 +145,33 @@ export function VideoClipStudio(): JSX.Element | null {
     const trimStart0 = Math.max(0, seg.trimStart || 0);
     const leftPx0 = (items[i].startPct / 100) * trackW;
     const minOut = 0.2; // 最短保留输出时长
-    const apply = (clientX: number): void => {
-      const xRel = clientX - track.left;
-      const keptOut = clamp((xRel - leftPx0) * secPerPx, minOut, (nat - trimStart0) / speed);
+    let lastEnd: number | null = null;
+    let pendingX: number | null = null;
+    let raf = 0;
+    const compute = (clientX: number): void => {
+      const keptOut = clamp((clientX - track.left - leftPx0) * secPerPx, minOut, (nat - trimStart0) / speed);
       const newEnd = trimStart0 + keptOut * speed;
-      patchSeg(i, { trimEnd: newEnd >= nat - 0.05 ? 0 : round1(newEnd) });
+      lastEnd = newEnd >= nat - 0.05 ? 0 : round1(newEnd);
       setEdgeDrag({ idx: i, leftPx: leftPx0, widthPx: keptOut / secPerPx });
     };
-    apply(e.clientX);
-    const move = (ev: PointerEvent): void => apply(ev.clientX);
+    const flush = (): void => {
+      raf = 0;
+      if (pendingX == null) return;
+      const x = pendingX;
+      pendingX = null;
+      compute(x);
+    };
+    compute(e.clientX);
+    const move = (ev: PointerEvent): void => {
+      pendingX = ev.clientX;
+      if (!raf) raf = requestAnimationFrame(flush);
+    };
     const up = (): void => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
+      if (raf) cancelAnimationFrame(raf);
+      if (pendingX != null) compute(pendingX); // 松手前最后一次 move 尚未 flush → 补算
+      if (lastEnd != null) patchSeg(i, { trimEnd: lastEnd });
       setEdgeDrag(null);
       window.setTimeout(() => {
         edgeDraggingRef.current = false;
@@ -437,10 +455,13 @@ function SegmentMonitor({
   const [loop, setLoop] = useState(false);
   const [box, setBox] = useState({ w: 0, h: 0 }); // 视频元素渲染尺寸
   const [nat, setNat] = useState({ w: 0, h: 0 }); // 视频自然尺寸（算 contain 内容区 + 文字缩放）
+  // 入/出点手柄拖动中的本地预览值（不写全局 store，松手才 onTrim commit；见 startDrag 注释）
+  const [dragTrim, setDragTrim] = useState<{ trimStart?: number; trimEnd?: number } | null>(null);
   const url = srcToUrl(src);
   const D = dur > 0 ? dur : naturalDuration || 0;
-  const inT = Math.max(0, trimStart || 0);
-  const outT = trimEnd > 0 ? trimEnd : D;
+  const inT = Math.max(0, (dragTrim?.trimStart ?? trimStart) || 0);
+  const effEnd = dragTrim?.trimEnd ?? trimEnd;
+  const outT = effEnd > 0 ? effEnd : D;
   const pct = (t: number): number => (D > 0 ? clamp((t / D) * 100, 0, 100) : 0);
 
   // contain 模式下视频内容区（去掉黑边）——文字叠加按真实画面坐标定位
@@ -463,11 +484,27 @@ function SegmentMonitor({
     return () => ro.disconnect();
   }, [url]);
 
+  // seek 门闩（2026-07-14）：上一个 seek 未完成（onSeeked 未回）时不再赋值 currentTime、只记最新目标——
+  // 拖播放头时 pointermove 频率（100+/s）远超解码器 seek 能力，逐次赋值会让解码排队、画面卡成幻灯片。
+  const seekBusyRef = useRef(false);
+  const seekPendingRef = useRef<number | null>(null);
   const seek = (t: number): void => {
     const v = videoRef.current;
     if (!v || !Number.isFinite(t)) return;
-    v.currentTime = Math.max(0, Math.min(D || t, t));
-    setCur(v.currentTime);
+    const target = Math.max(0, Math.min(D || t, t));
+    if (seekBusyRef.current) {
+      seekPendingRef.current = target;
+      return;
+    }
+    seekBusyRef.current = true;
+    v.currentTime = target;
+    setCur(target);
+  };
+  const onSeeked = (): void => {
+    seekBusyRef.current = false;
+    const next = seekPendingRef.current;
+    seekPendingRef.current = null;
+    if (next != null) seek(next);
   };
   const toggle = (): void => {
     const v = videoRef.current;
@@ -516,31 +553,59 @@ function SegmentMonitor({
     return Math.max(0, Math.min(D, ((clientX - r.left) / r.width) * D));
   };
   // which: in=拖入点手柄 / out=拖出点手柄 / seek=点轨道拖动播放头
+  // 性能（2026-07-14）：in/out 拖动全程只写本地 dragTrim 预览（rAF 每帧最多一次），松手才 onTrim
+  // 一次性 commit——此前每次 pointermove 都 onTrim→patchSeg 写全局 store = 全画布每帧重渲染（手柄发涩主因）。
+  // seek 走上面的门闩函数，本身自带背压。
   const startDrag = (which: 'in' | 'out' | 'seek') => (e: React.PointerEvent): void => {
     e.preventDefault();
     if (which !== 'seek') e.stopPropagation();
-    const apply = (clientX: number): void => {
+    let last: { trimStart?: number; trimEnd?: number } | null = null;
+    let pendingX: number | null = null;
+    let raf = 0;
+    const compute = (clientX: number): void => {
       const t = timeFromX(clientX);
-      if (which === 'in') onTrim({ trimStart: round1(Math.max(0, Math.min(t, outT - 0.1))) });
-      else if (which === 'out') {
+      if (which === 'in') {
+        last = { trimStart: round1(Math.max(0, Math.min(t, outT - 0.1))) };
+        setDragTrim(last);
+      } else if (which === 'out') {
         const v = Math.max(inT + 0.1, Math.min(D, t));
-        onTrim({ trimEnd: v >= D - 0.05 ? 0 : round1(v) });
+        last = { trimEnd: v >= D - 0.05 ? 0 : round1(v) };
+        setDragTrim(last);
       } else seek(t);
     };
-    apply(e.clientX);
-    const move = (ev: PointerEvent): void => apply(ev.clientX);
+    const flush = (): void => {
+      raf = 0;
+      if (pendingX == null) return;
+      const x = pendingX;
+      pendingX = null;
+      compute(x);
+    };
+    compute(e.clientX);
+    const move = (ev: PointerEvent): void => {
+      pendingX = ev.clientX;
+      if (!raf) raf = requestAnimationFrame(flush);
+    };
     const up = (): void => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
+      if (raf) cancelAnimationFrame(raf);
+      if (pendingX != null) compute(pendingX);
+      if (which !== 'seek') {
+        if (last) onTrim(last);
+        setDragTrim(null);
+      }
     };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
   };
 
   // 画面上拖动文字 → 更新 x/y（0~1，与 ffmpeg `(w-tw)*x` 锚点语义一致：0=贴左 1=贴右 0.5=居中）
+  // rAF 节流：store 写入每帧最多一次（文字定位需要实时回写才能所见即所得，无法只本地预览）
   const startTextDrag = (id: string) => (e: React.PointerEvent): void => {
     e.preventDefault();
     e.stopPropagation();
+    let pending: { x: number; y: number } | null = null;
+    let raf = 0;
     const apply = (clientX: number, clientY: number): void => {
       const r = layerRef.current?.getBoundingClientRect();
       if (!r || !r.width || !r.height) return;
@@ -549,11 +614,23 @@ function SegmentMonitor({
         y: round2(clamp((clientY - r.top) / r.height, 0, 1))
       });
     };
+    const flush = (): void => {
+      raf = 0;
+      if (!pending) return;
+      const p = pending;
+      pending = null;
+      apply(p.x, p.y);
+    };
     apply(e.clientX, e.clientY);
-    const move = (ev: PointerEvent): void => apply(ev.clientX, ev.clientY);
+    const move = (ev: PointerEvent): void => {
+      pending = { x: ev.clientX, y: ev.clientY };
+      if (!raf) raf = requestAnimationFrame(flush);
+    };
     const up = (): void => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
+      if (raf) cancelAnimationFrame(raf);
+      if (pending) apply(pending.x, pending.y);
     };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
@@ -573,7 +650,9 @@ function SegmentMonitor({
               if (v.duration && Number.isFinite(v.duration)) setDur(v.duration);
               if (v.videoWidth && v.videoHeight) setNat({ w: v.videoWidth, h: v.videoHeight });
               setBox({ w: v.clientWidth, h: v.clientHeight });
+              seekBusyRef.current = false; // 换源后复位 seek 门闩
             }}
+            onSeeked={onSeeked}
             onTimeUpdate={(e) => onTime(e.currentTarget.currentTime)}
             onPlay={() => setPlaying(true)}
             onPause={() => setPlaying(false)}

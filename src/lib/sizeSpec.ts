@@ -2,7 +2,7 @@
  * 「尺寸来源」节点（ratio）的纯函数与预设清单（renderer，无副作用、可单测）。
  * 复用 imageModelFamilies 的像素预算/吸附函数与 imageScale 的精确比例，避免重复实现。
  */
-import { TIER_PIXEL_BUDGET, snap16 } from '../types/imageModelFamilies';
+import { snap16 } from '../types/imageModelFamilies';
 import type { RatioNodeData, SizeSpec, RatioEmit } from '../types/smartCanvas';
 import { exactRatio } from './imageScale';
 
@@ -110,16 +110,23 @@ export function ratioOutputSize(data: RatioNodeData): SizeSpec | null {
   return { aspect, width: wh.w, height: wh.h, emit };
 }
 
-/** 把总像素映射到最接近的档位（供 nano-banana 这类只认 image_size 档的模型用）。 */
-export function nearestTier(px: number): '1K' | '2K' | '4K' {
+/**
+ * 把宽高映射到最接近的档位（供 nano-banana 这类只认 image_size 档的模型用）。
+ * 口径 = **最长边**（与本节点 RATIO_TIER_LONGEST 一致：1K=1024 / 2K=2048 / 4K=4096），平手取更大档。
+ * 2026-07-14 修复：旧版按「总像素 vs TIER_PIXEL_BUDGET(面积预算)」最近匹配——面积口径下
+ * 2K×16:9（2048×1152=2.36MP）反而更接近 1K 预算（1.05MP），出现「尺寸节点选 2K、实发 1K」的静默降档。
+ */
+export function nearestTier(width: number, height: number): '1K' | '2K' | '4K' {
+  const longest = Math.max(Number(width) || 0, Number(height) || 0);
   const tiers: Array<['1K' | '2K' | '4K', number]> = [
-    ['1K', TIER_PIXEL_BUDGET['1K']],
-    ['2K', TIER_PIXEL_BUDGET['2K']],
-    ['4K', TIER_PIXEL_BUDGET['4K']]
+    ['1K', 1024],
+    ['2K', 2048],
+    ['4K', 4096]
   ];
   let best = tiers[0];
   for (const t of tiers) {
-    if (Math.abs(px - t[1]) < Math.abs(px - best[1])) best = t;
+    // <= 让平手向更大档（3072 介于 2K/4K 正中 → 4K，宁大勿降）
+    if (Math.abs(longest - t[1]) <= Math.abs(longest - best[1])) best = t;
   }
   return best[0];
 }

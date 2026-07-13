@@ -396,7 +396,8 @@ export function CanvasViewport(): JSX.Element {
     });
   }, [nodes, dimFilter]);
 
-  // Alt+点击节点 = 切换「跳过」：灰显 + 运行全部/链式补跑/循环驱动绕过（已有输出仍喂下游）。
+  // Alt+点击节点 = 切换「跳过」：灰显 + 运行全部/链式补跑/循环驱动绕过 + 产出不喂下游
+  // （透传其上游，= ComfyUI Bypass；2026-07-14 前旧输出仍下发，用户实测反直觉后改掉）。
   // 点在交互控件或九宫格格子上不劫持（格子的 Alt+点击 = 跳过单张图，语义不同）。
   const onNodeClick = useCallback((e: React.MouseEvent, node: Node) => {
     if (!e.altKey) return;
@@ -406,8 +407,8 @@ export function CanvasViewport(): JSX.Element {
     const st = useSmartCanvasStore.getState();
     const cur = !!(st.nodes.find((x) => x.id === node.id)?.data as { skipped?: boolean } | undefined)?.skipped;
     st.updateNodeData(node.id, { skipped: !cur });
-    if (cur) toast.success('已恢复参与运行', '节点重新加入 运行全部/链式补跑');
-    else toast.success('已跳过此节点', '运行全部/链式补跑/循环会绕过它；Alt+点击恢复');
+    if (cur) toast.success('已恢复参与运行', '节点重新加入运行，产出恢复喂给下游');
+    else toast.success('已跳过此节点', '不再运行、内容也不喂下游（上游直接穿过）；Alt+点击恢复');
   }, []);
 
   // 拖动中：计算对齐参考线（与其它顶层节点的 左/中/右 · 上/中/下 对齐）。

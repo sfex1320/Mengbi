@@ -1636,8 +1636,8 @@ async function runGrsaiImage(opts: GrsaiImageOpts): Promise<string[]> {
     : legacyUrl;
 
   // aspectRatio 字段决策（新版统一支持 "16:9" / "1024x1024" / "4K" 三种）：
-  //   1. 显式 width/height 双字段 → "WxH"（gpt-image-2 这类按像素出图）
-  //   2. nano-banana 系列且选了档位 → 直接传档位字面量（"1K"/"2K"/"4K"），模型自己挑分辨率
+  //   1. nano-banana 系列且选了档位 → 档位进独立 imageSize 字面量（"1K"/"2K"/"4K"），比例进 aspectRatio
+  //   2. 显式 width/height 双字段 → "WxH"（gpt-image-2 这类按像素出图）
   //   3. 显式档位 + 比例 → 用预算换算成 "WxH"
   //   4. 其他 → 比例字符串（"16:9"）
   let aspectRatioField: string;
@@ -1645,6 +1645,9 @@ async function runGrsaiImage(opts: GrsaiImageOpts): Promise<string[]> {
   // aspectRatio 仍放真实比例（"1:1"）。旧代码把档位塞进 aspectRatio（"4K"），新后端
   // 不认这个"比例" → 静默回退默认 1K —— 这就是「点 4K 却只出 1K」的根因。
   // 仅 nano-banana 系列走这条；gpt-image-2 等仍按 WxH 不受影响（隔离）。
+  // 2026-07-14：nano-banana 的档位分支提到 WxH 之前——智能画布尺寸节点会同时给
+  // width/height + image_size，此前 WxH 分支先命中 → 档位被绕过 + snapToGrid 封顶 3840，
+  // 「点 4K 只出 1K」在接了尺寸节点时复发。
   let imageSizeField: string | null = null;
   const w = Number(opts.params.width);
   const h = Number(opts.params.height);
@@ -1659,12 +1662,12 @@ async function runGrsaiImage(opts: GrsaiImageOpts): Promise<string[]> {
       ? opts.params.image_size
       : null;
   const tierBudget = tierLabel ? TIER_PIXEL_BUDGET[tierLabel] : null;
-  if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
-    aspectRatioField = `${snapToGrid(w)}x${snapToGrid(h)}`;
-  } else if (isNanoBanana && tierLabel) {
+  if (isNanoBanana && tierLabel) {
     // 比例进 aspectRatio，档位进独立 imageSize（与 grsai nano-banana 文档示例一致）
     aspectRatioField = aspect;
     imageSizeField = tierLabel;
+  } else if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+    aspectRatioField = `${snapToGrid(w)}x${snapToGrid(h)}`;
   } else if (tierBudget) {
     const { w: cw, h: ch } = pixelsByAspectAndBudget(aspect, tierBudget);
     aspectRatioField = `${cw}x${ch}`;
@@ -1946,21 +1949,25 @@ async function runApimartImage(opts: ApimartImageOpts): Promise<string[]> {
   const apiKey = decryptString(opts.cfg.api_key_encrypted);
 
   // size 字段决策：apimart 的 size 既能吃比例 "16:9" 也能吃像素 "1024x1024"，
-  // 还有 resolution 是档位 '1k'/'2k'/'4k'。优先级：显式 W×H > 档位 + 比例 > 比例字符串。
+  // 还有 resolution 是档位 '1k'/'2k'/'4k'。
+  // 优先级（2026-07-14 调整）：可表达的显式 W×H（最长边 ≤3840）> 档位 + 比例 > 比例字符串。
+  // 智能画布尺寸节点会同时给 width/height + image_size：4K 档（4096 边）超出 snapToGrid 的
+  // 3840 封顶，此前被 WxH 分支静默砍小且绕过 resolution 档位字段 → 改为超限时走 档位+比例。
   const w = Number(opts.params.width);
   const h = Number(opts.params.height);
   const aspect =
     typeof opts.params.aspect === 'string' && opts.params.aspect && opts.params.aspect !== 'auto'
       ? opts.params.aspect
       : '1:1';
+  const t = opts.params.image_size;
+  const tierOk = t === '1K' || t === '2K' || t === '4K';
   let sizeField: string | null = null;
   let resolutionField: string | null = null;
-  if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+  if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0 && (Math.max(w, h) <= 3840 || !tierOk)) {
     sizeField = `${snapToGrid(w)}x${snapToGrid(h)}`;
   } else {
     sizeField = aspect;
-    const t = opts.params.image_size;
-    if (t === '1K' || t === '2K' || t === '4K') {
+    if (tierOk) {
       resolutionField = String(t).toLowerCase();
     }
   }

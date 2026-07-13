@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useSmartCanvasStore, absPosition } from '@/store/smartCanvasStore';
 import { useSettingsStore } from '@/store/settingsStore';
 import { useVideoProvidersStore } from '@/store/videoProvidersStore';
-import { computeUpstream, sendableUrl } from '@/lib/smartCanvasRunner';
+import { computeUpstream, sendableUrl, normalizeImageDataUri } from '@/lib/smartCanvasRunner';
 import { localPathToImageUrl } from '@/lib/imageUrl';
 import { toast } from '@/store/toastStore';
 import { VIDEO_MODE_LABELS, normalizeVideoMode, type VideoMode } from '@shared/video';
@@ -39,6 +39,10 @@ const MODE_CAP: Record<VideoMode, keyof VideoModelCapabilities> = {
 };
 const DUR_PRESETS = ['4', '5', '6', '8', '10', '12', '15'];
 const COMMON_ASPECTS = ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9', '2:3', '3:2', 'adaptive'];
+// 多格式支持（2026-07-14）：白名单放宽到浏览器可解码的常见图片格式；
+// webp/avif/gif/bmp 选入后经 normalizeImageDataUri 重编码成 PNG——不少视频中转站的
+// 上传端点只收 png/jpg（否则报「参考图格式无法识别」类错误）。
+const IMG_EXTS = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'avif'];
 function linesToArr(s: string): string[] {
   return s.split(/[\n,]/).map((x) => x.trim()).filter(Boolean);
 }
@@ -395,35 +399,28 @@ function VideoConsoleInner({ id }: { id: string }): JSX.Element | null {
     </div>
   );
 
-  async function pickImageInto(field: 'firstFrameUrl' | 'lastFrameUrl'): Promise<void> {
-    const r = await window.electronAPI.storage.pickFile({ filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp'] }] });
-    if (!r.ok || !r.data.filePath) return;
+  async function pickNormalizedImage(): Promise<string | null> {
+    const r = await window.electronAPI.storage.pickFile({ filters: [{ name: '图片', extensions: IMG_EXTS }] });
+    if (!r.ok || !r.data.filePath) return null;
     setBusy('图片处理中…');
     try {
       const du = await sendableUrl(r.data.filePath);
       if (!du) {
         toast.error('图片读取失败', '无法转换该图片，请换一张');
-        return;
+        return null;
       }
-      setF({ [field]: du } as Partial<VideoNodeData>);
+      return await normalizeImageDataUri(du);
     } finally {
       setBusy('');
     }
   }
+  async function pickImageInto(field: 'firstFrameUrl' | 'lastFrameUrl'): Promise<void> {
+    const du = await pickNormalizedImage();
+    if (du) setF({ [field]: du } as Partial<VideoNodeData>);
+  }
   async function addRefImage(): Promise<void> {
-    const r = await window.electronAPI.storage.pickFile({ filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp'] }] });
-    if (!r.ok || !r.data.filePath) return;
-    setBusy('图片处理中…');
-    try {
-      const du = await sendableUrl(r.data.filePath);
-      if (!du) {
-        toast.error('图片读取失败', '无法转换该图片，请换一张');
-        return;
-      }
-      setF({ referenceImageUrls: [...(d!.referenceImageUrls ?? []), du] });
-    } finally {
-      setBusy('');
-    }
+    const du = await pickNormalizedImage();
+    if (du) setF({ referenceImageUrls: [...(d!.referenceImageUrls ?? []), du] });
   }
   async function uploadAV(kind: 'video' | 'audio'): Promise<void> {
     const exts = kind === 'video' ? ['mp4', 'mov', 'webm'] : ['mp3', 'wav', 'm4a', 'aac'];

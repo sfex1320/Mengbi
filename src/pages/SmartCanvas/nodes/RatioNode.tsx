@@ -149,11 +149,11 @@ export function RatioNode({ id, data }: NodeProps): JSX.Element {
               <button
                 className="mb-sc-ratio-famrow"
                 title="Nano Banana 系只认 分辨率档 + 比例 · 点击采用为预设（最近档 + 最近常用比例）"
-                onClick={() => setF({ sizeMode: 'preset', aspect: info.nearest, tier: nearestTier(info.w * info.h) })}
+                onClick={() => setF({ sizeMode: 'preset', aspect: info.nearest, tier: nearestTier(info.w, info.h) })}
               >
                 <span className="mb-sc-ratio-famname">Nano Banana</span>
                 <b>
-                  {nearestTier(info.w * info.h)} 档 · {info.nearest}
+                  {nearestTier(info.w, info.h)} 档 · {info.nearest}
                 </b>
               </button>
             </div>
