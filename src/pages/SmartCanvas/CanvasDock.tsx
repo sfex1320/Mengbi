@@ -5,7 +5,7 @@ import { prettyCombo } from '@/lib/keyCombo';
 
 /** 创建工具坞分组（按用途分段，段间用分隔线）：
  *  输入素材 / 分析改写 / 预处理 / 生成 / 汇总 / 容器。
- *  约定：图片与视频上传同段（素材来源）；图像反推、视频反推与 LLM 同段（接素材出文本）。 */
+ *  约定：图片与视频上传同段（素材来源）；反推（图/视频合一）与 LLM 同段（接素材出文本）。 */
 const GROUPS: Array<Array<[SmartNodeKind, string]>> = [
   // 输入素材：图片 / 文件夹输入 / 视频上传（媒体来源）+ 提示词 / 文字（文本来源）
   [
@@ -15,13 +15,13 @@ const GROUPS: Array<Array<[SmartNodeKind, string]>> = [
     ['prompt', '提示词'],
     ['text', '文字']
   ],
-  // 分析改写（接素材 → 出文本）：LLM + 提示词商城 + 智能分镜 + 图像反推 / 视频反推 + 视角 / 光源
+  // 分析改写（接素材 → 出文本）：LLM + 提示词商城 + 智能分镜 + 反推（图/视频合一）+ 视角 / 光源
   [
     ['llm', 'LLM'],
     ['prompt-mall', '提示词商城'],
     ['storyboard', '分镜'],
-    ['image-reverse', '图像反推'],
-    ['video-reverse', '视频反推'],
+    ['image-reverse', '反推'],
+    ['character-card', '角色卡'],
     ['segment', '切分工具'],
     ['proof', '对稿'],
     ['angle-prompt', '镜头'],
@@ -95,7 +95,7 @@ export function CanvasDock(): JSX.Element {
                 className={`mb-sc-dock-btn ${active ? 'is-active' : ''}`}
                 title={
                   k === 'group'
-                    ? `选中多个节点后点此＝把它们成组；未选则点画布落位一个空分组${kb}`
+                    ? `选中多个节点后点此＝把它们成组；未选则在画布上拖动框选建组（框中节点自动入组），单击落位空分组${kb}`
                     : `添加「${label}」节点 · 点画布落位（Esc 取消）${kb}`
                 }
                 onClick={() => {

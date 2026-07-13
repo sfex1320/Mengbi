@@ -19,6 +19,46 @@ export function loadImageCors(src: string): Promise<HTMLImageElement> {
 type ImgFormat = 'png' | 'jpeg' | 'webp';
 const mimeOf = (f: ImgFormat): string => (f === 'png' ? 'image/png' : `image/${f}`);
 
+/** 识别用图的分辨率下限：vision 模型多按 512px tile 切图，图太小时小元素（小图标/小字/角标）直接被吃掉。 */
+export const DETECT_MIN_EDGE = 1536;
+/** 识别用图的分辨率上限：超大图 base64 过长，易被上游截断/拒收，且对框检测没有增益。 */
+export const DETECT_MAX_EDGE = 3072;
+
+/**
+ * 识别用图预处理（切分/对稿的视觉检测调用前）：
+ * - 最长边 <1536 → 等比放大到 1536（提高小元素检出率）；
+ * - 最长边 >3072 → 等比缩小到 3072（防 base64 爆长）；
+ * - 区间内 → scaledUri=null，调用方直接发原图字节（不重编码不损质量）。
+ * 返回「实际发送尺寸 w/h + 源图尺寸 origW/origH」——坐标解析必须按发送尺寸做（模型若回像素坐标，参照系是
+ * 它看到的那张图），再由 parseSegElementsScaled 等比换算回源图像素。
+ */
+export async function prepareDetectImage(
+  src: string
+): Promise<{ scaledUri: string | null; w: number; h: number; origW: number; origH: number }> {
+  const img = await loadImageCors(src);
+  const origW = Math.max(1, img.naturalWidth);
+  const origH = Math.max(1, img.naturalHeight);
+  const longest = Math.max(origW, origH);
+  if (longest >= DETECT_MIN_EDGE && longest <= DETECT_MAX_EDGE) {
+    return { scaledUri: null, w: origW, h: origH, origW, origH };
+  }
+  const k = (longest < DETECT_MIN_EDGE ? DETECT_MIN_EDGE : DETECT_MAX_EDGE) / longest;
+  const w = Math.max(1, Math.round(origW * k));
+  const h = Math.max(1, Math.round(origH * k));
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext('2d');
+  if (!ctx) return { scaledUri: null, w: origW, h: origH, origW, origH };
+  // JPEG 无透明通道：先铺白底（检测只看构图与元素，不需要 alpha），再高质量等比缩放
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, w, h);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(img, 0, 0, w, h);
+  return { scaledUri: c.toDataURL('image/jpeg', 0.92), w, h, origW, origH };
+}
+
 /** 从已加载图里裁出一个子矩形（源图像素坐标）→ dataURI。 */
 export function cropToDataUri(img: HTMLImageElement, box: ElementRect, format: ImgFormat = 'png'): string {
   const w = Math.max(1, Math.round(box.w));

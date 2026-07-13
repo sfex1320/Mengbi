@@ -25,10 +25,10 @@ export type SmartNodeKind =
   | 'video'
   | 'image-reverse'
   | 'video-source'
-  | 'video-reverse'
   | 'frame-interp'
   | 'video-clip'
   | 'storyboard'
+  | 'character-card'
   | 'prompt-mall'
   | 'loop'
   | 'upscale'
@@ -120,6 +120,9 @@ export interface NodeMeta {
   /** true=用户手动调整过尺寸 → 自适应让位手动（不再自动放缩）。拖 NodeResizer 时由 onNodesChange 自动置位；
    *  右键「恢复自适应大小」清除。优先级：手动 > 自适应。 */
   manualSize?: boolean;
+  /** true=节点被跳过（Alt+点击切换）：灰显；运行全部/链式补跑/循环驱动/cascade 一律绕过它，
+   *  已有输出仍照常喂下游（= ComfyUI mute 的「不执行但不断流」语义）。卡上按钮直跑不受限。 */
+  skipped?: boolean;
 }
 
 export interface ImageNodeData extends NodeMeta {
@@ -152,11 +155,18 @@ export interface ImageNodeData extends NodeMeta {
   //    可设「每批向下游传入几张」并自驱逐批跑下游（也可连「循环」节点由其驱动）。──
   /** true=列表模式（多图）；缺省/false=单图模式（src） */
   listMode?: boolean;
-  /** 列表模式下的多张图（本地绝对路径 / data:URI），按顺序 */
+  /** 列表模式下的多张图（本地绝对路径 / data:URI），按顺序（= 九宫格格子顺序 = 传下游的图序） */
   srcs?: string[];
-  /** 每次向下游传入几张（逐批驱动时用；0/空 = 全部一次） */
+  /**
+   * 九宫格「跳过」的格子下标（2026-07-11，Alt+点击置灰）：这些图不传下游、不占序号
+   * （角标序号 = 实际传下游的序号，由 src/lib/imageListOrder.ts 统一换算）。
+   * 重排/插入/删除时下标必须跟着图重映射——一律走 imageListOrder 的纯函数改，别手写 splice。
+   */
+  disabledIdx?: number[];
+  /** 每次向下游传入几张（逐批驱动时用；0/空 = 全部一次）。UI 已下线（2026-07-11 九宫格化），字段休眠保留 */
   batchSize?: number;
   // ── 自驱逐批运行态（与循环节点同义，复用共享迭代器；持久化无害）──
+  //    2026-07-11：节点上的自驱按钮/每批张数 UI 已下线（批量驱动交给「循环」节点），字段休眠保留兼容旧档。
   runStatus?: RunStatus | 'paused';
   /** 当前批序号（0 起） */
   batchIndex?: number;
@@ -273,6 +283,7 @@ export type LlmOp =
   | 'expand' // 扩写细化
   | 'decompose' // 细节分解
   | 'refine' // 对话完善
+  | 'script' // 剧本创作（多素材：人物/场景/故事 → 完整剧本，2026-07-12）
   | 'reverse' // 图片反推提示词（需 vision 文本模型）
   | 'to-json'; // 自然语言 → JSON 结构化提示词
 
@@ -283,12 +294,50 @@ export const LLM_OP_LABELS: Record<LlmOp, string> = {
   expand: '扩写细化',
   decompose: '细节分解',
   refine: '对话完善',
+  script: '剧本创作',
   reverse: '图片反推提示词',
   'to-json': '转 JSON 提示词'
 };
 
+/** op 的一句话副标（图标网格的 sub / tooltip）——选择时一眼看懂每个操作做什么。 */
+export const LLM_OP_SUBS: Record<LlmOp, string> = {
+  optimize: '改写成高质量提示词',
+  'translate-en': '中文 → 英文',
+  'translate-zh': '英文 → 中文',
+  expand: '补足细节更丰富',
+  decompose: '拆成结构化要素',
+  refine: '打磨得清晰可执行',
+  script: '多素材（人物/场景/故事）→ 完整剧本',
+  reverse: '图 → 提示词（视觉）',
+  'to-json': '转结构化 JSON'
+};
+
 /** 需要上游图片的 LLM 操作（vision） */
 export const LLM_IMAGE_OPS: ReadonlySet<LlmOp> = new Set<LlmOp>(['reverse']);
+
+// ── 输出用途 / 意图（2026-07-11 LLM 节点重做）──
+// 痛点：优化提示词时模型不知道「优化给谁用、要达到什么目的」，输出对不上路。
+// purpose=输出面向的目标（生图/视频/角色/场景），intent=一句话意图；
+// 二者在运行时注入 systemPrompt（仅 LLM_PURPOSE_OPS 文本类操作生效——翻译/反推保持本义不注入）。
+
+export type LlmPurpose = 'free' | 'image' | 'video' | 'character' | 'scene';
+
+export const LLM_PURPOSE_LABELS: Record<LlmPurpose, string> = {
+  free: '自由',
+  image: '生图提示词',
+  video: '视频提示词',
+  character: '角色设定',
+  scene: '场景描述'
+};
+
+/** 吃 purpose/intent 注入的文本类操作（翻译要忠实原文、反推走 lab.reverse，均不注入用途）。 */
+export const LLM_PURPOSE_OPS: ReadonlySet<LlmOp> = new Set<LlmOp>([
+  'optimize',
+  'expand',
+  'decompose',
+  'refine',
+  'to-json'
+]);
 
 /** LLM 节点内置流式聊天的一条消息 */
 export interface ChatMsg {
@@ -310,6 +359,10 @@ export interface LlmNodeData extends NodeMeta {
   input: string;
   /** reverse 时的反推类型 */
   reverseType: 'description' | 'tags' | 'style';
+  /** 输出用途（additive 可选，缺省 'free'=不注入用途导向，保持旧行为） */
+  purpose?: LlmPurpose;
+  /** 一句话意图：本次要达到什么效果（如「电商主图、突出金属质感、白底」），注入 systemPrompt 让改写围绕它 */
+  intent?: string;
   status: RunStatus;
   /** 生成的文本输出（喂给下游工作/LLM 节点作提示词） */
   resultText?: string;
@@ -912,8 +965,10 @@ export interface VideoNodeData extends NodeMeta {
 }
 
 // ───────────────────────── 反推 / 视频来源节点 ─────────────────────────
-// 图像反推 / 视频反推：接图/视频 → 视觉模型反推 → 文本（描述/标签/风格）喂下游（复用 api:lab:reverse）。
-// 视频来源：上传本地视频 / URL → 输出视频给下游（视频反推 / 缩放 / 结果）。
+// 反推（kind 仍为 image-reverse，避免迁移既有旧档）：接图 或 视频（自动抽帧）→ 视觉模型反推 → 文本喂下游。
+// 复用 api:lab:reverse（三档固定模式）与 api:lab:vision-analyze（prompt 模式 / 多帧），零新 IPC。
+// 原独立「视频反推」节点（video-reverse）已于 2026-07-11 合并进本节点；旧档在 smartDocStorage.sanitize 原位迁移。
+// 视频来源：上传本地视频 / URL → 输出视频给下游（反推 / 缩放 / 结果）。
 
 export type ReverseType = 'description' | 'tags' | 'style';
 export const REVERSE_TYPE_LABELS: Record<ReverseType, string> = {
@@ -922,11 +977,28 @@ export const REVERSE_TYPE_LABELS: Record<ReverseType, string> = {
   style: '风格分析'
 };
 
-/** 图像反推节点：接一张图 → 视觉模型反推 → 描述/标签/风格 文本，喂下游。 */
+/** 反推节点输出模式：prompt=可直接喂生图的中文提示词（新默认）；character=角色反推
+ *（照片或角色文字素材 → 五官/发色/衣着/妆容/配饰等极详细角色外观描述，2026-07-12 加入）；
+ *  其余三档沿用 api:lab:reverse 的 result_type。 */
+export type ReverseOutputMode = 'prompt' | 'character' | ReverseType;
+export const REVERSE_OUTPUT_LABELS: Record<ReverseOutputMode, string> = {
+  prompt: '生图提示词',
+  character: '角色反推',
+  description: '详细描述',
+  tags: '标签词',
+  style: '风格分析'
+};
+
+/** 反推节点：接图 或 视频（自动抽帧）→ 视觉模型反推 → 文本，喂下游。 */
 export interface ImageReverseNodeData extends NodeMeta {
   modelId: string;
+  /** 旧字段（三档），outputMode 缺省时作回退——旧档不迁移字段也能跑 */
   reverseType: ReverseType;
-  /** 手动上传图（上游图片优先；本字段兜底） */
+  /** 输出模式（additive，涵盖并取代 reverseType）：缺省按 reverseType 回退，新建节点默认 'prompt' */
+  outputMode?: ReverseOutputMode;
+  /** 上游是视频时的抽帧数量（默认 6；沿自旧「视频反推」节点，合并后保留同名字段供旧档迁移） */
+  frameCount?: number;
+  /** 手动上传图（上游图片/视频优先；本字段兜底） */
   inputImage?: { url: string; name?: string };
   status: RunStatus;
   resultText?: string;
@@ -938,18 +1010,6 @@ export interface ImageReverseNodeData extends NodeMeta {
 export interface VideoSourceNodeData extends NodeMeta {
   src?: string;
   name?: string;
-}
-
-/** 视频反推节点：接一个视频 → 渲染端抽帧 → 多图反推 → 文本，喂下游。 */
-export interface VideoReverseNodeData extends NodeMeta {
-  modelId: string;
-  reverseType: ReverseType;
-  /** 抽帧数量（默认 6） */
-  frameCount?: number;
-  status: RunStatus;
-  resultText?: string;
-  logs?: string[];
-  error?: string | null;
 }
 
 /** 插帧节点：接一个视频 → 本地 RIFE AI 运动插帧（24fps→60fps）→ 输出 mp4 喂下游。 */
@@ -1089,71 +1149,63 @@ export interface VideoClipNodeData extends NodeMeta {
 }
 
 // ───────────────────────── 智能分镜节点（storyboard）─────────────────────────
-// 输入一篇故事或一个短句 → LLM 生成完整故事 → 按用户选的分镜数量拆成 N 条按时间顺序的
-// 图像提示词。每条分镜可单独拉出成提示词节点；节点输出口把全部分镜按顺序作为多条提示词
-// 喂下游生图节点（配合「多条提示词逐条生图」规则按序出图）。复用 api:chat:optimize-prompt，零新 IPC。
-
-/**
- * 分镜固定约束（强制约束型内容）：渲染端把非空项拼成「固定段」前置到每条分镜提示词里，
- * 不依赖 LLM 自觉重复——跨分镜的角色/风格/氛围一致性由代码保证。全部可选。
- */
-export interface StoryboardConstraints {
-  /** 固定角色描述（外貌特征） */
-  character?: string;
-  /** 固定画面风格 */
-  style?: string;
-  /** 固定镜头语言 */
-  camera?: string;
-  /** 固定色彩氛围 */
-  palette?: string;
-  /** 固定世界观设定 */
-  world?: string;
-  /** 固定场景背景 */
-  scene?: string;
-  /** 固定人物服装与外貌特征 */
-  wardrobe?: string;
-}
-
-/** 单条分镜的结构化元信息（展示用；成品提示词在 shots[] 里）。 */
-export interface StoryboardShotMeta {
-  /** 场景与环境（地点/时间/光线氛围） */
-  scene?: string;
-  /** 镜头变化（景别/机位/运镜） */
-  shot?: string;
-  /** 画面细节 */
-  detail?: string;
-  /** 出场人物/主体：外观要点 + 动作 + 表情（电影化分镜要求每条完整复述） */
-  characters?: string;
-  /** 画面中发生的动作/事件/转变 */
-  action?: string;
-}
+// 2026-07-12 重做（旧「N 条分镜 + N-1 条转场」双输出方案连同分镜工作台整体删除）：
+// 上游传入 角色描述 + 简短故事（纯文本），一次 LLM 调用生成完整视频分镜脚本——
+// 开头【定调】段（固定全片风格/场景环境/内容物/光色基调，稳定剧本与绘图）+
+// 时间轴「第X-Y秒：…」逐段推进（每个时间段独立成段），每段写清 场景/人物动作/物体变化/镜头运动，
+// 单输出口（out）整份喂下游视频节点。提示词纯函数在 src/lib/storyboardPrompt.ts。
+// 复用 api:chat:optimize-prompt，零新 IPC。旧档（shots/转场/out-trans 口）在 smartDocStorage.sanitize 原位迁移。
 
 export interface StoryboardNodeData extends NodeMeta {
   /** 文本模型显示名（复用 settingsStore type='text' 配置） */
   modelId: string;
-  /** 故事素材：一篇故事或一个短句（与上游提示词文本合并） */
+  /** 卡上补充素材（角色描述 / 简短故事均可；与上游文本合并） */
   input: string;
-  /** 分镜数量 2-20 */
-  shotCount: number;
-  /** 画面风格提示（旧字段，读取时并入 constraints.style；新 UI 走 constraints） */
-  style?: string;
-  /** 固定约束（角色/风格/镜头/色彩/世界观/场景/服装），拼进每条分镜 */
-  constraints?: StoryboardConstraints;
-  /** 上游参考图的反推分析文本（自动生成，缓存展示用） */
-  analysis?: string;
-  /** 参考图分析用的视觉模型显示名（空 = 用 modelId） */
-  analysisModelId?: string;
-  /** 最近完成到哪一步：'story'=故事已生成（拆分失败可单独重试拆分步） */
-  lastStage?: 'story' | 'shots';
-  /** 生成的完整故事 */
-  story?: string;
-  /** 每个分镜的图像提示词（按时间顺序，已含固定约束段，可直接喂生图） */
-  shots: string[];
-  /** 每条分镜的结构化元信息（场景/镜头/细节，展示用；与 shots 等长或为空） */
-  shotsMeta?: StoryboardShotMeta[];
-  /** 镜头之间的转场动态提示词（N 分镜 → N-1 条：运动轨迹/运镜衔接/场景过渡/主体延续）；
-   *  从下输出口（out-trans）喂下游 */
-  transitions?: string[];
+  /** 视频总时长（秒）。预设 15/30/60/120 或自定义（4-600，缺省 30），时间轴按它铺 */
+  videoDurationSec?: number;
+  /** 每个时间段约几秒（2-15，缺省 5；决定时间轴颗粒度） */
+  secPerShot?: number;
+  /** 额外要求（可选：风格/节奏/镜头偏好等一句话，注入系统提示词） */
+  extraNote?: string;
+  /** 生成的分镜脚本（【定调】段 + 每个「第X-Y秒」时间段各占一段；节点唯一输出，整份喂下游） */
+  resultText?: string;
+  status: RunStatus;
+  logs?: string[];
+  error?: string | null;
+}
+
+// ───────────────────────── 角色卡节点（character-card，2026-07-12）─────────────────────────
+// 人物照片 + 简单描述 → ① 视觉模型详细分析外貌（五官/发色发型/衣着/妆容/配饰/配色，越细越好）
+// → ② 组装成一张完整「角色设定卡」（三视图/表情九宫格/服装拆解/色板…）的生图提示词 → 喂下游生图出角色卡。
+// 提示词纯函数在 src/lib/characterCardPrompt.ts。复用 api:lab:vision-analyze + api:chat:optimize-prompt，零新 IPC。
+
+/** 角色卡版面风格（选项与提示词模板见 src/lib/characterCardPrompt.ts 的 CARD_STYLES）。 */
+export type CharacterCardStyle = 'magazine' | 'journal' | 'photoset' | 'minimal';
+
+/** 角色卡输出类型（2026-07-12 导出扩展）：card=完整设定卡；turnaround=三视图；face=面部特写；
+ *  expressions=表情九宫格；body=身材比例；pose=动作姿势。每种各有独立版面提示词模板（characterCardPrompt.ts）。 */
+export type CharacterSheetType = 'card' | 'turnaround' | 'face' | 'expressions' | 'body' | 'pose';
+
+/** 角色主体类型：person=人物；animal=动物（宠物/生物角色——分析与版面提示词按物种适配）。 */
+export type CharacterSubjectType = 'person' | 'animal';
+
+export interface CharacterCardNodeData extends NodeMeta {
+  /** 视觉/对话模型显示名（分析照片 + 组卡两步共用，需支持识图） */
+  modelId: string;
+  /** 简单描述（与上游文本合并作为角色补充素材） */
+  desc: string;
+  /** 输出类型（缺省 'card' 完整设定卡；三视图/面部特写/表情九宫格/身材比例/动作姿势 各自成图） */
+  sheetType?: CharacterSheetType;
+  /** 主体类型（缺省 'person' 人物；'animal' 动物按物种适配分析与版面） */
+  subjectType?: CharacterSubjectType;
+  /** 角色卡版面风格（仅 sheetType='card' 时生效，缺省 'magazine' 时尚杂志） */
+  cardStyle?: CharacterCardStyle;
+  /** 手动上传的人物照片（上游图片优先；本字段兜底） */
+  inputImage?: { url: string; name?: string };
+  /** 第 ① 步产物：外貌分析文本 = 角色描述提示词，从**下输出口（out-desc）**喂下游（分镜/生图作角色设定） */
+  analysisText?: string;
+  /** 第 ② 步产物：角色卡生图提示词，从**上输出口（out）**喂下游生图出设定卡 */
+  resultText?: string;
   status: RunStatus;
   logs?: string[];
   error?: string | null;
@@ -1445,10 +1497,10 @@ export type SmartNodeData =
   | VideoNodeData
   | ImageReverseNodeData
   | VideoSourceNodeData
-  | VideoReverseNodeData
   | FrameInterpNodeData
   | VideoClipNodeData
   | StoryboardNodeData
+  | CharacterCardNodeData
   | PromptMallNodeData
   | LoopNodeData
   | FolderInputNodeData
@@ -1508,7 +1560,7 @@ export interface SmartCanvasConnectionDTO {
   id: string;
   source: string;
   target: string;
-  /** 多输出口节点（如智能分镜 out / out-trans）的源输出口 id；缺省 = 默认口 'out' */
+  /** 多输出口节点的源输出口 id；缺省 = 默认口 'out'（旧智能分镜的 out-trans 口已删，载入时迁移回 out） */
   sourceHandle?: string;
 }
 

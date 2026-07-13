@@ -10,7 +10,7 @@ import type { SmartNodeKind } from '@shared/smartCanvas';
 import {
   WORK_TYPE_LABELS,
   LLM_OP_LABELS,
-  REVERSE_TYPE_LABELS,
+  REVERSE_OUTPUT_LABELS,
   VIDEO_MODE_LABELS,
   LIGHT_OCCLUSION_LABELS,
   LIGHT_EFFECT_LABELS,
@@ -82,7 +82,7 @@ function clamp(n: number, lo: number, hi: number): number {
 
 const WORK_TYPE_KEYS = new Set(Object.keys(WORK_TYPE_LABELS));
 const LLM_OP_KEYS = new Set(Object.keys(LLM_OP_LABELS));
-const REVERSE_KEYS = new Set(Object.keys(REVERSE_TYPE_LABELS));
+const REVERSE_OUTPUT_KEYS = new Set(Object.keys(REVERSE_OUTPUT_LABELS));
 const VIDEO_MODE_KEYS = new Set(Object.keys(VIDEO_MODE_LABELS));
 const RATIO_ASPECT_SET = new Set(RATIO_ASPECTS);
 const SIZE_TIER_SET = new Set(SIZE_TIERS);
@@ -92,6 +92,9 @@ const RATIO_EMIT = new Set(['both', 'aspect', 'resolution']);
 const PALETTE_MODES = new Set(['extract', 'scheme']);
 const PALETTE_SCHEMES = new Set(Object.keys(PALETTE_SCHEME_LABELS));
 const CAM_MODES = new Set(['photo', 'video']);
+const CARD_STYLE_KEYS = new Set(['magazine', 'journal', 'photoset', 'minimal']);
+const SHEET_TYPE_KEYS = new Set(['card', 'turnaround', 'face', 'expressions', 'body', 'pose']);
+const SUBJECT_TYPE_KEYS = new Set(['person', 'animal']);
 const LOOP_SOURCES = new Set(['images', 'prompts', 'folder', 'sizes', 'range', 'count']);
 const LIGHT_OCC = new Set(Object.keys(LIGHT_OCCLUSION_LABELS));
 const LIGHT_EFF = new Set(Object.keys(LIGHT_EFFECT_LABELS));
@@ -122,7 +125,7 @@ export function sanitizeNodeParams(kind: SmartNodeKind, raw: unknown): Record<st
   }
 
   // 通用：text / prompt / 各类字符串字段统一成字符串
-  for (const k of ['text', 'prompt', 'negativePrompt', 'instruction', 'title', 'desc', 'styleType', 'promptLines', 'prefix', 'baseHex']) {
+  for (const k of ['text', 'prompt', 'negativePrompt', 'instruction', 'title', 'desc', 'input', 'styleType', 'promptLines', 'prefix', 'baseHex']) {
     if (k in out) {
       const s = asString(out[k]);
       if (s === undefined) delete out[k];
@@ -182,9 +185,9 @@ export function sanitizeNodeParams(kind: SmartNodeKind, raw: unknown): Record<st
       if ('op' in out && !LLM_OP_KEYS.has(String(out.op))) delete out.op;
       break;
     }
-    case 'image-reverse':
-    case 'video-reverse': {
-      if ('reverseType' in out && !REVERSE_KEYS.has(String(out.reverseType))) delete out.reverseType;
+    case 'image-reverse': {
+      // 合并后的「反推」节点：LLM 设 outputMode（四档枚举）+ frameCount（视频抽帧数）
+      if ('outputMode' in out && !REVERSE_OUTPUT_KEYS.has(String(out.outputMode))) delete out.outputMode;
       if ('frameCount' in out) {
         const n = asInt(out.frameCount);
         if (n === undefined || n <= 0) delete out.frameCount;
@@ -263,11 +266,22 @@ export function sanitizeNodeParams(kind: SmartNodeKind, raw: unknown): Record<st
       break;
     }
     case 'storyboard': {
-      if ('shotCount' in out) {
-        const n = asInt(out.shotCount);
-        if (n === undefined) delete out.shotCount;
-        else out.shotCount = clamp(n, 2, 20);
+      if ('videoDurationSec' in out) {
+        const n = asInt(out.videoDurationSec);
+        if (n === undefined) delete out.videoDurationSec;
+        else out.videoDurationSec = clamp(n, 4, 600);
       }
+      if ('secPerShot' in out) {
+        const n = asInt(out.secPerShot);
+        if (n === undefined) delete out.secPerShot;
+        else out.secPerShot = clamp(n, 2, 15);
+      }
+      break;
+    }
+    case 'character-card': {
+      if ('cardStyle' in out && !CARD_STYLE_KEYS.has(String(out.cardStyle))) delete out.cardStyle;
+      if ('sheetType' in out && !SHEET_TYPE_KEYS.has(String(out.sheetType))) delete out.sheetType;
+      if ('subjectType' in out && !SUBJECT_TYPE_KEYS.has(String(out.subjectType))) delete out.subjectType;
       break;
     }
     case 'loop': {

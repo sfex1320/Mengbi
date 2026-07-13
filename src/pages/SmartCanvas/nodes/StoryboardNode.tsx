@@ -1,34 +1,34 @@
-import { useEffect, useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import { NodeResizer, type NodeProps } from '@xyflow/react';
 import { useSmartCanvasStore, useSmartTextStore } from '@/store/smartCanvasStore';
 import { useSettingsStore } from '@/store/settingsStore';
 import { computeUpstream, runStoryboardNode } from '@/lib/smartCanvasRunner';
-import { useStoryboardStudioStore } from '../StoryboardStudio';
+import { listMappedModels } from '@/lib/modelMapping';
+import { resolveTimelinePlan, DURATION_PRESETS, DURATION_MIN, DURATION_MAX, SEC_PER_SHOT_MIN, SEC_PER_SHOT_MAX } from '@/lib/storyboardPrompt';
 import type { StoryboardNodeData, SmartNodeData } from '@shared/smartCanvas';
 import { NodeShell } from './NodeShell';
-import { StepperInput } from '../nodePanel/consoleControls';
-import { autoGrowNode } from '../nodeArea';
+import { StepperInput, ClampNumberInput, ModelDropdownButton, type ModelGridItem } from '../nodePanel/consoleControls';
+import { CopyButton, ToPromptButton, copyText, areaMenu, makePromptNodeFrom, useFitNodeToContent } from '../nodeArea';
 
 const STATUS_TEXT: Record<string, string> = { idle: '待运行', running: '生成中…', success: '已完成', error: '失败' };
 
-/** 当前方案的对话(text)模型显示名。 */
-function useTextModels(): string[] {
+/** 当前方案的对话(text)模型（带中转站前缀区分同名模型）。 */
+function useTextModelItems(): ModelGridItem[] {
   const configs = useSettingsStore((s) => s.configs);
-  return useMemo(() => {
-    const out: string[] = [];
-    const seen = new Set<string>();
-    for (const c of configs) {
-      if (c.type !== 'text') continue;
-      for (const n of Object.keys(c.model_mapping ?? {})) if (!seen.has(n)) { seen.add(n); out.push(n); }
-    }
-    return out;
-  }, [configs]);
+  const activePlanId = useSettingsStore((s) => s.activePlanId);
+  return useMemo(
+    () =>
+      listMappedModels(configs, activePlanId, 'text')
+        .filter((m) => m.usable)
+        .map((m) => ({ name: m.name, provider: m.providerName, ref: m.ref })),
+    [configs, activePlanId]
+  );
 }
 
 /**
- * 智能分镜节点（精简卡片）：模型 + 数量 + 素材 + 运行 + 摘要。
- * 固定约束 / 故事 / 分镜列表 / 转场列表 等全部在「分镜工作台」弹窗里（useStoryboardStudioStore）。
- * 双输出口不变：右上 out=分镜提示词、右下 out-trans=镜头转场提示词，按口喂下游。
+ * 智能分镜节点（2026-07-12 重做）：上游传入 角色描述 + 简短故事（文本）→ 一次 LLM 调用
+ * → **一整段连续**的视频分镜提示词（内嵌「第X-Y秒：…」时间轴，写清 场景/人物动作/物体变化/镜头运动，
+ * 不分段不分节）→ 单输出口直接喂下游视频节点。
  */
 export function StoryboardNode({ id, data }: NodeProps): JSX.Element {
   const update = useSmartCanvasStore((s) => s.updateNodeData);
@@ -36,39 +36,27 @@ export function StoryboardNode({ id, data }: NodeProps): JSX.Element {
   const nodes = useSmartCanvasStore((s) => s.nodes);
   const edges = useSmartCanvasStore((s) => s.edges);
   const openText = useSmartTextStore((s) => s.open);
-  const openStudio = useStoryboardStudioStore((s) => s.open);
   const d = data as unknown as StoryboardNodeData;
-  const models = useTextModels();
+  const models = useTextModelItems();
   const setF = (p: Partial<StoryboardNodeData>): void => update(id, p as Partial<SmartNodeData>);
   const up = useMemo(() => computeUpstream(nodes, edges, id), [nodes, edges, id]);
   const running = d.status === 'running';
-  const shots = d.shots ?? [];
-  const transitions = d.transitions ?? [];
   const upFed = up.prompts.length > 0;
-  const upImgs = up.images.length;
+  const plan = resolveTimelinePlan(d);
+  const result = (d.resultText ?? '').trim();
 
-  useEffect(() => {
-    let need = 270;
-    if (upImgs) need += 28;
-    if (d.story?.trim() || shots.length) need += 30;
-    autoGrowNode(id, need, 480);
-  }, [id, d.story, shots.length, upImgs]);
-
-  const summary = [d.story?.trim() ? '故事 ✓' : null, shots.length ? `${shots.length} 分镜` : null, transitions.length ? `${transitions.length} 转场` : null]
-    .filter(Boolean)
-    .join(' · ');
+  // 节点高度贴合真实内容（fitwrap 实测，选项变化/结果/报错都自动跟随；手动 > 自适应）
+  const fitRef = useRef<HTMLDivElement>(null);
+  useFitNodeToContent(id, fitRef, 52, 720);
 
   return (
     <>
-      <NodeResizer isVisible minWidth={250} minHeight={230} />
+      <NodeResizer isVisible minWidth={250} minHeight={220} />
       <NodeShell
         title="智能分镜"
         accent="is-storyboard"
         inputs
-        outputs={[
-          { id: 'out', title: '分镜提示词（上口）：每条分镜按序喂下游' },
-          { id: 'out-trans', title: '镜头转场提示词（下口）：分镜之间的运动轨迹/运镜/场景过渡' }
-        ]}
+        outputs
         fill
         onDelete={() => remove(id)}
         headRight={
@@ -78,55 +66,105 @@ export function StoryboardNode({ id, data }: NodeProps): JSX.Element {
           </span>
         }
       >
+        <div className="mb-sc-fitwrap nowheel" ref={fitRef}>
         <div className="mb-sc-revctl nodrag">
-          <select className="mb-select" value={d.modelId} onChange={(e) => setF({ modelId: e.target.value })}>
-            <option value="">（选对话模型）</option>
-            {models.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </select>
+          <ModelDropdownButton
+            value={d.modelId}
+            options={models}
+            placeholder="（选对话模型）"
+            emptyHint="当前方案没有对话模型，去设置页配置"
+            onChange={(v) => setF({ modelId: v })}
+          />
+
+          {/* 视频总时长：预设 chips + 自定义秒数（时间轴按它铺） */}
           <div className="mb-sc-sb-row">
-            <span className="mb-sc-sb-lbl">分镜数量</span>
-            <StepperInput value={Math.max(2, Math.min(20, d.shotCount || 4))} min={2} max={20} onChange={(v) => setF({ shotCount: v })} />
+            <span className="mb-sc-sb-lbl">总时长</span>
+            <div className="mb-sc-sb-chips">
+              {DURATION_PRESETS.map((p) => (
+                <button
+                  key={p.value}
+                  className={`mb-sc-sb-chip ${plan.durationSec === p.value ? 'is-on' : ''}`}
+                  title={`视频总时长 ${p.value} 秒`}
+                  onClick={() => setF({ videoDurationSec: p.value })}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+            <ClampNumberInput
+              className="mb-input mb-sc-sb-num"
+              value={plan.durationSec}
+              min={DURATION_MIN}
+              max={DURATION_MAX}
+              onCommit={(v) => setF({ videoDurationSec: v })}
+            />
+            <span className="mb-sc-sb-lbl">秒</span>
           </div>
-          {upImgs > 0 && <div className="mb-sc-fromup is-fed">参考图 {upImgs} 张（运行时自动分析并入素材）</div>}
+
+          {/* 时间轴颗粒度：每段约 N 秒 → 估算段数 */}
+          <div className="mb-sc-sb-row">
+            <span className="mb-sc-sb-lbl">每段约</span>
+            <StepperInput value={plan.secPerShot} min={SEC_PER_SHOT_MIN} max={SEC_PER_SHOT_MAX} onChange={(v) => setF({ secPerShot: v })} />
+            <span className="mb-sc-sb-lbl">秒 · ≈ {plan.count} 段</span>
+          </div>
+
+          <input
+            className="mb-input"
+            value={d.extraNote ?? ''}
+            placeholder="额外要求（可选：风格 / 节奏 / 镜头偏好）"
+            onChange={(e) => setF({ extraNote: e.target.value })}
+          />
+
           {upFed ? (
-            <div className="mb-sc-fromup is-fed">故事素材由上游输入（{up.prompts.length} 条，运行时自动合并）</div>
+            <div
+              className="mb-sc-fromup is-fed"
+              style={{ cursor: 'pointer' }}
+              title="点击查看上游输入全文"
+              onClick={() => openText(up.prompts.join('\n\n'), '素材（由上游输入）')}
+            >
+              素材由上游输入（{up.prompts.length} 条：角色描述 / 简短故事）· 点击查看
+            </div>
           ) : (
             <textarea
               className="mb-sc-input mb-sc-sb-ta"
               rows={3}
               value={d.input}
-              placeholder={upImgs ? '可补充文字素材（与参考图分析合并）' : '输入一篇故事或一个短句（先扩成完整故事，再拆分镜+转场）'}
+              placeholder="粘贴 角色描述 + 简短故事（推荐连上游 提示词 / LLM / 角色反推 节点传入）"
               onChange={(e) => setF({ input: e.target.value })}
             />
           )}
-          <button className="mb-btn mb-btn-sm mb-btn-primary mb-sc-studio-openbtn" title="固定约束 / 完整故事 / 分镜与转场列表 都在工作台里" onClick={() => openStudio(id)}>
-            🎛 打开分镜工作台
-          </button>
         </div>
 
         <div className="mb-sc-sb-runrow nodrag">
-          <button className="mb-btn mb-btn-sm" disabled={running || !d.modelId} onClick={() => void runStoryboardNode(id)}>
-            {running ? '生成中…' : shots.length ? '重新生成分镜' : '生成分镜'}
+          <button className="mb-btn mb-btn-sm mb-btn-primary" disabled={running || !d.modelId} onClick={() => void runStoryboardNode(id)}>
+            {running ? '生成中…' : result ? '重新生成分镜' : '生成分镜'}
           </button>
         </div>
 
         {d.error && <div className="mb-sc-result-err nodrag">{d.error}</div>}
         {!d.error && running && d.logs?.length ? <div className="mb-sc-work-dur nodrag">{d.logs[d.logs.length - 1]}</div> : null}
 
-        {summary && (
-          <div
-            className="mb-sc-note nodrag"
-            style={{ cursor: 'pointer' }}
-            title="点击查看完整故事；分镜/转场逐条在工作台里"
-            onClick={() => (d.story?.trim() ? openText(d.story, '完整故事') : openStudio(id))}
-          >
-            {summary} · 右上口=分镜 / 右下口=转场 · 详情进工作台
+        {result && (
+          <div className="mb-sc-arearel">
+            <CopyButton onClick={() => copyText(result)} />
+            <pre
+              className="mb-sc-llm-out nodrag nowheel"
+              title="整段分镜脚本（内嵌时间轴）· 右键更多"
+              onContextMenu={(e) =>
+                areaMenu(e, [
+                  { label: '复制', onClick: () => copyText(result) },
+                  { label: '放大查看', onClick: () => openText(result, '分镜脚本') },
+                  { label: '用输出建提示词节点', onClick: () => makePromptNodeFrom(id, result) }
+                ])
+              }
+            >
+              {result}
+            </pre>
+            <ToPromptButton onClick={() => makePromptNodeFrom(id, result)} />
           </div>
         )}
+        {result && <div className="mb-sc-note nodrag">【定调】+ 按时间段逐段分镜 · 整份连视频节点直接生成</div>}
+        </div>
       </NodeShell>
     </>
   );

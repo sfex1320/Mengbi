@@ -146,11 +146,12 @@ export const VideoNodeIcon = (p: P): JSX.Element => (
   </I>
 );
 
-/** 图像反推：图 → 文本（描述/标签/风格）。 */
+/** 反推（图/视频合一）：图（山形）+ 播放三角复合 → 文本（生图提示词/描述/标签/风格）。 */
 export const ImageReverseNodeIcon = (p: P): JSX.Element => (
   <I {...p}>
     <rect x="3" y="6" width="8" height="8" rx="1.5" />
     <path d="M4.5 13l2-2 1.8 1.5" />
+    <path d="M7.6 7.6l2.1 1.3-2.1 1.3z" fill="currentColor" stroke="none" />
     <path d="M14 9h7M14 12.5h7M14 16h5" />
   </I>
 );
@@ -161,15 +162,6 @@ export const VideoSourceNodeIcon = (p: P): JSX.Element => (
     <rect x="2.5" y="7" width="12.5" height="11" rx="2" />
     <path d="M6.5 10.5l3.2 2-3.2 2z" fill="currentColor" stroke="none" />
     <path d="M19 13V4M15.5 7.5L19 4l3.5 3.5" />
-  </I>
-);
-
-/** 视频反推：视频 → 文本。 */
-export const VideoReverseNodeIcon = (p: P): JSX.Element => (
-  <I {...p}>
-    <rect x="3" y="6" width="8" height="8" rx="1.5" />
-    <path d="M5.6 8.6l2.2 1.4-2.2 1.4z" fill="currentColor" stroke="none" />
-    <path d="M14 9h7M14 12.5h7M14 16h5" />
   </I>
 );
 
@@ -194,12 +186,23 @@ export const VideoClipNodeIcon = (p: P): JSX.Element => (
   </I>
 );
 
-/** 智能分镜：胶片格 + 序号点（故事 → N 个按序分镜）。 */
+/** 智能分镜：胶片格 + 序号点（故事 → 整段时间轴分镜脚本）。 */
 export const StoryboardNodeIcon = (p: P): JSX.Element => (
   <I {...p}>
     <rect x="2.5" y="6" width="19" height="12" rx="2" />
     <path d="M9 6v12M15 6v12" />
     <path d="M5 9h1.5M5 15h1.5M11 9h1.5M11 15h1.5M17 9h1.5M17 15h1.5" />
+  </I>
+);
+
+/** 角色卡：卡片框 + 人像 + 信息行（人物照片 → 角色设定卡提示词）。 */
+export const CharacterCardNodeIcon = (p: P): JSX.Element => (
+  <I {...p}>
+    <rect x="3" y="3.5" width="18" height="17" rx="2" />
+    <circle cx="8.5" cy="9.5" r="2.2" />
+    <path d="M5.5 14.5c.6-1.8 1.7-2.7 3-2.7s2.4.9 3 2.7" />
+    <path d="M14.5 8h4M14.5 11h4M14.5 14h2.5" />
+    <path d="M6 17.5h12" />
   </I>
 );
 
@@ -293,10 +296,10 @@ export const NODE_ICONS: Record<SmartNodeKind, (p: P) => JSX.Element> = {
   video: VideoNodeIcon,
   'image-reverse': ImageReverseNodeIcon,
   'video-source': VideoSourceNodeIcon,
-  'video-reverse': VideoReverseNodeIcon,
   'frame-interp': FrameInterpNodeIcon,
   'video-clip': VideoClipNodeIcon,
   storyboard: StoryboardNodeIcon,
+  'character-card': CharacterCardNodeIcon,
   'prompt-mall': PromptMallNodeIcon,
   loop: LoopNodeIcon,
   upscale: UpscaleNodeIcon,

@@ -58,6 +58,10 @@ export interface ElectronAPI {
   llm: LocalLlmAPI;
   /** 画板 Photoshop 联动桥（api:ps:*） */
   ps: PsAPI;
+  /** Obsidian 资产库桥（api:vault:*）：导出/检索/读取本地 vault 的 .md 笔记 */
+  vault: VaultAPI;
+  /** MCP 服务器控制 + 画布桥回话（api:mcp:*） */
+  mcp: McpAPI;
   /** ComfyUI 通用工作流编排器（api:comfyui:*） */
   comfyui: ComfyuiAPI;
   /** 主进程 → 渲染进程 的事件订阅 */
@@ -179,6 +183,74 @@ export interface PsAPI {
 export interface PsFileChangedPayload {
   tempPath: string;
   mtimeMs: number;
+}
+
+/** Obsidian 库检索命中的一条笔记 */
+export interface VaultNoteHit {
+  /** 库内相对路径 */
+  path: string;
+  /** 文件名（不含 .md） */
+  title: string;
+  excerpt: string;
+  mtimeMs: number;
+}
+
+/** Obsidian 库单篇笔记内容 */
+export interface VaultNoteContent {
+  path: string;
+  title: string;
+  /** 原始全文（含 frontmatter） */
+  raw: string;
+  /** 剥掉 frontmatter 的正文 */
+  body: string;
+}
+
+export interface VaultAPI {
+  /** 库路径与可达性 */
+  status(): Promise<Result<{ vaultPath: string; exists: boolean }>>;
+  /** 设置库路径（空串 = 清除；不存在的目录直接报错） */
+  setConfig(input: { vaultPath: string }): Promise<Result<{ vaultPath: string; exists: boolean }>>;
+  /** 库内文件夹列表（导出选分类用，相对路径） */
+  folders(): Promise<Result<{ folders: string[] }>>;
+  /** 检索（query 空 = 最近修改） */
+  search(input: { query: string; limit?: number }): Promise<Result<{ notes: VaultNoteHit[] }>>;
+  /** 读单篇笔记 */
+  read(input: { path: string }): Promise<Result<VaultNoteContent>>;
+  /** 导出笔记（全库同名查重：有 → 追加补充小节；无 → 新建） */
+  exportNote(input: {
+    title: string;
+    content: string;
+    folder?: string;
+    tags?: string[];
+    description?: string;
+  }): Promise<Result<{ path: string; action: 'created' | 'appended' }>>;
+  /** 在 Obsidian 中打开（obsidian:// URI，失败回退系统默认程序） */
+  openNote(input: { path: string }): Promise<Result<true>>;
+}
+
+/** MCP 服务器状态 */
+export interface McpStatus {
+  enabled: boolean;
+  running: boolean;
+  port: number;
+  hasToken: boolean;
+  toolCount: number;
+  urls: { streamableHttp: string; sse: string };
+}
+
+/** 'mcp:tool-request' push payload —— 主进程把画布类工具调用推给渲染端执行 */
+export interface McpToolRequestPayload {
+  id: string;
+  tool: string;
+  args: Record<string, unknown>;
+}
+
+export interface McpAPI {
+  status(): Promise<Result<McpStatus>>;
+  /** 保存配置并对齐运行态（开→启动；关→停止；启动失败自动回滚为关闭） */
+  setConfig(input: { enabled?: boolean; port?: number; token?: string }): Promise<Result<McpStatus>>;
+  /** 画布桥回话（响应 mcp:tool-request） */
+  respond(input: { id: string; result?: unknown; error?: string }): Promise<Result<true>>;
 }
 
 export interface LocalLlmStatus {
@@ -307,7 +379,8 @@ export type PushChannel =
   | 'video:done'
   | 'interp:progress'
   | 'interp:install-progress'
-  | 'gallery:changed';
+  | 'gallery:changed'
+  | 'mcp:tool-request';
 
 /**
  * chat:sources 推送 payload —— 代搜（DDG/Tavily/SearXNG）路径下，
@@ -522,6 +595,8 @@ export interface ChatSendEphemeralInput {
   messages: Array<{ role: 'user' | 'assistant'; content: string }>;
   attachedImages?: string[];
   forceWebSearch?: boolean;
+  /** 可选 system 注入（additive，2026-07-11）：智能画布 LLM 节点把「输出用途/本次意图」带进聊天；缺省不注入（旧行为） */
+  systemPrompt?: string;
 }
 
 // ──────────────────────────────────────────────────────────
@@ -753,8 +828,10 @@ export interface GalleryAPI {
   batchDeleteWithFiles(input: { ids: number[] }): Promise<
     Result<{ deletedIds: number[]; fileDeleted: number; fileMissing: number }>
   >;
-  /** 列出所有分组（文件夹）+ 计数 + 封面（首页文件夹卡用） */
-  listGroups(): Promise<Result<Array<{ name: string; count: number; cover: string | null }>>>;
+  /** 列出所有分组（文件夹）+ 计数 + 封面（首页文件夹卡用）；已按创建时间倒序（最新建的在前） */
+  listGroups(): Promise<
+    Result<Array<{ name: string; count: number; cover: string | null; createdAt: string }>>
+  >;
   /** 把若干图片归入分组 group（null=移出回首页）；物理同步移动源文件到 groups/<名>/ */
   setGroup(input: { imageIds: number[]; group: string | null }): Promise<Result<{ moved: number; failed: number }>>;
 }
@@ -1396,6 +1473,8 @@ export interface DragAPI {
   startFromDataUri(dataUri: string, suggestedName?: string): void;
   /** 用现成的文件路径启动 OS 拖拽 */
   startFromPath(filePath: string): void;
+  /** 多文件 OS 拖拽（资产库批量选中拖出）：走 startDrag 的 files 数组，一次带走整批 */
+  startFromPaths(filePaths: string[]): void;
 }
 
 // ──────────────────────────────────────────────────────────

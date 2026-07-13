@@ -7,6 +7,7 @@
  */
 
 import { openContextMenu, type ContextMenuEntry } from '@/components/ContextMenu';
+import { promptDialog } from '@/components/ConfirmDialog';
 import { useCanvasStore } from '@/store/canvasStore';
 import { useInpaintMaskStore } from '@/store/inpaintMaskStore';
 import { useImageParamsStore } from '@/store/imageParamsStore';
@@ -144,10 +145,10 @@ export function buildLayerMenuItems(layer: Layer, handlers: CanvasMenuHandlers):
     },
     {
       label: '重命名…',
-      onClick: () => {
-        const name = window.prompt('图层名称', layer.name);
-        if (name && name.trim()) store.updateLayer(layer.id, { name: name.trim() });
-      }
+      onClick: () =>
+        void promptDialog({ message: '图层名称', initial: layer.name }).then((name) => {
+          if (name && name.trim()) store.updateLayer(layer.id, { name: name.trim() });
+        })
     },
     {
       label: layer.visible ? '隐藏图层' : '显示图层',

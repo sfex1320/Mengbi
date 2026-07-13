@@ -53,3 +53,10 @@
   justify-content: flex-end;
   gap: 8px;
 }
+
+/* 输入弹窗（promptDialog）的输入框：满宽、与确认弹窗同节奏 */
+.mb-confirm-input {
+  margin-top: 12px;
+  width: 100%;
+  box-sizing: border-box;
+}

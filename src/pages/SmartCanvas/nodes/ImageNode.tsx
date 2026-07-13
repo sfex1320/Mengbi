@@ -1,15 +1,15 @@
-import { useEffect, useRef } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { NodeResizer, type NodeProps } from '@xyflow/react';
 import { useSmartCanvasStore, useSmartPreviewStore } from '@/store/smartCanvasStore';
 import { localPathToImageUrl } from '@/lib/imageUrl';
 import { filesToImageSrcs } from '@/lib/mediaFile';
-import type { ImageNodeData, SmartNodeData } from '@shared/smartCanvas';
+import { activeImageList, cellOrdinals, toggleSkipIdx, moveImageItem, insertImagesAt, removeImageAt } from '@/lib/imageListOrder';
+import type { ImageNodeData, SmartNodeData, WorkNodeData } from '@shared/smartCanvas';
 import { NodeShell } from './NodeShell';
 import { thumbPair } from '../MeasuredThumb';
 import { ImagePlusIcon } from '../icons';
-import { CopyButton, NodeHint, areaMenu, copyImage, imageToGallery, imageSaveAs, autoGrowNode, getNodeWidth } from '../nodeArea';
-import { runImageListNode, pauseLoop, resumeLoop, stopLoop } from '@/lib/smartCanvasRunner';
-import { ClampNumberInput } from '../nodePanel/consoleControls';
+import { CopyButton, areaMenu, copyImage, imageToGallery, imageSaveAs, useFitNodeToContent } from '../nodeArea';
+import { computeUpstream } from '@/lib/smartCanvasRunner';
 import { useGalleryPickerStore } from '../GalleryPickerDialog';
 import { useImageEditorStore } from '../ImageEditorModal';
 
@@ -29,25 +29,58 @@ function loadImg(src: string): Promise<HTMLImageElement> {
   });
 }
 
-const RUN_LABELS: Record<string, string> = { idle: '待运行', running: '运行中…', paused: '已暂停', success: '已完成', error: '失败' };
-
 export function ImageNode({ id, data }: NodeProps): JSX.Element {
   const update = useSmartCanvasStore((s) => s.updateNodeData);
   const remove = useSmartCanvasStore((s) => s.removeNode);
+  const nodesAll = useSmartCanvasStore((s) => s.nodes);
+  const edgesAll = useSmartCanvasStore((s) => s.edges);
   const openPreview = useSmartPreviewStore((s) => s.open);
   const pickFromGallery = useGalleryPickerStore((s) => s.open);
   const openEditor = useImageEditorStore((s) => s.open);
   const fileRef = useRef<HTMLInputElement>(null);
   const listFileRef = useRef<HTMLInputElement>(null);
+  // 九宫格内部拖拽重排：记录拖起的格子下标；overIdx 高亮当前悬停靶格
+  const dragFrom = useRef<number | null>(null);
+  const [overIdx, setOverIdx] = useState<number | null>(null);
   const d = data as unknown as ImageNodeData;
   const url = imgUrl(d.src); // 原图 URL（放大预览 / 复制 / 另存用）
   const cover = d.src ? thumbPair(d.src).thumb : null;
   const overlayUrl = imgUrl(d.maskOverlaySrc); // 红色半透明蒙版 / 扩边标注层
   const srcs = d.srcs ?? [];
-  const running = d.runStatus === 'running';
-  const paused = d.runStatus === 'paused';
-  const active = running || paused;
+  // 每格角标（1 起；跳过=null 不占号）——与传给下游的 activeImageList 严格同序
+  const ordinals = cellOrdinals(srcs, d.disabledIdx);
   const setF = (p: Partial<ImageNodeData>): void => update(id, p as Partial<SmartNodeData>);
+
+  /**
+   * 单图模式的「下游序号」角标：这张图在第一个直连生图下游的 computeUpstream 图序里排第几
+   * （= 提交给中转站的 refs 序 = 用户提示词里的「图N」）。一图连多个生图下游时角标显示第一个，
+   * title 里列全部。纯派生（nodes+edges 现算），不新增持久化字段。
+   */
+  const downOrder = useMemo(() => {
+    if (d.listMode || !d.src) return null;
+    const works: Array<{ wid: string; wname: string }> = [];
+    for (const e of edgesAll) {
+      if (e.source !== id) continue;
+      const t = nodesAll.find((n) => n.id === e.target);
+      if (t?.type === 'work' && !works.some((w) => w.wid === t.id)) {
+        works.push({ wid: t.id, wname: (t.data as unknown as WorkNodeData).name?.trim() || '生图' });
+      }
+    }
+    if (!works.length) return null;
+    const entries = works
+      .map((w) => {
+        const up = computeUpstream(nodesAll, edgesAll, w.wid);
+        // imageFroms 与 images 一一并联；本节点单图模式只贡献 1 张 → 首个命中下标即序号
+        const idx = up.imageFroms ? up.imageFroms.indexOf(id) : -1;
+        return { ...w, idx };
+      })
+      .filter((x) => x.idx >= 0);
+    if (!entries.length) return null;
+    return {
+      first: entries[0].idx + 1,
+      title: entries.map((x) => `${x.wname}：图${x.idx + 1}`).join('\n')
+    };
+  }, [nodesAll, edgesAll, id, d.listMode, d.src]);
 
   /** 「重置遮罩」：清掉遮罩并把图片还原到最初状态/尺寸。
    *  优先用 originalSrc；旧节点没存 originalSrc 但有扩边记录 → 把扩出的透明边裁回去即可还原原图原尺寸；
@@ -81,14 +114,11 @@ export function ImageNode({ id, data }: NodeProps): JSX.Element {
     setF({ inpaintMaskSrc: undefined, maskOverlaySrc: undefined, outpaintPad: undefined });
   }
 
-  // 列表模式：按缩略图行数自适应高度（只增不减）
-  useEffect(() => {
-    if (!d.listMode) return;
-    const w = getNodeWidth(id);
-    const perRow = Math.max(2, Math.floor((w - 20) / 72));
-    const rows = Math.ceil(srcs.length / perRow);
-    autoGrowNode(id, 168 + rows * 74, 900);
-  }, [id, d.listMode, srcs.length]);
+  // 节点高度贴合真实内容（fitwrap 实测，两种模式统一）：
+  // 单图 = 图片区按「节点宽 × naturalW/H 纵横比」出自然高度；九宫格 = 格数增删/单图↔列表切换都实测跟随。
+  // 旧网格算式的容器内边距常数与真实 DOM 有 ~30px 偏差（且完全不覆盖单图模式），故改实测。手动 > 自适应。
+  const fitRef = useRef<HTMLDivElement>(null);
+  useFitNodeToContent(id, fitRef, 52, 1600);
 
   function loadSingle(file: File | null | undefined): void {
     if (!file || !file.type.startsWith('image/')) return;
@@ -105,13 +135,15 @@ export function ImageNode({ id, data }: NodeProps): JSX.Element {
     r.readAsDataURL(file);
   }
 
-  async function addToList(files: File[]): Promise<void> {
+  /** 把文件放进列表：at 为格子下标（放进该位置、原图后移）；缺省/越界 = 追加到末尾。 */
+  async function addToList(files: File[], at?: number): Promise<void> {
     const added = await filesToImageSrcs(files);
     if (!added.length) return;
-    // 读最新 srcs（await 期间可能已变），追加
+    // 读最新 srcs/disabledIdx（await 读文件期间可能已变），经纯函数插入（禁用标记跟着顺延重映射）
     const cur = useSmartCanvasStore.getState().nodes.find((n) => n.id === id);
-    const curSrcs = ((cur?.data as unknown as ImageNodeData | undefined)?.srcs ?? []).slice();
-    setF({ srcs: [...curSrcs, ...added] });
+    const curD = cur?.data as unknown as ImageNodeData | undefined;
+    const patch = insertImagesAt(curD?.srcs ?? [], curD?.disabledIdx, at ?? -1, added);
+    setF({ srcs: patch.srcs, disabledIdx: patch.disabledIdx });
   }
 
   function toggleList(): void {
@@ -119,7 +151,8 @@ export function ImageNode({ id, data }: NodeProps): JSX.Element {
       const seed = d.src ? [d.src, ...srcs.filter((s) => s !== d.src)] : srcs;
       setF({ listMode: true, srcs: seed });
     } else {
-      setF({ listMode: false, src: srcs[0] });
+      // 回单图：取第一张「未跳过」的图作为单图（跳过标记只在列表模式有意义，顺手清掉）
+      setF({ listMode: false, src: activeImageList(srcs, d.disabledIdx)[0] ?? srcs[0], disabledIdx: undefined });
     }
   }
 
@@ -133,7 +166,7 @@ export function ImageNode({ id, data }: NodeProps): JSX.Element {
   const toggle = (
     <button
       className="mb-sc-mini-toggle nodrag"
-      title={d.listMode ? '切回单图' : '切到列表（多图，可设每批张数、逐批跑下游 / 接循环）'}
+      title={d.listMode ? '切回单图' : '切到列表（九宫格多图：角标序号 = 传给下游生图的图序；Alt+点击可跳过某格）'}
       onClick={toggleList}
     >
       {d.listMode ? '单图' : '列表'}
@@ -144,9 +177,12 @@ export function ImageNode({ id, data }: NodeProps): JSX.Element {
     <>
       <NodeResizer isVisible minWidth={120} minHeight={110} />
       <NodeShell title="图片" accent="is-image" outputs fill onDelete={() => remove(id)} headRight={toggle} label={d.label} labelColor={d.labelColor}>
+        <div className="mb-sc-fitwrap nowheel" ref={fitRef}>
         {!d.listMode ? (
           <div
             className="mb-sc-img-area nodrag"
+            // 单图区自然高度 = 宽 × 图片纵横比（fitwrap 实测的测量口径；无尺寸信息时退回 min-height 兜底）
+            style={url && d.naturalW && d.naturalH ? { aspectRatio: `${d.naturalW} / ${d.naturalH}` } : undefined}
             onPaste={(e) => {
               for (const it of Array.from(e.clipboardData?.items ?? [])) {
                 if (it.kind === 'file' && it.type.startsWith('image/')) {
@@ -213,6 +249,12 @@ export function ImageNode({ id, data }: NodeProps): JSX.Element {
                 </button>
                 <CopyButton onClick={() => void copyImage(url)} title="复制图片" />
                 {d.naturalW && d.naturalH ? <span className="mb-sc-img-dims">{d.naturalW}×{d.naturalH}</span> : null}
+                {downOrder ? (
+                  // 下游序号角标：这张图在直连生图节点里的图序（提示词写「图N」即指它）；连多个生图时 title 列全部
+                  <span className="mb-sc-img-ord nodrag" title={`在下游生图中的图序（提示词里的「图N」即此序号）：\n${downOrder.title}`}>
+                    图{downOrder.first}
+                  </span>
+                ) : null}
                 {d.inpaintMaskSrc ? (
                   <button
                     className="mb-sc-img-maskbadge nodrag"
@@ -273,94 +315,117 @@ export function ImageNode({ id, data }: NodeProps): JSX.Element {
             tabIndex={0}
           >
             <div className="mb-sc-imglist-head">
-              <span>图片列表 · {srcs.length} 张</span>
+              <span>
+                图片列表 · {srcs.length} 张
+                {d.disabledIdx?.length ? `（跳过 ${d.disabledIdx.length}，传下游 ${activeImageList(srcs, d.disabledIdx).length}）` : ''}
+              </span>
               {srcs.length > 0 && (
-                <button className="mb-sc-plist-clear" title="清空列表" onClick={() => setF({ srcs: [] })}>
+                <button className="mb-sc-plist-clear" title="清空列表" onClick={() => setF({ srcs: [], disabledIdx: undefined })}>
                   清空
                 </button>
               )}
             </div>
 
-            {srcs.length > 0 ? (
-              <div className="mb-sc-imglist-grid">
-                {srcs.map((s, i) => {
-                  const tp = thumbPair(s);
-                  const full = imgUrl(s) as string;
-                  return (
-                    <div key={`${s}-${i}`} className={`mb-sc-imglist-cell ${d.batchIndex === Math.floor(i / Math.max(1, d.batchSize || 1)) && active ? 'is-current' : ''}`}>
-                      <img
-                        src={tp.thumb}
-                        alt=""
-                        draggable={false}
-                        loading="lazy"
-                        decoding="async"
-                        onClick={() => previewList(i)}
-                        onError={(e) => {
-                          if (e.currentTarget.src !== full) e.currentTarget.src = full;
-                        }}
-                        title="点击放大"
-                      />
-                      <button className="mb-sc-imglist-x" title="移除" onClick={() => setF({ srcs: srcs.filter((_, j) => j !== i) })}>
-                        ✕
-                      </button>
-                      <span className="mb-sc-imglist-i">{i + 1}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <button className="mb-sc-img-drop" onClick={() => listFileRef.current?.click()}>
-                <ImagePlusIcon size={30} />
-                <span>选择多张 · 拖入 · 粘贴</span>
-              </button>
-            )}
-
-            <div className="mb-sc-imglist-actions">
-              <button className="mb-btn mb-btn-sm mb-btn-ghost" onClick={() => listFileRef.current?.click()}>
-                ＋ 添加图片
-              </button>
-              <button className="mb-btn mb-btn-sm mb-btn-ghost" onClick={() => pickFromGallery(id)} title="从资产库选图（追加）">
-                资产库
-              </button>
-            </div>
-
-            <div className="mb-sc-imglist-batch">
-              <span className="mb-sc-sb-lbl">每批传下游</span>
-              <ClampNumberInput min={1} max={200} value={d.batchSize || 1} onCommit={(v) => setF({ batchSize: v })} />
-              <span className="mb-sc-imglist-batchhint">张</span>
-              <NodeHint text="连到 生图（开「逐张处理输入图」）/ ComfyUI（逐张）/ 循环 节点逐批批量处理" />
-            </div>
-
-            {/* 自驱逐批运行（也可不点，直接连「循环」节点由其驱动） */}
-            <div className="mb-sc-sb-runrow">
-              {!active ? (
-                <button className="mb-btn mb-btn-sm mb-btn-primary mb-sc-runbtn" disabled={!srcs.length} onClick={() => void runImageListNode(id)}>
-                  逐批运行下游
-                </button>
-              ) : (
-                <>
-                  {paused ? (
-                    <button className="mb-btn mb-btn-sm mb-btn-primary" onClick={() => resumeLoop(id)}>
-                      继续
+            {/* 九宫格：3 列固定；角标序号 = 实际传下游的图序（跳过的不占号，所见即所发）。
+                交互：点击放大 · Alt+点击跳过/恢复 · 格间拖拽重排 · 拖文件到格=插到该位置 · 「＋」格添加 */}
+            <div className="mb-sc-img9-grid">
+              {srcs.map((s, i) => {
+                const tp = thumbPair(s);
+                const full = imgUrl(s) as string;
+                const skipped = ordinals[i] === null;
+                return (
+                  <div
+                    key={`${s}-${i}`}
+                    className={`mb-sc-img9-cell ${skipped ? 'is-skip' : ''} ${overIdx === i ? 'is-dragover' : ''}`}
+                    draggable
+                    onDragStart={(e) => {
+                      dragFrom.current = i;
+                      e.dataTransfer.effectAllowed = 'move';
+                      // 内部重排专用类型：canvas 的 onDrop 不认识它，不会误建节点
+                      e.dataTransfer.setData('application/mengbi-img9', String(i));
+                    }}
+                    onDragEnd={() => {
+                      dragFrom.current = null;
+                      setOverIdx(null);
+                    }}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      setOverIdx(i);
+                    }}
+                    onDragLeave={() => setOverIdx((v) => (v === i ? null : v))}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation(); // 别冒泡到容器（容器 drop=追加末尾）/ 画布（建节点）
+                      setOverIdx(null);
+                      const files = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith('image/'));
+                      if (files.length) {
+                        void addToList(files, i); // 拖文件到某格 = 放进该位置（原图后移）
+                        return;
+                      }
+                      if (dragFrom.current != null && dragFrom.current !== i) {
+                        // 格间拖拽 = 移动重排；禁用标记跟着图走（纯函数统一重映射）
+                        const patch = moveImageItem(srcs, d.disabledIdx, dragFrom.current, i);
+                        setF({ srcs: patch.srcs, disabledIdx: patch.disabledIdx });
+                      }
+                      dragFrom.current = null;
+                    }}
+                  >
+                    <img
+                      src={tp.thumb}
+                      alt=""
+                      draggable={false}
+                      loading="lazy"
+                      decoding="async"
+                      onClick={(e) => {
+                        e.stopPropagation(); // 格子级点击不冒泡到节点（Alt+点击节点=跳过整个节点，靠这里区分）
+                        if (e.altKey) {
+                          // Alt+点击 = 跳过/恢复该格（跳过的不传下游、不占序号）
+                          setF({ disabledIdx: toggleSkipIdx(d.disabledIdx, i) });
+                        } else {
+                          previewList(i);
+                        }
+                      }}
+                      onError={(e) => {
+                        if (e.currentTarget.src !== full) e.currentTarget.src = full;
+                      }}
+                      title={skipped ? 'Alt+点击恢复（当前跳过：不传下游）' : '点击放大 · Alt+点击跳过 · 拖动换位'}
+                    />
+                    <button
+                      className="mb-sc-imglist-x"
+                      title="移除"
+                      onClick={() => {
+                        const patch = removeImageAt(srcs, d.disabledIdx, i);
+                        setF({ srcs: patch.srcs, disabledIdx: patch.disabledIdx });
+                      }}
+                    >
+                      ✕
                     </button>
-                  ) : (
-                    <button className="mb-btn mb-btn-sm" title="当前批完成后暂停" onClick={() => pauseLoop(id)}>
-                      暂停
-                    </button>
-                  )}
-                  <button className="mb-btn mb-btn-sm mb-btn-ghost is-stop" onClick={() => stopLoop(id)}>
-                    停止
-                  </button>
-                </>
-              )}
+                    <span className={`mb-sc-img9-idx ${skipped ? 'is-skip' : ''}`}>{skipped ? '跳过' : ordinals[i]}</span>
+                  </div>
+                );
+              })}
+              {/* 末尾常驻「＋」空格：点击选文件（多选）；也可把文件直接拖到这里 = 追加 */}
+              <button
+                className={`mb-sc-img9-add ${overIdx === -2 ? 'is-dragover' : ''}`}
+                onClick={() => listFileRef.current?.click()}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setOverIdx(-2);
+                }}
+                onDragLeave={() => setOverIdx((v) => (v === -2 ? null : v))}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setOverIdx(null);
+                  const files = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith('image/'));
+                  if (files.length) void addToList(files);
+                }}
+                title="添加图片（可多选）；拖文件到这里 = 追加到末尾"
+              >
+                <ImagePlusIcon size={22} />
+                <span>＋</span>
+              </button>
             </div>
-
-            {(active || (d.totalBatches ?? 0) > 0) && (
-              <div className="mb-sc-loop-status">
-                {RUN_LABELS[d.runStatus ?? 'idle']} · 第 {(d.batchIndex ?? 0) + 1}/{d.totalBatches ?? '?'} 批 · 成功 {d.doneCount ?? 0} · 失败 {d.failCount ?? 0}
-              </div>
-            )}
-            {d.runError && <div className="mb-sc-result-err">{d.runError}</div>}
 
             <input
               ref={listFileRef}
@@ -375,6 +440,7 @@ export function ImageNode({ id, data }: NodeProps): JSX.Element {
             />
           </div>
         )}
+        </div>
       </NodeShell>
     </>
   );

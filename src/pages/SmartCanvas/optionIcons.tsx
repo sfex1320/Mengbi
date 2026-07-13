@@ -113,6 +113,38 @@ const ICONS: Record<string, IconMap> = {
     dappled: '<path d="M7 8 a2.5 2 0 1 0 0.1 0 z"/><path d="M15 7 a2 2.5 0 1 0 0.1 0 z"/><path d="M10 15 a3 2.5 0 1 0 0.1 0 z"/><path d="M17 15 a1.8 1.8 0 1 0 0.1 0 z"/>',
     silhouette: '<circle cx="12" cy="8" r="3"/><path d="M6 20 a6 6 0 0 1 12 0 z"/>'
   },
+  // ── LLM 节点：操作（op）——魔棒/字母/括号等极简描边，与镜头/光源同一线条语言 ──
+  llmOp: {
+    optimize:
+      '<line x1="4.5" y1="19.5" x2="12.5" y2="11.5"/><path d="M16.5 3.5 L17.6 6.4 L20.5 7.5 L17.6 8.6 L16.5 11.5 L15.4 8.6 L12.5 7.5 L15.4 6.4 Z" fill="none"/><line x1="19.2" y1="13.5" x2="19.2" y2="16.5"/><line x1="17.7" y1="15" x2="20.7" y2="15"/>',
+    'translate-en':
+      '<path d="M7 14.5 L10.5 6 L14 14.5" fill="none"/><line x1="8.3" y1="11.8" x2="12.7" y2="11.8"/><line x1="12.5" y1="19" x2="20" y2="19"/><polyline points="17.5,16.5 20,19 17.5,21.5" fill="none"/>',
+    'translate-zh':
+      '<rect x="7" y="7.5" width="9" height="6" rx="1" fill="none"/><line x1="11.5" y1="4" x2="11.5" y2="17"/><line x1="12.5" y1="19" x2="20" y2="19"/><polyline points="17.5,16.5 20,19 17.5,21.5" fill="none"/>',
+    expand:
+      '<line x1="4.5" y1="6.5" x2="14.5" y2="6.5"/><line x1="4.5" y1="10.5" x2="18.5" y2="10.5"/><line x1="4.5" y1="14.5" x2="11.5" y2="14.5"/><line x1="17" y1="15" x2="17" y2="20"/><line x1="14.5" y1="17.5" x2="19.5" y2="17.5"/>',
+    decompose:
+      '<circle cx="6" cy="6.5" r="1.1" fill="currentColor"/><line x1="9.5" y1="6.5" x2="19.5" y2="6.5"/><circle cx="6" cy="12" r="1.1" fill="currentColor"/><line x1="9.5" y1="12" x2="19.5" y2="12"/><circle cx="6" cy="17.5" r="1.1" fill="currentColor"/><line x1="9.5" y1="17.5" x2="19.5" y2="17.5"/>',
+    refine:
+      '<path d="M4.5 5.5 h15 v10 h-9 l-4 3.8 v-3.8 h-2 z" fill="none"/><polyline points="8.8,10.6 11,12.8 15.2,8.4" fill="none"/>',
+    script:
+      '<path d="M4.5 9.5 L19.5 6 L18.8 3.6 L3.8 7.1 Z" fill="none"/><line x1="7.2" y1="8.4" x2="6.5" y2="6"/><line x1="10.8" y1="7.6" x2="10.1" y2="5.2"/><line x1="14.4" y1="6.7" x2="13.7" y2="4.3"/><rect x="4.5" y="9.5" width="15" height="10" rx="1.5" fill="none"/><line x1="7.5" y1="13" x2="14.5" y2="13"/><line x1="7.5" y1="16" x2="12" y2="16"/>',
+    reverse:
+      '<rect x="3.5" y="6" width="9" height="7.5" rx="1.2" fill="none"/><path d="M5 12 L7.8 9.2 L9.6 11 L11 9.8" fill="none"/><line x1="15.5" y1="8" x2="20.5" y2="8"/><line x1="15.5" y1="11.5" x2="20.5" y2="11.5"/><line x1="15.5" y1="15" x2="18.5" y2="15"/>',
+    'to-json':
+      '<path d="M9 4.5 c-2 0 -2.5 1 -2.5 2.5 v1.5 c0 1.5 -1 2 -2.5 2 c1.5 0 2.5 0.5 2.5 2 v1.5 c0 1.5 0.5 2.5 2.5 2.5" fill="none"/><path d="M15 4.5 c2 0 2.5 1 2.5 2.5 v1.5 c0 1.5 1 2 2.5 2 c-1.5 0 -2.5 0.5 -2.5 2 v1.5 c0 1.5 -0.5 2.5 -2.5 2.5" fill="none"/>'
+  },
+  // ── LLM 节点：输出用途（purpose）——生图/视频/角色/场景/自由 ──
+  llmPurpose: {
+    image:
+      '<rect x="4" y="5" width="16" height="14" rx="2" fill="none"/><circle cx="9" cy="9.8" r="1.5" fill="none"/><path d="M6 16.5 L10.5 12 L13.5 15 M12 16.5 L15.5 13 L18.5 16" fill="none"/>',
+    video:
+      '<rect x="4" y="5.5" width="16" height="13" rx="2" fill="none"/><path d="M10.5 9 L15 12 L10.5 15 Z" fill="none"/>',
+    character: '<circle cx="12" cy="8" r="3.2" fill="none"/><path d="M5.5 19.5 a6.5 6.5 0 0 1 13 0" fill="none"/>',
+    scene:
+      '<circle cx="17.5" cy="7" r="2.2" fill="none"/><path d="M3.5 18 L9 10 L13 15 M11 18 L15.5 12.5 L20.5 18" fill="none"/><line x1="3.5" y1="18" x2="20.5" y2="18"/>',
+    free: '<path d="M5 19 l1-4 L16.5 4.5 a1.8 1.8 0 0 1 2.5 2.5 L8.5 18 z" fill="none"/><line x1="14.5" y1="6.5" x2="17" y2="9"/>'
+  },
   lightPosition: {
     front: '<circle cx="12" cy="13" r="4" fill="none"/><line x1="12" y1="3" x2="12" y2="7"/><line x1="9" y1="5" x2="10.5" y2="7.5"/><line x1="15" y1="5" x2="13.5" y2="7.5"/>',
     left: '<circle cx="14" cy="12" r="4" fill="none"/><line x1="3" y1="12" x2="7" y2="12"/><line x1="4.5" y1="9" x2="7.5" y2="10.5"/><line x1="4.5" y1="15" x2="7.5" y2="13.5"/>',

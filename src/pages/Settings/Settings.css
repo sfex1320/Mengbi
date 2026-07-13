@@ -21,6 +21,9 @@
 
 .mb-settings-side-item {
   position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
   padding: 11px 14px;
   font-size: 14px;
   border-radius: 12px;
@@ -31,6 +34,17 @@
   transition:
     color var(--mb-duration-fast) var(--mb-ease),
     background var(--mb-duration-fast) var(--mb-ease);
+}
+
+/* 侧栏导航图标（SVG 线条图标，颜色跟随文字） */
+.mb-settings-side-ico {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  opacity: 0.85;
+}
+.mb-settings-side-item.is-active .mb-settings-side-ico {
+  opacity: 1;
 }
 
 .mb-settings-side-item:hover {
@@ -58,18 +72,33 @@
   margin-top: 20px;
 }
 
-/* 设置分区卡片（区域划分）——存储/工具/许可证等用它把内容分块 */
+/* 设置分区卡片（区域划分）——各 tab 用它把内容分块，统一头部：图标 + 标题 + 下方淡色说明 */
 .mb-settings-card {
   padding: 18px 20px;
   border-radius: 16px;
 }
 .mb-settings-card-head {
   display: flex;
-  align-items: baseline;
+  align-items: flex-start;
   gap: 10px;
   margin-bottom: 14px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--mb-border-soft);
+}
+.mb-settings-card-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  background: var(--mb-accent-soft);
+  color: var(--mb-accent);
+  flex: 0 0 auto;
+}
+.mb-settings-card-titles {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
 .mb-settings-card-title {
   font-size: 14px;
@@ -84,6 +113,165 @@
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+/* ── 响应式多列卡片网格：宽窗一行多张，窄窗回落单列；wide 卡片占满整行 ── */
+.mb-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+.mb-settings-card.is-wide {
+  grid-column: 1 / -1;
+}
+
+/* ── 搜索 + 区域快捷条（内容区顶部，与 pane 同宽对齐） ── */
+.mb-settings-toparea {
+  position: relative;
+  z-index: 5;
+  margin-bottom: 18px;
+}
+.mb-settings-search {
+  position: relative;
+  max-width: 520px;
+}
+.mb-settings-search-icon {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  color: var(--mb-text-muted);
+  pointer-events: none;
+}
+.mb-settings-search-input {
+  width: 100%;
+  padding: 9px 14px 9px 38px;
+  border-radius: 12px;
+  font-size: 13px;
+  color: var(--mb-text-primary);
+  background: var(--mb-bg-hover);
+  border: 1px solid var(--mb-border-soft);
+  transition:
+    border-color var(--mb-duration-fast) var(--mb-ease),
+    background var(--mb-duration-fast) var(--mb-ease);
+}
+.mb-settings-search-input:focus {
+  outline: none;
+  border-color: var(--mb-accent);
+  background: var(--mb-bg-active);
+}
+/* 搜索结果浮层：带 .mb-card 的浮层必须双类提特异性（铁律 27），否则被 .mb-card{position:relative} 顶掉 */
+.mb-settings-search-pop.mb-card {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  border-radius: 14px;
+  background: var(--mb-bg-card-solid, var(--mb-bg-card));
+  backdrop-filter: blur(24px) saturate(140%);
+  box-shadow: var(--mb-shadow-card-lg);
+  max-height: 320px;
+  overflow: auto;
+}
+.mb-settings-search-hit {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  text-align: left;
+  background: transparent;
+  transition: background var(--mb-duration-fast) var(--mb-ease);
+}
+.mb-settings-search-hit:hover {
+  background: var(--mb-bg-hover);
+}
+.mb-settings-search-hit-title {
+  flex: 0 0 auto;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--mb-text-primary);
+}
+.mb-settings-search-hit-desc {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--mb-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mb-settings-search-hit-tab {
+  flex: 0 0 auto;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: var(--mb-accent);
+  background: var(--mb-accent-soft);
+}
+.mb-settings-search-empty {
+  padding: 10px 12px;
+  font-size: 12.5px;
+  color: var(--mb-text-muted);
+}
+
+.mb-settings-quickbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+.mb-settings-quickbar-label {
+  font-size: 11.5px;
+  color: var(--mb-text-muted);
+}
+.mb-settings-quickchip {
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--mb-text-secondary);
+  background: var(--mb-bg-hover);
+  border: 1px solid var(--mb-border-soft);
+  transition:
+    color var(--mb-duration-fast) var(--mb-ease),
+    background var(--mb-duration-fast) var(--mb-ease),
+    border-color var(--mb-duration-fast) var(--mb-ease);
+}
+.mb-settings-quickchip:hover {
+  color: var(--mb-accent);
+  border-color: var(--mb-accent);
+  background: var(--mb-accent-soft);
+}
+
+/* ── 定位高亮：快捷条 / 搜索跳转后给目标分区 1.5s 描边提示 ── */
+.mb-settings-flash {
+  outline: 2px solid transparent;
+  outline-offset: 3px;
+  border-radius: 16px;
+}
+html:not([data-perf='low']) .mb-settings-flash {
+  animation: mb-settings-locate 1.5s var(--mb-ease) both;
+}
+/* 低配模式：不跑动画，静态描边（class 1.6s 后被移除） */
+html[data-perf='low'] .mb-settings-flash {
+  outline-color: var(--mb-accent);
+}
+@keyframes mb-settings-locate {
+  0%,
+  55% {
+    outline-color: var(--mb-accent);
+  }
+  100% {
+    outline-color: transparent;
+  }
 }
 
 .mb-settings-pane-header {
@@ -106,13 +294,13 @@
   margin: 4px 0 0;
 }
 
-/* 创建方案 + 方案列表 同一行：左侧「创建」收窄、右侧方案 pill 占满自动折行 */
+/* 创建方案 + 方案列表 同一行：左侧「创建」收窄、右侧方案 pill 占满自动折行（已包进分区卡片，不再自带底边距） */
 .mb-settings-create-row {
   display: flex;
   gap: 16px;
   align-items: flex-start;
   flex-wrap: wrap;
-  margin-bottom: 22px;
+  margin-bottom: 0;
 }
 .mb-settings-create-input {
   display: flex;
@@ -200,17 +388,18 @@
   box-shadow: var(--mb-accent-glow);
 }
 
+/* 已包进「中转站与模型」分区卡片，不再需要自带分隔线 */
 .mb-settings-config-list {
-  margin-top: 4px;
-  padding-top: 18px;
-  border-top: 1px solid var(--mb-border-soft);
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
 }
 
-/* ── 视频模型配置中心（横向紧凑，适合宽屏 / 4K） ── */
+/* ── 视频模型配置中心（横向紧凑，适合宽屏 / 4K）——已独立成分区卡片，去掉自带分隔线 ── */
 .mb-vpc {
-  margin-top: 16px;
-  padding-top: 14px;
-  border-top: 1px dashed var(--mb-border-soft);
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
 }
 .mb-vpc-head {
   display: flex;
@@ -1485,6 +1674,7 @@
 
 .mb-storage-path-row {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
 }
 

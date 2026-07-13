@@ -1,11 +1,12 @@
-import { useEffect, useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import { NodeResizer, type NodeProps } from '@xyflow/react';
 import { useSmartCanvasStore, useSmartPreviewStore, useSmartTextStore } from '@/store/smartCanvasStore';
 import { runWithUpstream, comfyInputSlots, cancelComfy, forceResetComfy, computeUpstream } from '@/lib/smartCanvasRunner';
 import type { ComfyNodeData } from '@shared/smartCanvas';
 import { NodeShell } from './NodeShell';
+import { ExplainErrorButton } from './ExplainErrorButton';
 import { MeasuredThumb, thumbPair } from '../MeasuredThumb';
-import { fmtDur, areaMenu, copyText, copyImage, imageToGallery, imageSaveAs, makePromptNodeFrom, ToPromptButton, autoGrowNode, getNodeWidth, dragOutNative, showInFolder } from '../nodeArea';
+import { fmtDur, areaMenu, copyText, copyImage, imageToGallery, imageSaveAs, makePromptNodeFrom, ToPromptButton, useFitNodeToContent, dragOutNative, showInFolder } from '../nodeArea';
 
 const STATUS_TEXT: Record<string, string> = {
   idle: '待运行',
@@ -38,22 +39,9 @@ export function ComfyNode({ id, data }: NodeProps): JSX.Element {
     st.selectOnly(pid);
   }
 
-  // 自适应贴合：完整计入「模板名 + 上游输入行 + 外接提示词预览框（或接提示词按钮）+ 运行 + 结果图行 + 文本 + 错误」。
-  // 关键：必须计入「外接提示词预览框」——否则接了上游提示词时内容比估高，运行按钮 / 结果图会被截断（双向贴合）。
-  const imgCount = d.result?.images?.length ?? 0;
-  const upPrompts = up.prompts.length;
-  useEffect(() => {
-    const width = getNodeWidth(id);
-    let need = 152; // 标题 + 模板名 + 上游输入行 + 运行按钮
-    need += upPrompts ? 84 : 30; // 外接提示词预览框 / 「＋ 接提示词节点」按钮
-    if (d.error) need += 28;
-    if (imgCount) {
-      const cols = Math.max(1, Math.floor((width - 24) / 104));
-      need += Math.ceil(imgCount / cols) * 104 + 8;
-    }
-    if (texts.length) need += Math.min(200, 40 + texts.length * 26);
-    autoGrowNode(id, need);
-  }, [id, d.error, imgCount, texts.length, upPrompts]);
+  // 节点高度贴合真实内容（fitwrap 实测，双向：外接提示词/报错/结果图行数/文本清单变化都自动跟随；手动 > 自适应）
+  const fitRef = useRef<HTMLDivElement>(null);
+  useFitNodeToContent(id, fitRef, 52, 900);
 
   return (
     <>
@@ -72,6 +60,7 @@ export function ComfyNode({ id, data }: NodeProps): JSX.Element {
           </span>
         }
       >
+        <div className="mb-sc-fitwrap nowheel" ref={fitRef}>
         <div className="mb-sc-work-line">{d.templateName || '未选工作流模板'}</div>
         <div className="mb-sc-work-model">
           {!d.workflowId
@@ -118,7 +107,12 @@ export function ComfyNode({ id, data }: NodeProps): JSX.Element {
             </>
           )}
         </div>
-        {d.error && <div className="mb-sc-result-err">{d.error}</div>}
+        {d.error && (
+          <div className="mb-sc-result-err nodrag">
+            {d.error}
+            <ExplainErrorButton nodeId={id} />
+          </div>
+        )}
         {d.result?.durationMs != null && <div className="mb-sc-work-dur">{fmtDur(d.result.durationMs)}</div>}
         {d.result?.images && d.result.images.length > 0 && (
           <div className="mb-sc-work-thumbs nodrag">
@@ -160,7 +154,7 @@ export function ComfyNode({ id, data }: NodeProps): JSX.Element {
           </div>
         )}
         {texts.length > 0 && (
-          <div className="mb-sc-result-texts nodrag">
+          <div className="mb-sc-result-texts mb-sc-comfy-texts nodrag">
             {texts.map((t, i) => (
               <div
                 key={i}
@@ -181,6 +175,7 @@ export function ComfyNode({ id, data }: NodeProps): JSX.Element {
             <ToPromptButton onClick={() => makePromptNodeFrom(id, texts.join('\n'))} title="把全部文本输出导入一个下游提示词节点" />
           </div>
         )}
+        </div>
       </NodeShell>
     </>
   );

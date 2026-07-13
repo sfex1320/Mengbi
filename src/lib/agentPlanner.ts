@@ -19,7 +19,11 @@ export interface AgentPlanResult {
   reason?: string;
 }
 
-async function callPlanner(
+/**
+ * 通用「一发一收」文本模型调用（agentOptimize 选区诊断复用同一条免费通道，零新 IPC）。
+ * 之前是本文件私有的 callPlanner，为复用改为导出。
+ */
+export async function callAgentTextModel(
   planId: number,
   modelId: string,
   userInput: string,
@@ -37,12 +41,12 @@ async function callPlanner(
 /** 规划一张节点图：一次 LLM 调用；解析失败再做一次「只输出 JSON」严格重试。 */
 export async function planGraph(input: AgentPlanInput): Promise<AgentPlanResult> {
   const sys = buildAgentSystemPrompt(input);
-  const a = await callPlanner(input.planId, input.textModel, input.userInput, sys);
+  const a = await callAgentTextModel(input.planId, input.textModel, input.userInput, sys);
   if (!a.ok) return { ok: false, warnings: [], reason: a.reason };
 
   let parsed = parseBlueprint(a.text ?? '');
   if (!parsed.ok) {
-    const b = await callPlanner(
+    const b = await callAgentTextModel(
       input.planId,
       input.textModel,
       `${input.userInput}\n\n（上次输出无法解析为 JSON）请严格只输出符合规范的 JSON，不要任何解释、不要 markdown 围栏。`,

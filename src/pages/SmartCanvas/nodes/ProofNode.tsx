@@ -1,11 +1,11 @@
-import { useEffect, useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import { NodeResizer, type NodeProps } from '@xyflow/react';
 import { useSmartCanvasStore, useSmartTextStore } from '@/store/smartCanvasStore';
 import { computeUpstream, runProofNode } from '@/lib/smartCanvasRunner';
 import { useProofStudioStore } from '../ProofStudio';
 import type { ProofNodeData } from '@shared/smartCanvas';
 import { NodeShell } from './NodeShell';
-import { autoGrowNode } from '../nodeArea';
+import { useFitNodeToContent } from '../nodeArea';
 
 const STATUS_TEXT: Record<string, string> = { idle: '待运行', running: '审稿中…', success: '已完成', error: '失败' };
 
@@ -26,12 +26,9 @@ export function ProofNode({ id, data }: NodeProps): JSX.Element {
   const problems = els.filter((e) => !e.ok).length;
   const upImg = up.images.length > 0 || !!d.inputImage?.url;
 
-  useEffect(() => {
-    let need = 200;
-    if (els.length) need += 26;
-    if (d.reportText) need += 24;
-    autoGrowNode(id, need, 460);
-  }, [id, els.length, d.reportText]);
+  // 节点高度贴合真实内容（fitwrap 实测：接入状态/元素统计/报告/报错各状态变化都自动跟随；手动 > 自适应）
+  const fitRef = useRef<HTMLDivElement>(null);
+  useFitNodeToContent(id, fitRef, 52, 700);
 
   return (
     <>
@@ -50,6 +47,7 @@ export function ProofNode({ id, data }: NodeProps): JSX.Element {
           </span>
         }
       >
+        <div className="mb-sc-fitwrap nowheel" ref={fitRef}>
         <div className="mb-sc-revctl nodrag">
           {upImg ? (
             <div className="mb-sc-fromup is-fed">已接入图片{up.images.length > 1 ? `（用第 1 张，共 ${up.images.length} 张）` : ''}</div>
@@ -88,6 +86,7 @@ export function ProofNode({ id, data }: NodeProps): JSX.Element {
             审稿报告已生成 · 点击查看 / 进工作台看叠框
           </div>
         )}
+        </div>
       </NodeShell>
     </>
   );

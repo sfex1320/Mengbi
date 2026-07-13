@@ -1,22 +1,85 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { NodeResizer, type NodeProps } from '@xyflow/react';
 import { useSmartCanvasStore, useSmartTextStore } from '@/store/smartCanvasStore';
-import { runWithUpstream, sendLlmChat } from '@/lib/smartCanvasRunner';
+import { useSettingsStore } from '@/store/settingsStore';
+import { runWithUpstream, sendLlmChat, computeUpstream } from '@/lib/smartCanvasRunner';
 import { useLlmHistoryStore, type LlmHistoryEntry } from '@/store/llmHistoryStore';
-import { LLM_OP_LABELS, type LlmNodeData, type SmartNodeData } from '@shared/smartCanvas';
+import { listMappedModels } from '@/lib/modelMapping';
+import { confirmDialog } from '@/components/ConfirmDialog';
+import {
+  LLM_OP_LABELS,
+  LLM_OP_SUBS,
+  LLM_PURPOSE_LABELS,
+  LLM_PURPOSE_OPS,
+  type LlmNodeData,
+  type LlmOp,
+  type LlmPurpose,
+  type SmartNodeData
+} from '@shared/smartCanvas';
 import { NodeShell } from './NodeShell';
-import { PortalPopover } from '../nodePanel/consoleControls';
-import { CopyButton, areaMenu, copyText, fitNodeHeight, autoGrowNode, makePromptNodeFrom } from '../nodeArea';
+import {
+  PortalPopover,
+  ModelDropdownButton,
+  SegmentedControl,
+  type ModelGridItem
+} from '../nodePanel/consoleControls';
+import { IconChoiceGrid } from '../nodeControls';
+import { optionIcon, OptionIcon } from '../optionIcons';
+import { CopyButton, ToPromptButton, areaMenu, copyText, fitNodeHeight, makePromptNodeFrom, useFitNodeToContent } from '../nodeArea';
 
-/** LLM 节点：两块——「节点」单次操作 / 「聊天」流式对话（像生图页对话）。参数在弹出检查器里调。 */
+const LLM_OPS = Object.keys(LLM_OP_LABELS) as LlmOp[];
+const PURPOSES: LlmPurpose[] = ['image', 'video', 'character', 'scene', 'free'];
+/** 用途按钮的短标签（SegmentedControl 一行放下 5 个；完整名进 title） */
+const PURPOSE_SHORT: Record<LlmPurpose, string> = {
+  free: '自由',
+  image: '生图',
+  video: '视频',
+  character: '角色',
+  scene: '场景'
+};
+
+/** 当前方案下可用的对话(text)模型（带「中转站 /」前缀，与生图节点同款 ModelDropdownButton）。 */
+function useTextModelItems(): ModelGridItem[] {
+  const configs = useSettingsStore((s) => s.configs);
+  const activePlanId = useSettingsStore((s) => s.activePlanId);
+  return useMemo(
+    () =>
+      listMappedModels(configs, activePlanId, 'text')
+        .filter((m) => m.usable)
+        .map((m) => ({ name: m.name, provider: m.providerName, ref: m.ref })),
+    [configs, activePlanId]
+  );
+}
+
+/**
+ * LLM 节点：两块——「节点」单次操作 / 「聊天」流式对话。
+ * 2026-07-11 重做：op 图标网格直选 + 模型按钮式下拉 + 「输出用途 / 本次意图」（注入 systemPrompt，
+ * 让模型知道优化给谁用）+ 聊天底部跟随滚动 / 清空对话；输入被上游喂入时标黄禁手填（既有规则保留）。
+ */
 export function LlmNode({ id, data }: NodeProps): JSX.Element {
   const update = useSmartCanvasStore((s) => s.updateNodeData);
   const remove = useSmartCanvasStore((s) => s.removeNode);
+  const nodes = useSmartCanvasStore((s) => s.nodes);
+  const edges = useSmartCanvasStore((s) => s.edges);
   const openText = useSmartTextStore((s) => s.open);
   const d = data as unknown as LlmNodeData;
   const running = d.status === 'running';
   const [draft, setDraft] = useState('');
+  const [opsOpen, setOpsOpen] = useState(false);
   const outRef = useRef<HTMLPreElement>(null);
+  const msgsRef = useRef<HTMLDivElement>(null);
+  // 聊天是否停在底部：只有本就在底部时新消息才自动跟随（用户上翻查历史时不抢滚动）
+  const atBottomRef = useRef(true);
+  const textModels = useTextModelItems();
+  const setF = (patch: Partial<LlmNodeData>): void => update(id, patch as Partial<SmartNodeData>);
+
+  const up = useMemo(() => computeUpstream(nodes, edges, id), [nodes, edges, id]);
+  const purpose: LlmPurpose = d.purpose ?? 'free';
+  const purposeApplicable = LLM_PURPOSE_OPS.has(d.op);
+  const isReverse = d.op === 'reverse';
+  // 与 runner 同口径：外接指令开启时上游作指令、本地 input 是待处理文本；否则上游即待处理文本（标黄禁手填）
+  const fromUp = !!d.instructionFromUpstream && up.prompts.length > 0;
+  const inputFed = !isReverse && !fromUp && up.prompts.length > 0;
 
   function makePromptFrom(text: string): void {
     makePromptNodeFrom(id, text);
@@ -33,34 +96,47 @@ export function LlmNode({ id, data }: NodeProps): JSX.Element {
     ]);
   }
 
-  // 节点模式：自适应贴合「op 行 + 模型 + 运行 + 输出」高度（输出在 .mb-sc-llm-out 内最高 110px 滚动，
-  // 故按其可见高度估，避免像截图那样大片空白；双向贴合：输出清空即收回）。聊天模式不在此自适应（见下）。
-  useEffect(() => {
-    if (d.mode === 'chat') return;
-    const need = 150 + (d.resultText?.trim() ? 130 : 0) + (d.error ? 28 : 0);
-    autoGrowNode(id, need, 700);
-  }, [id, d.mode, d.resultText, d.error]);
+  // 节点高度贴合真实内容（fitwrap 实测：op/用途/模式切换、展开网格、输出/报错变化都自动跟随；手动 > 自适应）。
+  // 聊天模式不再无限长高：对话记录区自身 max-height + 内滚（CSS .mb-sc-chat-msgs），底部智能跟随滚动照常工作。
+  const fitRef = useRef<HTMLDivElement>(null);
+  useFitNodeToContent(id, fitRef, 52, 900);
 
-  // 聊天模式：**关闭自适应**（固定大小，避免每条消息都把窗口撑大、难以处理）；
-  // 进入聊天时若窗口偏小，一次性给一个较大的固定尺寸（对话区/输入区都尽量大），之后由用户手动调。
+  // 聊天底部跟随：新消息 / 流式片段到达时，若用户本就在底部则滚到底（lastLen 让流式逐字也跟随）
+  const lastMsg = d.chatMessages.length ? d.chatMessages[d.chatMessages.length - 1] : null;
+  const lastLen = lastMsg ? lastMsg.content.length : 0;
   useEffect(() => {
     if (d.mode !== 'chat') return;
-    const n = useSmartCanvasStore.getState().nodes.find((x) => x.id === id);
-    if ((n?.data as { manualSize?: boolean } | undefined)?.manualSize) return;
-    const curH = typeof n?.height === 'number' ? n.height : n?.measured?.height ?? 0;
-    const curW = typeof n?.width === 'number' ? n.width : n?.measured?.width ?? 0;
-    if (curH < 380 || curW < 300) {
-      useSmartCanvasStore.getState().setNodeSize(id, { width: Math.max(320, curW), height: Math.max(440, curH) });
-    }
-  }, [id, d.mode]);
+    const el = msgsRef.current;
+    if (el && atBottomRef.current) el.scrollTop = el.scrollHeight;
+  }, [d.mode, d.chatMessages.length, lastLen]);
 
-  const setMode = (mode: 'node' | 'chat'): void => update(id, { mode } as Partial<SmartNodeData>);
+  const setMode = (mode: 'node' | 'chat'): void => {
+    if (mode === 'chat') atBottomRef.current = true; // 进聊天先回到底部
+    setOpsOpen(false);
+    update(id, { mode } as Partial<SmartNodeData>);
+  };
   function send(): void {
     const t = draft.trim();
     if (!t || d.chatStreaming) return;
     setDraft('');
+    atBottomRef.current = true; // 自己发消息 = 必然想看到回复，强制跟随
     void sendLlmChat(id, t);
   }
+  async function clearChat(): Promise<void> {
+    if (!d.chatMessages.length || d.chatStreaming) return;
+    const ok = await confirmDialog({
+      message: '清空这段对话？（🕘 历史记录里已保存的对话不受影响）',
+      danger: true,
+      okText: '清空'
+    });
+    if (ok) setF({ chatMessages: [] });
+  }
+
+  // 用途/意图摘要（聊天头部提示 + op 行 tooltip 用）
+  const goalSummary =
+    purpose !== 'free' || (d.intent ?? '').trim()
+      ? [purpose !== 'free' ? LLM_PURPOSE_LABELS[purpose] : '', (d.intent ?? '').trim()].filter(Boolean).join(' · ')
+      : '';
 
   return (
     <>
@@ -84,10 +160,37 @@ export function LlmNode({ id, data }: NodeProps): JSX.Element {
           </div>
         }
       >
+        <div className="mb-sc-fitwrap nowheel" ref={fitRef}>
         {d.mode === 'chat' ? (
           <div className="mb-sc-chat">
-            <div className="mb-sc-chat-model">{d.modelId || '未选对话模型（选中后在检查器里选）'}</div>
-            <div className="mb-sc-chat-msgs nodrag nowheel">
+            <div className="mb-sc-chat-head nodrag">
+              <span className="mb-sc-chat-model" title={d.modelId}>
+                {d.modelId || '未选对话模型（切到「节点」页选）'}
+              </span>
+              {goalSummary && (
+                <span className="mb-sc-chat-goal" title={`输出用途/意图已注入对话（在「节点」页调整）：${goalSummary}`}>
+                  <OptionIcon category="llmPurpose" value={purpose === 'free' ? 'free' : purpose} size={12} />
+                  {goalSummary}
+                </span>
+              )}
+              <button
+                className="mb-sc-chat-clear"
+                title="清空这段对话（历史记录不受影响）"
+                disabled={!d.chatMessages.length || !!d.chatStreaming}
+                onClick={() => void clearChat()}
+              >
+                清空
+              </button>
+            </div>
+            <div
+              ref={msgsRef}
+              className="mb-sc-chat-msgs nodrag nowheel"
+              onScroll={(e) => {
+                // 距底 < 48px 视为「在底部」→ 新片段自动跟随；上翻则停住不抢
+                const el = e.currentTarget;
+                atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+              }}
+            >
               {d.chatMessages.length === 0 && <div className="mb-sc-empty">和模型流式对话…</div>}
               {d.chatMessages.map((m, i) => (
                 <div
@@ -110,7 +213,7 @@ export function LlmNode({ id, data }: NodeProps): JSX.Element {
                 className="mb-sc-input mb-sc-chat-ta nowheel"
                 rows={3}
                 value={draft}
-                placeholder="发消息（Enter 发送 / Shift+Enter 换行）· 上游连图片可让多模态模型识图 · 右下角可拖大"
+                placeholder="发消息（Enter 发送 / Shift+Enter 换行）· 上游连图片可让多模态模型识图"
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
@@ -125,12 +228,108 @@ export function LlmNode({ id, data }: NodeProps): JSX.Element {
             </div>
           </div>
         ) : (
-          <>
-            <div className="mb-sc-work-line">{LLM_OP_LABELS[d.op]}</div>
-            <div className="mb-sc-work-model" title={d.modelId}>
-              {d.modelId || '未选对话模型（选中后在检查器里选）'}
-            </div>
-            <button className="mb-btn mb-btn-sm mb-btn-primary nodrag" disabled={running} onClick={() => void runWithUpstream(id)}>
+          <div className="mb-sc-wctl nodrag">
+            {/* ① 操作：当前 op 图标+名（点击展开图标网格直选，替代原生下拉） */}
+            <button
+              type="button"
+              className={`mb-sc-llm-oprow ${opsOpen ? 'is-open' : ''}`}
+              title={`${LLM_OP_LABELS[d.op]} —— ${LLM_OP_SUBS[d.op]}（点击${opsOpen ? '收起' : '换操作'}）`}
+              onClick={() => setOpsOpen((v) => !v)}
+            >
+              <span className="mb-sc-llm-opico">
+                <OptionIcon category="llmOp" value={d.op} size={16} />
+              </span>
+              <span className="mb-sc-llm-opname">{LLM_OP_LABELS[d.op]}</span>
+              <span className="mb-sc-llm-opsub">{LLM_OP_SUBS[d.op]}</span>
+              <span className="mb-sc-llm-opcaret">{opsOpen ? '▴' : '▾'}</span>
+            </button>
+            {opsOpen && (
+              <IconChoiceGrid
+                compact
+                value={d.op}
+                options={LLM_OPS.map((o) => ({
+                  value: o,
+                  label: LLM_OP_LABELS[o],
+                  icon: optionIcon('llmOp', o, 16),
+                  title: `${LLM_OP_LABELS[o]} —— ${LLM_OP_SUBS[o]}`
+                }))}
+                onChange={(v) => {
+                  setF({ op: v });
+                  setOpsOpen(false);
+                }}
+              />
+            )}
+
+            {/* ② 模型：按钮式下拉（带「中转站 /」前缀，与生图节点同款） */}
+            <ModelDropdownButton
+              value={d.modelId}
+              options={textModels}
+              placeholder={isReverse ? '选择视觉对话模型' : '选择对话模型'}
+              emptyHint="当前方案没有对话模型，去设置页配置"
+              onChange={(v) => setF({ modelId: v })}
+            />
+
+            {/* ③ 用途 / 意图（仅文本类 op）：告诉模型「优化给谁用、要达到什么目的」 */}
+            {purposeApplicable && (
+              <>
+                <SegmentedControl
+                  size="sm"
+                  value={purpose}
+                  options={PURPOSES.map((p) => ({
+                    value: p,
+                    label: PURPOSE_SHORT[p],
+                    icon: optionIcon('llmPurpose', p, 13),
+                    title: `输出用途：${LLM_PURPOSE_LABELS[p]}${p === 'free' ? '（不注入用途导向）' : ''}`
+                  }))}
+                  onChange={(v) => setF({ purpose: v })}
+                />
+                <input
+                  className="mb-input"
+                  value={d.intent ?? ''}
+                  placeholder="要用来做什么？例：电商主图、突出金属质感、白底"
+                  title="一句话意图：注入系统提示词，一切改写围绕它展开（可留空）"
+                  onChange={(e) => setF({ intent: e.target.value })}
+                />
+              </>
+            )}
+
+            {/* ④ 反推：类型 + 上游图状态（reverse 走视觉模型，用途/意图不注入） */}
+            {isReverse && (
+              <>
+                <SegmentedControl
+                  size="sm"
+                  value={d.reverseType}
+                  options={[
+                    { value: 'description', label: '描述' },
+                    { value: 'tags', label: '标签' },
+                    { value: 'style', label: '风格' }
+                  ]}
+                  onChange={(v) => setF({ reverseType: v as LlmNodeData['reverseType'] })}
+                />
+                {up.images.length > 0 ? (
+                  <div className="mb-sc-fromup is-fed">图片由上游输入（{up.images.length} 张）</div>
+                ) : (
+                  <div className="mb-sc-fromup">连一个上游图片节点，反推成提示词文本</div>
+                )}
+              </>
+            )}
+
+            {/* ⑤ 输入区：上游喂入 = 标黄禁手填（既有规则）；否则卡上直接输入 */}
+            {!isReverse &&
+              (inputFed ? (
+                <div className="mb-sc-fromup is-fed">输入文本由上游输入（{up.prompts.length} 段），无需手填</div>
+              ) : (
+                <textarea
+                  className="mb-sc-input mb-sc-llm-in nowheel"
+                  rows={3}
+                  value={d.input}
+                  placeholder={fromUp ? '待处理文本（上游提示词已作为指令）' : '输入要处理的文字，或连一个提示词节点…'}
+                  onChange={(e) => setF({ input: e.target.value })}
+                />
+              ))}
+
+            {/* ⑥ 运行 */}
+            <button className="mb-btn mb-btn-sm mb-btn-primary" disabled={running} onClick={() => void runWithUpstream(id)}>
               {running ? (
                 <>
                   <span className="mb-sc-spinner" aria-hidden />
@@ -140,6 +339,8 @@ export function LlmNode({ id, data }: NodeProps): JSX.Element {
                 '运行'
               )}
             </button>
+
+            {/* ⑦ 输出区：预览 + 复制 / 放大 / → 提示词节点 */}
             {d.resultText?.trim() && (
               <div className="mb-sc-arearel">
                 <CopyButton onClick={() => copyText(d.resultText ?? '')} />
@@ -167,17 +368,19 @@ export function LlmNode({ id, data }: NodeProps): JSX.Element {
                       { label: sel ? '用全部输出建提示词节点' : '用输出建提示词节点', onClick: () => makePromptFrom(d.resultText ?? '') },
                       { label: '适配高度', onClick: () => fitNodeHeight(id, outRef.current) },
                       { separator: true },
-                      { label: '清空输出', variant: 'danger', onClick: () => update(id, { resultText: '' } as Partial<SmartNodeData>) }
+                      { label: '清空输出', variant: 'danger', onClick: () => setF({ resultText: '' }) }
                     ]);
                   }}
                 >
                   {d.resultText.trim()}
                 </pre>
+                <ToPromptButton onClick={() => makePromptFrom(d.resultText ?? '')} />
               </div>
             )}
             {d.error && <div className="mb-sc-result-err">{d.error}</div>}
-          </>
+          </div>
         )}
+        </div>
       </NodeShell>
     </>
   );

@@ -1,10 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import {
   parseSegElements,
+  parseSegElementsScaled,
+  mergeRefinedElements,
+  segRefineInstruction,
   parseProofElements,
   buildProofReport,
   severityColor
 } from './visionSegment';
+import type { SegElement } from '@shared/smartCanvas';
 
 describe('parseSegElements — 坐标系容错', () => {
   it('归一化 0~1 [x,y,w,h] → 源图像素', () => {
@@ -77,6 +81,100 @@ describe('parseSegElements — 坐标系容错', () => {
     const raw = JSON.stringify({ elements: [{ label: 'x', box: [0, 0, 1, 1] }] });
     const els = parseSegElements(raw, 100, 100);
     expect(els).toHaveLength(1);
+  });
+
+  it('0~1000 坐标在「宽图长边>1000、短边<1000」时两轴统一按 0~1000 解释（修：原逐轴判定会一轴千分位一轴像素）', () => {
+    const raw = JSON.stringify([{ label: '横幅', box: [500, 450, 200, 200] }]);
+    const els = parseSegElements(raw, 3000, 900);
+    // x 轴 3000/1000=3、y 轴 900/1000=0.9 —— 整框同一坐标系；旧实现 y 轴按像素解释会得 y=450（错位）
+    expect(els[0].box).toEqual({ x: 1500, y: 405, w: 600, h: 180 });
+  });
+
+  it('回显的 id 被保留（二次细化合并用），重复 id 自动换新', () => {
+    const raw = JSON.stringify([
+      { id: 'seg-a', label: '甲', box: [0, 0, 0.2, 0.2] },
+      { id: 'seg-a', label: '乙', box: [0.5, 0.5, 0.2, 0.2] },
+      { label: '丙', box: [0.2, 0.2, 0.2, 0.2] }
+    ]);
+    const els = parseSegElements(raw, 1000, 1000);
+    expect(els[0].id).toBe('seg-a');
+    expect(els[1].id).not.toBe('seg-a'); // 重复 → 自增新 id
+    expect(els[2].id).toBeTruthy(); // 缺失 → 自增新 id
+  });
+});
+
+describe('parseSegElementsScaled — 识别图缩放后换算回源图', () => {
+  it('归一化坐标：按发送尺寸解析后等比换算回源图像素', () => {
+    const raw = JSON.stringify([{ label: 'x', box: [0.1, 0.2, 0.3, 0.4] }]);
+    // 源图 512×384 被放大到 1536×1152 发送（3 倍），归一化坐标换算回源图应与直接解析一致
+    const els = parseSegElementsScaled(raw, 1536, 1152, 512, 384);
+    expect(els[0].box).toEqual({ x: 51, y: 77, w: 154, h: 154 });
+  });
+
+  it('像素坐标：参照系是「发送的缩放图」，换算回源图像素', () => {
+    const raw = JSON.stringify([{ label: 'x', box: [1600, 1200, 800, 600] }]);
+    // 源图 8192×6144 被缩到 3072×2304 发送；模型按缩放图给像素坐标 → ×(8192/3072) 回源图
+    const els = parseSegElementsScaled(raw, 3072, 2304, 8192, 6144);
+    expect(els[0].box).toEqual({ x: 4267, y: 3200, w: 2133, h: 1600 });
+  });
+
+  it('发送尺寸 == 源图尺寸时与 parseSegElements 一致', () => {
+    const raw = JSON.stringify([{ label: 'x', box: [0.1, 0.1, 0.5, 0.5] }]);
+    expect(parseSegElementsScaled(raw, 2000, 2000, 2000, 2000)[0].box).toEqual(
+      parseSegElements(raw, 2000, 2000)[0].box
+    );
+  });
+});
+
+describe('mergeRefinedElements — 二次细化合并', () => {
+  const prev: SegElement[] = [
+    {
+      id: 'seg-1',
+      label: '主体',
+      box: { x: 10, y: 10, w: 100, h: 100 },
+      prompt: '手改过的提示词',
+      regenSrc: 'D:/out/1.png',
+      status: 'done',
+      error: null
+    },
+    { id: 'seg-2', label: '误检', box: { x: 0, y: 0, w: 5, h: 5 }, prompt: '', status: 'idle', error: null }
+  ];
+
+  it('命中原 id：更新框/名，保留重绘产物；细化没给 prompt 时沿用原提示词', () => {
+    const next: SegElement[] = [
+      { id: 'seg-1', label: '主体(修正)', box: { x: 12, y: 8, w: 96, h: 104 }, prompt: '', status: 'idle', error: null }
+    ];
+    const merged = mergeRefinedElements(prev, next);
+    expect(merged).toHaveLength(1); // seg-2 被剔除（误检）
+    expect(merged[0].box).toEqual({ x: 12, y: 8, w: 96, h: 104 });
+    expect(merged[0].label).toBe('主体(修正)');
+    expect(merged[0].prompt).toBe('手改过的提示词'); // 细化 prompt 为空 → 保留手改
+    expect(merged[0].regenSrc).toBe('D:/out/1.png'); // 已重绘不丢
+    expect(merged[0].status).toBe('done');
+  });
+
+  it('新元素（无匹配 id）原样加入', () => {
+    const next: SegElement[] = [
+      { id: 'seg-1', label: '主体', box: { x: 10, y: 10, w: 100, h: 100 }, prompt: '新词', status: 'idle', error: null },
+      { id: 'seg-9', label: '漏检的小图标', box: { x: 200, y: 200, w: 20, h: 20 }, prompt: '小图标', status: 'idle', error: null }
+    ];
+    const merged = mergeRefinedElements(prev, next);
+    expect(merged).toHaveLength(2);
+    expect(merged[0].prompt).toBe('新词'); // 细化给了新 prompt → 用新的
+    expect(merged[1].label).toBe('漏检的小图标');
+    expect(merged[1].regenSrc).toBeUndefined();
+  });
+});
+
+describe('segRefineInstruction — 回喂列表', () => {
+  it('输出归一化坐标 + 保留 id', () => {
+    const els: SegElement[] = [
+      { id: 'seg-7', label: '标题', box: { x: 100, y: 50, w: 800, h: 100 }, prompt: '', status: 'idle', error: null }
+    ];
+    const ins = segRefineInstruction(els, 1000, 500);
+    expect(ins).toContain('"id":"seg-7"');
+    expect(ins).toContain('[0.1,0.1,0.8,0.2]'); // x/1000, y/500, w/1000, h/500
+    expect(ins).toContain('漏检');
   });
 });
 

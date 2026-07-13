@@ -37,7 +37,9 @@ const PUSH_CHANNELS: ReadonlySet<PushChannel> = new Set<PushChannel>([
   'interp:progress',
   'interp:install-progress',
   // 资产库内容有变（产物自动入库后广播，Manager/便携资产库刷新用）
-  'gallery:changed'
+  'gallery:changed',
+  // MCP 画布桥：主进程收到智能体的画布类工具调用 → 推给渲染端执行
+  'mcp:tool-request'
 ]);
 
 function invoke<T>(channel: string, payload?: unknown): Promise<T> {
@@ -208,6 +210,20 @@ const api: ElectronAPI = {
     remove: (input) => invoke('api:template:remove', input),
     rename: (input) => invoke('api:template:rename', input)
   },
+  vault: {
+    status: () => invoke('api:vault:status'),
+    setConfig: (input) => invoke('api:vault:set-config', input),
+    folders: () => invoke('api:vault:folders'),
+    search: (input) => invoke('api:vault:search', input),
+    read: (input) => invoke('api:vault:read', input),
+    exportNote: (input) => invoke('api:vault:export', input),
+    openNote: (input) => invoke('api:vault:open-note', input)
+  },
+  mcp: {
+    status: () => invoke('api:mcp:status'),
+    setConfig: (input) => invoke('api:mcp:set-config', input),
+    respond: (input) => invoke('api:mcp:respond', input)
+  },
   ps: {
     status: () => invoke('api:ps:status'),
     setConfig: (input) => invoke('api:ps:set-config', input),
@@ -267,7 +283,10 @@ const api: ElectronAPI = {
     startFromDataUri: (dataUri, suggestedName) =>
       ipcRenderer.send('api:drag:start-from-data-uri', { dataUri, suggestedName }),
     startFromPath: (filePath) =>
-      ipcRenderer.send('api:drag:start-from-path', { filePath })
+      ipcRenderer.send('api:drag:start-from-path', { filePath }),
+    // 多文件拖出（资产库批量选中）：同一通道，主进程按 filePaths 走 startDrag 的 files 数组
+    startFromPaths: (filePaths) =>
+      ipcRenderer.send('api:drag:start-from-path', { filePaths })
   },
   on: (channel, handler) => {
     if (!PUSH_CHANNELS.has(channel)) {

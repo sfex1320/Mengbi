@@ -13,7 +13,7 @@ function videoUrl(src?: string): string | null {
   return src.startsWith('data:') || src.startsWith('http') ? src : localPathToImageUrl(src);
 }
 
-/** 视频上传/来源节点：上传本地视频 / 填 URL → 卡上播放 → 输出视频给下游（视频反推 / 缩放 / 结果）。 */
+/** 视频上传/来源节点：上传本地视频 / 填 URL → 卡上播放 → 输出视频给下游（反推 / 缩放 / 结果）。 */
 export function VideoSourceNode({ id, data }: NodeProps): JSX.Element {
   const update = useSmartCanvasStore((s) => s.updateNodeData);
   const remove = useSmartCanvasStore((s) => s.removeNode);
@@ -100,7 +100,7 @@ export function VideoSourceNode({ id, data }: NodeProps): JSX.Element {
                 使用该 URL
               </button>
             )}
-            <div className="mb-sc-empty">拖视频文件到这里 / 上传 / 填 URL → 输出给下游：视频反推 / 缩放 / 插帧 / 结果</div>
+            <div className="mb-sc-empty">拖视频文件到这里 / 上传 / 填 URL → 输出给下游：反推 / 缩放 / 插帧 / 结果</div>
           </div>
         )}
         </div>

@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import { NodeResizer, type NodeProps } from '@xyflow/react';
 import { useSmartCanvasStore } from '@/store/smartCanvasStore';
 import { computeUpstream } from '@/lib/smartCanvasRunner';
@@ -7,8 +7,9 @@ import { toast } from '@/store/toastStore';
 import { VIDEO_MODE_LABELS, normalizeVideoMode, VIDEO_TASK_STATE_LABELS } from '@shared/video';
 import type { VideoNodeData, SmartNodeData } from '@shared/smartCanvas';
 import { NodeShell } from './NodeShell';
+import { ExplainErrorButton } from './ExplainErrorButton';
 import { VideoRunControls } from '../nodePanel/VideoRunControls';
-import { areaMenu, imageSaveAs, autoGrowNode, openVideoPreview, showInFolder, hoverPreviewProps } from '../nodeArea';
+import { areaMenu, imageSaveAs, useFitNodeToContent, openVideoPreview, showInFolder, hoverPreviewProps } from '../nodeArea';
 
 const STATUS_TEXT: Record<string, string> = { idle: '待运行', running: '生成中…', success: '已完成', error: '失败' };
 
@@ -34,15 +35,9 @@ export function VideoNode({ id, data }: NodeProps): JSX.Element {
   const up = useMemo(() => computeUpstream(nodes, edges, id), [nodes, edges, id]);
   const url = videoUrl(d.videoPath);
 
-  // 自适应增高：仅当内容（进度条 / 错误 / 播放器）超过默认高度时才撑高（只增不减）。
-  // 摘要重叠已由 CSS（flex:0 0 auto + flex-shrink:0）根治，故基线低于默认高度即可。
-  useEffect(() => {
-    let need = 210; // 头 + 3 行摘要 + ⚠/运行行（默认 230 已容纳，基线不触发增长）
-    if (running) need += 56; // 进度条
-    if (d.error) need += 32;
-    if (url) need += 188; // 播放器 + 下载行
-    autoGrowNode(id, need);
-  }, [id, running, d.error, url]);
+  // 节点高度贴合真实内容（fitwrap 实测：进度条/报错/播放器出现与消失都自动跟随；手动 > 自适应）
+  const fitRef = useRef<HTMLDivElement>(null);
+  useFitNodeToContent(id, fitRef, 52, 800);
 
   function continueNext(): void {
     if (!d.outLastFrameUrl) return;
@@ -75,6 +70,7 @@ export function VideoNode({ id, data }: NodeProps): JSX.Element {
           </span>
         }
       >
+        <div className="mb-sc-fitwrap nowheel" ref={fitRef}>
         <div className="mb-sc-work-line">
           {VIDEO_MODE_LABELS[mode]} · {d.duration}s · {d.aspect || (d.autoAspect ? `自动→${d.autoAspect}` : '自动')} · {d.resolution}
         </div>
@@ -101,7 +97,12 @@ export function VideoNode({ id, data }: NodeProps): JSX.Element {
             </span>
           </div>
         )}
-        {d.error && <div className="mb-sc-result-err nodrag">{d.error}</div>}
+        {d.error && (
+          <div className="mb-sc-result-err nodrag">
+            {d.error}
+            <ExplainErrorButton nodeId={id} />
+          </div>
+        )}
 
         {url && (
           <>
@@ -134,6 +135,7 @@ export function VideoNode({ id, data }: NodeProps): JSX.Element {
             </div>
           </>
         )}
+        </div>
       </NodeShell>
     </>
   );

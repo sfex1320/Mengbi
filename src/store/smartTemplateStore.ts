@@ -35,6 +35,24 @@ function rid(): string {
 const OLD_LS_KEY = 'mengbi.smartCanvas.templates.v1';
 const MIGRATED_FLAG = 'mengbi.smartCanvas.templates.migrated.v1';
 
+/** 磁盘旧模板兜底迁移：① video-reverse（2026-07-11 并入「反推」image-reverse）原位换 type，字段同名沿用；
+ *  ② 旧智能分镜的 out-trans 输出口连线（2026-07-12 双输出方案删除）迁回默认口 out。
+ *  模板文件不回写（插入画布时即为新形态，重存自然更新）。 */
+function migrateTemplateKinds(t: SmartTemplate): SmartTemplate {
+  const needNodes = t.nodes?.some((n) => (n.type as string) === 'video-reverse');
+  const needEdges = t.edges?.some((e) => e.sourceHandle === 'out-trans');
+  if (!needNodes && !needEdges) return t;
+  return {
+    ...t,
+    nodes: needNodes
+      ? t.nodes.map((n) => ((n.type as string) === 'video-reverse' ? { ...n, type: 'image-reverse' } : n))
+      : t.nodes,
+    edges: needEdges
+      ? t.edges.map((e) => (e.sourceHandle === 'out-trans' ? { ...e, sourceHandle: 'out' } : e))
+      : t.edges
+  };
+}
+
 interface SmartTemplateState {
   templates: SmartTemplate[];
   loaded: boolean;
@@ -77,7 +95,7 @@ export const useSmartTemplateStore = create<SmartTemplateState>()((set, get) => 
       /* 迁移失败不致命 */
     }
     const r = await api.list();
-    if (r.ok) set({ templates: r.data.templates as unknown as SmartTemplate[], loaded: true });
+    if (r.ok) set({ templates: (r.data.templates as unknown as SmartTemplate[]).map(migrateTemplateKinds), loaded: true });
     else set({ loaded: true });
   },
   save: async (name, nodes, edges, notes) => {

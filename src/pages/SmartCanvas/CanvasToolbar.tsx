@@ -8,6 +8,7 @@ import { runAllNodes, abortRunAll } from '@/lib/smartCanvasRunner';
 import { toast } from '@/store/toastStore';
 import { confirmDialog } from '@/components/ConfirmDialog';
 import { useSmartGalleryPanelStore } from './SmartGalleryPanel';
+import { useVaultPanelStore } from './VaultPanel';
 import {
   OpenIcon,
   SaveIcon,
@@ -40,6 +41,8 @@ export function CanvasToolbar(): JSX.Element {
   const togglePanel = useSmartCanvasUiStore((s) => s.togglePanel);
   const galleryOpen = useSmartGalleryPanelStore((s) => s.open);
   const toggleGallery = useSmartGalleryPanelStore((s) => s.toggle);
+  const vaultOpen = useVaultPanelStore((s) => s.open);
+  const toggleVault = useVaultPanelStore((s) => s.toggle);
   const { fitView, setViewport, zoomIn, zoomOut, zoomTo } = useReactFlow();
   const zoom = useStore((s) => s.transform[2]);
   const openRef = useRef<HTMLInputElement>(null);
@@ -158,6 +161,14 @@ export function CanvasToolbar(): JSX.Element {
         >
           <ImageNodeIcon size={15} />
           资产库
+        </button>
+        <button
+          className={`mb-sc-glbtn ${vaultOpen ? 'is-on' : ''}`}
+          title="Obsidian 库：检索资产库笔记（角色设定 / 剧本…），一键插入画布作提示词节点"
+          onClick={toggleVault}
+        >
+          <TemplateIcon size={15} />
+          Obsidian
         </button>
         {running ? (
           <button className="mb-sc-runbtn is-stop" onClick={abortRunAll} title="停止并立即取消正在运行的节点">

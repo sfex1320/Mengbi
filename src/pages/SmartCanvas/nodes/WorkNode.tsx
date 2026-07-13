@@ -1,12 +1,13 @@
-import { useEffect, useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import { NodeResizer, type NodeProps } from '@xyflow/react';
 import { useSmartCanvasStore, useSmartPreviewStore } from '@/store/smartCanvasStore';
 import { runWithUpstream, computeUpstream, cancelWork } from '@/lib/smartCanvasRunner';
 import { localPathToImageUrl } from '@/lib/imageUrl';
 import { WORK_TYPE_LABELS, RUN_MODE_LABELS, PROVIDER_LABELS, type WorkNodeData } from '@shared/smartCanvas';
 import { NodeShell } from './NodeShell';
+import { ExplainErrorButton } from './ExplainErrorButton';
 import { MeasuredThumb, thumbPair } from '../MeasuredThumb';
-import { estimateTextHeight, autoGrowNode, getNodeWidth, fmtDur, areaMenu, copyImage, imageToGallery, imageSaveAs, dragOutNative, showInFolder } from '../nodeArea';
+import { useFitNodeToContent, fmtDur, areaMenu, copyImage, imageToGallery, imageSaveAs, dragOutNative, showInFolder } from '../nodeArea';
 
 const STATUS_TEXT: Record<string, string> = {
   idle: '待运行',
@@ -34,21 +35,9 @@ export function WorkNode({ id, data }: NodeProps): JSX.Element {
   const up = useMemo(() => computeUpstream(nodes, edges, id), [nodes, edges, id]);
   const firstPrompt = up.prompts[0];
 
-  const upPromptText = up.prompts.join('\n');
-  const resultCount = d.result?.images?.length ?? 0;
-  useEffect(() => {
-    const width = getNodeWidth(id);
-    let need = 150;
-    if (up.images.length) need += 96;
-    if (upPromptText) need += Math.min(80, 24 + estimateTextHeight(upPromptText, width));
-    if (resultCount) {
-      // 多图结果按「固定卡宽 100px → 当前宽度排几列 → 需要几行」精确撑高（卡片不缩放，节点自适应）；
-      // 计入全部结果行，保证「运行按钮 + 生成图片」都完整展示、不被截断（封顶后整体仍受 maxH 限制）。
-      const cols = Math.max(1, Math.floor((width - 24) / 104));
-      need += Math.ceil(resultCount / cols) * 104 + 8;
-    }
-    autoGrowNode(id, need);
-  }, [id, up.images.length, upPromptText, resultCount]);
+  // 节点高度贴合真实内容（fitwrap 实测：输入图横条/参数摘要/报错/结果缩略图变化都自动跟随；手动 > 自适应）
+  const fitRef = useRef<HTMLDivElement>(null);
+  useFitNodeToContent(id, fitRef, 52, 800);
 
   return (
     <>
@@ -67,6 +56,7 @@ export function WorkNode({ id, data }: NodeProps): JSX.Element {
           </span>
         }
       >
+        <div className="mb-sc-fitwrap nowheel" ref={fitRef}>
         <div className="mb-sc-work-line">
           {WORK_TYPE_LABELS[d.workType]} · {RUN_MODE_LABELS[d.runMode]}
         </div>
@@ -92,21 +82,31 @@ export function WorkNode({ id, data }: NodeProps): JSX.Element {
           <div className="mb-sc-up">
             <div className="mb-sc-up-head">上游输入 · {up.images.length} 图 / {up.prompts.length} 词</div>
             {up.images.length > 0 && (
-              <div className="mb-sc-up-thumbs nodrag">
-                {up.images.slice(0, 4).map((p, i) => (
-                  <img
-                    key={i}
-                    src={thumbPair(p).thumb}
-                    alt={`上游图 ${i + 1}`}
-                    loading="lazy"
-                    decoding="async"
-                    draggable={false}
-                    onError={(e) => {
-                      const full = thumbPair(p).full;
-                      if (e.currentTarget.src !== full) e.currentTarget.src = full;
-                    }}
-                    onClick={() => openPreview(imgUrl(p))}
-                  />
+              // 输入图顺序横条（所见即所发）：渲染顺序 = computeUpstream 图序 = 提交给中转站的 refs 顺序；
+              // 提示词里写「图N」就是角标 N 的那张。全量渲染（横向滚动），不再只截前 4 张。
+              <div className="mb-sc-uporder nodrag nowheel" title="输入图顺序：提示词里的「图1/图2…」即按此角标对应">
+                {up.images.map((p, i) => (
+                  <div key={`${p}-${i}`} className="mb-sc-uporder-item">
+                    <img
+                      src={thumbPair(p).thumb}
+                      alt={`图${i + 1}`}
+                      loading="lazy"
+                      decoding="async"
+                      draggable={false}
+                      onError={(e) => {
+                        const full = thumbPair(p).full;
+                        if (e.currentTarget.src !== full) e.currentTarget.src = full;
+                      }}
+                      onClick={() =>
+                        // 统一预览：全部输入图作列表，从点击的那张开始（←→ 按输入顺序翻看）
+                        openPreview(
+                          up.images.map((x) => ({ src: imgUrl(x), meta: { filePath: x.startsWith('data:') ? undefined : x } })),
+                          i
+                        )
+                      }
+                    />
+                    <span className="mb-sc-uporder-i">图{i + 1}</span>
+                  </div>
                 ))}
               </div>
             )}
@@ -134,7 +134,12 @@ export function WorkNode({ id, data }: NodeProps): JSX.Element {
           )}
         </div>
 
-        {d.error && <div className="mb-sc-result-err nodrag">{d.error}</div>}
+        {d.error && (
+          <div className="mb-sc-result-err nodrag">
+            {d.error}
+            <ExplainErrorButton nodeId={id} />
+          </div>
+        )}
         {d.result?.durationMs != null && <div className="mb-sc-work-dur">{fmtDur(d.result.durationMs)}</div>}
 
         {d.result?.images && d.result.images.length > 0 && (
@@ -173,6 +178,7 @@ export function WorkNode({ id, data }: NodeProps): JSX.Element {
             })}
           </div>
         )}
+        </div>
       </NodeShell>
     </>
   );

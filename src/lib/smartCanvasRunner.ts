@@ -6,7 +6,7 @@
  * 以后接更多真实后端（api:upscale / 视频 / ComfyUI）只改本文件的分发层，不动 UI。
  */
 import type { Node, Edge } from '@xyflow/react';
-import { useSmartCanvasStore, useSmartRunStore, useSmartResultStore, useSmartPreviewStore } from '@/store/smartCanvasStore';
+import { useSmartCanvasStore, useSmartRunStore, useSmartResultStore, useSmartPreviewStore, useSmartTextStore } from '@/store/smartCanvasStore';
 import { useSmartDocsStore } from '@/store/smartDocsStore';
 import { useDeletedMediaStore } from '@/store/deletedMediaStore';
 import { readDocDoc, patchDocNodes } from '@/lib/smartDocStorage';
@@ -15,12 +15,13 @@ import { useLlmHistoryStore } from '@/store/llmHistoryStore';
 import { resolveModelRef } from '@/lib/modelMapping';
 import { useVideoProvidersStore } from '@/store/videoProvidersStore';
 import { useVideoHistoryStore } from '@/store/videoHistoryStore';
-import { diagnoseChatModel } from './modelMapping';
+import { diagnoseChatModel, listMappedModels } from './modelMapping';
 import { toast } from '@/store/toastStore';
+import { promptDialog, confirmDialog } from '@/components/ConfirmDialog';
 import { localPathToImageUrl } from '@/lib/imageUrl';
 import { captureVideoPoster, captureVideoFrames } from '@/lib/videoPoster';
 import { saveVideoNodeDefaults } from '@/lib/videoNodeDefaults';
-import { normalizeVideoMode } from '@shared/video';
+import { normalizeVideoMode, VIDEO_MODE_LABELS } from '@shared/video';
 import type { VideoGenerationRequest, VideoRequestImage, CostEstimate } from '@shared/video';
 import { validateVideoRequest, estimateVideoCost, needsCostConfirm, findVideoModel } from '@shared/videoProviders';
 import { normalizeVideoKind, autoCorrectVideoKind } from '@shared/domain';
@@ -31,6 +32,9 @@ import {
   RUN_MODE_LABELS,
   PROVIDER_LABELS,
   LLM_OP_LABELS,
+  LLM_PURPOSE_OPS,
+  REVERSE_OUTPUT_LABELS,
+  type LlmPurpose,
   type WorkNodeData,
   type ImageNodeData,
   type PromptNodeData,
@@ -47,13 +51,13 @@ import {
   type ChatMsg,
   type VideoNodeData,
   type ImageReverseNodeData,
-  type VideoReverseNodeData,
+  type ReverseOutputMode,
   type FrameInterpNodeData,
   type VideoClipNodeData,
   type RatioNodeData,
   type SizeSpec,
   type StoryboardNodeData,
-  type StoryboardConstraints,
+  type CharacterCardNodeData,
   type PromptMallNodeData,
   type LoopNodeData,
   type RunStatus,
@@ -68,24 +72,30 @@ import {
 } from '@shared/smartCanvas';
 import { ratioOutputSize, nearestTier, nearestResolution } from './sizeSpec';
 import { extractJsonBlock } from './jsonPrompt';
-import { STORY_SYSTEM, shotsSystem, parseShots, buildFixedBlock, composeShotPrompt, transitionsSystem, transitionsUser, parseTransitions } from './storyboardPrompt';
+import { resolveTimelinePlan, timelineSystem, formatTimelineText } from './storyboardPrompt';
+import { stripImageRefs } from './promptImageRefs';
+import { characterAnalysisSystem, characterSheetSystem, cardStyleLabel, sheetTypeLabel } from './characterCardPrompt';
 import { buildComfyControlValues, availableComfyModes } from './comfyDispatch';
 import { assembleCartGrouped, PROMPT_MALL_SYSTEM, PROMPT_MALL_PARAGRAPH_SYSTEM, stripFences } from './promptMall/assemble';
 import { buildThumbGenPrompt, THUMB_SEED } from './promptMall/thumbGen';
 import type { PromptMallCard } from './promptMall/cardTypes';
 import { buildLoopItems, chunkImages, type LoopItem } from './loopItems';
+import { activeImageList } from './imageListOrder';
 import { buildOutputName, srcBaseName } from './folderNaming';
 import { beginLocalLlmBusy } from './localLlmBusy';
 import { reconcileSegments, sameSegmentSrcs } from './videoClip';
 import {
   SEGMENT_DETECT_SYSTEM,
+  SEGMENT_REFINE_SYSTEM,
   PROOF_SYSTEM,
-  parseSegElements,
+  parseSegElementsScaled,
+  mergeRefinedElements,
+  segRefineInstruction,
   parseProofElements,
   buildProofReport,
   severityColor
 } from './visionSegment';
-import { loadImageCors, cropToDataUri, compositeAtBoxes, drawAnnotated } from './imageCompose';
+import { loadImageCors, cropToDataUri, compositeAtBoxes, drawAnnotated, prepareDetectImage } from './imageCompose';
 import type { OutputFile, InputControl } from '@shared/comfyui';
 import type { VideoProgressPayload, VideoDonePayload, InterpProgressPayload, VecTaskProgressPayload } from '@shared/ipc';
 
@@ -103,6 +113,12 @@ export function firstImageModel(): string {
 interface CollectedInputs {
   images: string[];
   prompts: string[];
+  /**
+   * 与 images 一一并联：每张图来自哪个上游节点（node.id）。
+   * 给「图片节点显示自己在下游生图里的序号角标」用（图N 所见即所发）。
+   * 防御：若某条收集路径漏推导致长度不齐，computeUpstream 返回前会置 undefined（宁缺毋错）。
+   */
+  imageFroms?: string[];
   refs: InputRef[];
   /** 上游视频来源（视频上传 / 视频生成 / 结果 / 缩放 产出的本地路径或 URL） */
   videos: string[];
@@ -134,7 +150,9 @@ export function imageNodeOutputs(im: ImageNodeData): string[] {
     if ((im.runStatus === 'running' || im.runStatus === 'paused') && Array.isArray(im.outBatch) && im.outBatch.length > 0) {
       return im.outBatch.filter(Boolean);
     }
-    return (im.srcs ?? []).filter(Boolean);
+    // 九宫格：按格子顺序输出，剔除被 Alt+点击「跳过」的格子（disabledIdx）——
+    // 输出顺序与格子角标序号严格一致（所见即所发），逻辑锁在 imageListOrder 纯函数里。
+    return activeImageList(im.srcs ?? [], im.disabledIdx);
   }
   return im.src ? [im.src] : [];
 }
@@ -143,6 +161,7 @@ export function imageNodeOutputs(im: ImageNodeData): string[] {
  * 提示词节点向下游输出的词列表：列表模式取 items（去空）；单条取 text。
  * 「统一提示词 / 前置提示词」：若设了 unifiedPrompt，则按 unifiedPos（前/后/两侧）拼进每一条——
  * 多段提示词逐条生图时不必在每个框重复输入同样的内容，形成规范性。
+ * 出口统一剥掉「@图N」的 @ 标记（UI 层视觉引用 → 发给模型的「图N」惯例，见 promptImageRefs.ts）。
  */
 export function promptNodeOutputs(pd: PromptNodeData): string[] {
   const base = pd.listMode
@@ -151,14 +170,23 @@ export function promptNodeOutputs(pd: PromptNodeData): string[] {
       ? [pd.text.trim()]
       : [];
   const uni = pd.unifiedPrompt?.trim();
-  if (!uni || !base.length) return base;
-  const pos = pd.unifiedPos ?? 'prefix';
-  return base.map((t) =>
-    pos === 'suffix' ? `${t}, ${uni}` : pos === 'both' ? `${uni}, ${t}, ${uni}` : `${uni}, ${t}`
-  );
+  const merged =
+    !uni || !base.length
+      ? base
+      : base.map((t) => {
+          const pos = pd.unifiedPos ?? 'prefix';
+          return pos === 'suffix' ? `${t}, ${uni}` : pos === 'both' ? `${uni}, ${t}, ${uni}` : `${uni}, ${t}`;
+        });
+  return merged.map(stripImageRefs);
 }
 
-function collectOwnOutput(n: Node, images: string[], prompts: string[], refs: InputRef[], videos: string[], sizes: SizeSpec[]): void {
+function collectOwnOutput(n: Node, images: string[], prompts: string[], refs: InputRef[], videos: string[], sizes: SizeSpec[], froms?: string[]): void {
+  // 图片一律经 pushImg 进列表：同步维护 froms 并联数组（每张图记录来源节点 id），
+  // 漏用 images.push 会导致并联长度不齐 → computeUpstream 出口有防御检查兜底。
+  const pushImg = (s: string): void => {
+    images.push(s);
+    froms?.push(n.id);
+  };
   const pushText = (t: string | undefined, from: string): void => {
     const tt = t?.trim();
     if (tt) {
@@ -170,7 +198,7 @@ function collectOwnOutput(n: Node, images: string[], prompts: string[], refs: In
     case 'image': {
       const im = n.data as unknown as ImageNodeData;
       const list = imageNodeOutputs(im);
-      for (const s of list) images.push(s);
+      for (const s of list) pushImg(s);
       if (list.length) refs.push({ kind: 'image', from: n.id, preview: im.listMode ? `${list.length} 张` : im.name ?? '图片' });
       break;
     }
@@ -181,15 +209,17 @@ function collectOwnOutput(n: Node, images: string[], prompts: string[], refs: In
       pushText((n.data as unknown as LlmNodeData).resultText, n.id);
       break;
     case 'image-reverse':
-    case 'video-reverse':
+      // 合并后的「反推」节点：图/视频统一在此产出文本
       pushText((n.data as unknown as { resultText?: string }).resultText, n.id);
       break;
-    case 'storyboard': {
-      // 每个分镜各是一条提示词（顺序喂下游，配合「多条提示词逐条生图」）
-      const shots = (n.data as unknown as StoryboardNodeData).shots ?? [];
-      for (const s of shots) pushText(s, n.id);
+    case 'storyboard':
+      // 整段分镜脚本（内嵌时间轴的单条连续文本）作一条提示词喂下游（主要是视频节点）
+      pushText((n.data as unknown as StoryboardNodeData).resultText, n.id);
       break;
-    }
+    case 'character-card':
+      // 角色卡生图提示词作一条文本喂下游生图
+      pushText((n.data as unknown as CharacterCardNodeData).resultText, n.id);
+      break;
     case 'angle-prompt':
       pushText((n.data as unknown as AnglePromptNodeData).generatedPrompt, n.id);
       break;
@@ -218,7 +248,7 @@ function collectOwnOutput(n: Node, images: string[], prompts: string[], refs: In
     case 'scale': {
       const sd = n.data as unknown as ScaleNodeData;
       if (sd.outputImage) {
-        images.push(sd.outputImage);
+        pushImg(sd.outputImage);
         refs.push({ kind: 'image', from: n.id, preview: '缩放图' });
       }
       if (sd.outputVideo) videos.push(sd.outputVideo);
@@ -227,7 +257,7 @@ function collectOwnOutput(n: Node, images: string[], prompts: string[], refs: In
     case 'upscale': {
       const ud = n.data as unknown as UpscaleNodeData;
       if (ud.outputImage) {
-        images.push(ud.outputImage);
+        pushImg(ud.outputImage);
         refs.push({ kind: 'image', from: n.id, preview: '放大图' });
       }
       break;
@@ -236,7 +266,7 @@ function collectOwnOutput(n: Node, images: string[], prompts: string[], refs: In
       // SVG 终端产物：作图片来源喂给 结果/文件夹输出（连线规则已限制只能连这两者）
       const vd = n.data as unknown as VectorizeNodeData;
       if (vd.outputSvgPath) {
-        images.push(vd.outputSvgPath);
+        pushImg(vd.outputSvgPath);
         refs.push({ kind: 'image', from: n.id, preview: 'SVG' });
       }
       break;
@@ -260,14 +290,14 @@ function collectOwnOutput(n: Node, images: string[], prompts: string[], refs: In
       pushText(ld.outPrompt, n.id);
       if (ld.outSize) sizes.push(ld.outSize);
       const batch = ld.outImages?.length ? ld.outImages.filter(Boolean) : ld.outImage ? [ld.outImage] : [];
-      for (const img of batch) images.push(img);
+      for (const img of batch) pushImg(img);
       if (batch.length) refs.push({ kind: 'image', from: n.id, preview: batch.length > 1 ? `当前批 ${batch.length} 张` : '循环当前图' });
       break;
     }
     case 'folder-input': {
       const fd = n.data as unknown as FolderInputNodeData;
       if (fd.files?.length) {
-        images.push(...fd.files);
+        for (const f of fd.files) pushImg(f);
         refs.push({ kind: 'image', from: n.id, preview: `文件夹 ${fd.files.length} 张` });
       }
       if (fd.videoFiles?.length) videos.push(...fd.videoFiles);
@@ -277,7 +307,7 @@ function collectOwnOutput(n: Node, images: string[], prompts: string[], refs: In
       // 切分节点：拼合后的整图作图片来源喂下游
       const sd = n.data as unknown as SegmentNodeData;
       if (sd.composedSrc) {
-        images.push(sd.composedSrc);
+        pushImg(sd.composedSrc);
         refs.push({ kind: 'image', from: n.id, preview: '拼合图' });
       }
       break;
@@ -292,7 +322,7 @@ function collectOwnOutput(n: Node, images: string[], prompts: string[], refs: In
     case 'result': {
       const r = (n.data as unknown as { result?: WorkResult }).result;
       if (r?.images?.length) {
-        images.push(...r.images);
+        for (const s of r.images) pushImg(s);
         refs.push({ kind: 'result', from: n.id, preview: r.summary?.slice(0, 40) });
       }
       if (r?.texts?.length) for (const t of r.texts) pushText(t, n.id);
@@ -302,8 +332,21 @@ function collectOwnOutput(n: Node, images: string[], prompts: string[], refs: In
   }
 }
 
+/**
+ * ⚠ 图序铁律（2026-07-11 锁定，烧钱级正确性——用户提示词里写「图1/图2」全靠它）：
+ * 收集图片的顺序 = **连线创建顺序（edges 数组顺序）× 每个来源节点的内部顺序（九宫格格子序 / 结果图序）**。
+ * 确定性依据（改动 walk 前必读）：
+ *  1. edgesByTarget 按 `for (const e of edges)` 建立 → 每个 target 的入边顺序 = edges 数组顺序；
+ *     store.onConnect 用 React Flow `addEdge`（尾部追加）→ edges 数组顺序 = 连线创建顺序，且随文档持久化（connections 保序）。
+ *  2. DFS 逐边深入：同一条边的整棵上游子树先收集完，再看下一条边（与 refs 提交给中转站的顺序一致）。
+ *  3. 分组子节点固定按「卡片位置 上→下、左→右」排序（下方 sort），与视觉顺序一致。
+ *  4. visited 按「首次到达」去重：同一来源经多条路径可达时，序号归属第一条路径（仍确定）。
+ * 禁止引入任何按 Map/Set/对象 key 迭代产生图片顺序的写法；对 images 去重必须保序（首见保留）。
+ */
 export function computeUpstream(nodes: Node[], edges: Edge[], workId: string): CollectedInputs {
   const images: string[] = [];
+  // 与 images 一一并联的来源节点 id（图片节点据此显示「自己在下游生图里是图几」）
+  const imageFroms: string[] = [];
   const prompts: string[] = [];
   const refs: InputRef[] = [];
   const videos: string[] = [];
@@ -336,13 +379,13 @@ export function computeUpstream(nodes: Node[], edges: Edge[], workId: string): C
       const sid = e.source;
       const n = nodeById.get(sid);
       if (!n) continue;
-      // 分镜节点有两个输出口（out=分镜提示词 / out-trans=镜头转场提示词），按口分别收集（同源不同口不去重）
-      const vkey = n.type === 'storyboard' ? `${sid}#${e.sourceHandle === 'out-trans' ? 'trans' : 'out'}` : sid;
+      // 角色卡有两个输出口（out=角色卡生图提示词 / out-desc=角色描述提示词），按口分别收集（同源不同口不去重）
+      const vkey = n.type === 'character-card' ? `${sid}#${e.sourceHandle === 'out-desc' ? 'desc' : 'out'}` : sid;
       if (visited.has(vkey)) continue;
       visited.add(vkey);
       if (n.type === 'image' || n.type === 'prompt') {
         // 图片/提示词节点：列表模式（多图/多条）与单值统一走 collectOwnOutput
-        collectOwnOutput(n, images, prompts, refs, videos, sizes);
+        collectOwnOutput(n, images, prompts, refs, videos, sizes, imageFroms);
         // 局部重绘：单图模式且带遮罩 → 记下底图+遮罩（首个命中即用，OpenAI 路径）；
         // 同时收集所有上游遮罩进 masks（ComfyUI mask 控件用）。
         if (n.type === 'image') {
@@ -360,16 +403,34 @@ export function computeUpstream(nodes: Node[], edges: Edge[], workId: string): C
           .slice()
           .sort((a, b) => a.position.y - b.position.y || a.position.x - b.position.x);
         // 归入分组的子节点：识别每个子节点自身的产出（含结果/生成/ComfyUI/LLM/视角/缩放/视频的内容）。
-        // 分组内的多条提示词**组合为一条**进 prompts（与「多条提示词逐条生图」规则配套：组=一条）。
+        // 「组=一条」规则只作用于单条文本产出：合并为一段进 prompts。
+        // 例外（2026-07-11）：**列表模式**的提示词子节点与组外行为一致——每条独立进 prompts（逐条生图），
+        // 不并进组合段；这样把列表提示词拖进分组不会丢掉「多条不同提示词各生成一次」的能力。
         const groupPrompts: string[] = [];
-        for (const child of children) collectOwnOutput(child, images, groupPrompts, refs, videos, sizes);
+        for (const child of children) {
+          const pd = child.type === 'prompt' ? (child.data as unknown as PromptNodeData) : null;
+          if (pd?.listMode) {
+            for (const t of promptNodeOutputs(pd)) {
+              const tt = t.trim();
+              if (tt) {
+                prompts.push(tt);
+                refs.push({ kind: 'prompt', from: child.id, preview: tt.slice(0, 40) });
+              }
+            }
+            continue;
+          }
+          collectOwnOutput(child, images, groupPrompts, refs, videos, sizes, imageFroms);
+        }
         const combined = groupPrompts.filter(Boolean).join('\n');
         if (combined) prompts.push(combined);
       } else if (n.type === 'result') {
         // 结果节点现在也能作上游来源：图片喂图、文本喂提示词、视频喂视频（统一集合的最近一次结果）
         const r = (n.data as unknown as ResultNodeData).result;
         if (r?.images?.length) {
-          images.push(...r.images);
+          for (const s of r.images) {
+            images.push(s);
+            imageFroms.push(n.id);
+          }
           refs.push({ kind: 'result', from: n.id, preview: r.summary?.slice(0, 40) });
         }
         if (r?.texts?.length) {
@@ -392,28 +453,35 @@ export function computeUpstream(nodes: Node[], edges: Edge[], workId: string): C
         // 插帧 / 视频剪辑 节点输出：处理后的视频喂下游
         const ov = (n.data as unknown as { outputVideo?: string | null }).outputVideo;
         if (ov) videos.push(ov);
-      } else if (n.type === 'image-reverse' || n.type === 'video-reverse') {
+      } else if (n.type === 'image-reverse') {
+        // 合并后的「反推」节点（图/视频统一）：输出文本作提示词
         const t = (n.data as unknown as { resultText?: string }).resultText?.trim();
         if (t) {
           prompts.push(t);
           refs.push({ kind: 'prompt', from: n.id, preview: t.slice(0, 40) });
         }
       } else if (n.type === 'storyboard') {
-        // 智能分镜：按输出口路由——上口（out）= 分镜提示词、下口（out-trans）= 镜头转场提示词，
-        // 各自每条一条提示词按序进 prompts（下游生图/视频逐条按序）
-        const sd = n.data as unknown as StoryboardNodeData;
-        const list = e.sourceHandle === 'out-trans' ? sd.transitions ?? [] : sd.shots ?? [];
-        for (const s of list) {
-          const t = s.trim();
-          if (t) {
-            prompts.push(t);
-            refs.push({ kind: 'prompt', from: n.id, preview: t.slice(0, 40) });
-          }
+        // 智能分镜：整段时间轴分镜脚本作一条提示词
+        const t = (n.data as unknown as { resultText?: string }).resultText?.trim();
+        if (t) {
+          prompts.push(t);
+          refs.push({ kind: 'prompt', from: n.id, preview: t.slice(0, 40) });
+        }
+      } else if (n.type === 'character-card') {
+        // 角色卡按输出口路由：上口（out）= 角色卡生图提示词；下口（out-desc）= 角色描述提示词（外貌/风格分析）
+        const cd = n.data as unknown as CharacterCardNodeData;
+        const t = (e.sourceHandle === 'out-desc' ? cd.analysisText : cd.resultText)?.trim();
+        if (t) {
+          prompts.push(t);
+          refs.push({ kind: 'prompt', from: n.id, preview: t.slice(0, 40) });
         }
       } else if (n.type === 'work') {
         const r = (n.data as unknown as WorkNodeData).result;
         if (r?.images?.length) {
-          images.push(...r.images);
+          for (const s of r.images) {
+            images.push(s);
+            imageFroms.push(n.id);
+          }
           refs.push({ kind: 'result', from: n.id, preview: r.summary?.slice(0, 40) });
         }
       } else if (n.type === 'llm') {
@@ -447,7 +515,10 @@ export function computeUpstream(nodes: Node[], edges: Edge[], workId: string): C
       } else if (n.type === 'comfy') {
         const r = (n.data as unknown as ComfyNodeData).result;
         if (r?.images?.length) {
-          images.push(...r.images);
+          for (const s of r.images) {
+            images.push(s);
+            imageFroms.push(n.id);
+          }
           refs.push({ kind: 'result', from: n.id, preview: r.summary?.slice(0, 40) });
         }
         // ComfyUI 工作流的文本输出（ShowText/string 等）当作上游提示词
@@ -465,6 +536,7 @@ export function computeUpstream(nodes: Node[], edges: Edge[], workId: string): C
         const sd = n.data as unknown as ScaleNodeData;
         if (sd.outputImage) {
           images.push(sd.outputImage);
+          imageFroms.push(n.id);
           refs.push({ kind: 'image', from: n.id, preview: '缩放图' });
         }
         if (sd.outputVideo) videos.push(sd.outputVideo);
@@ -480,12 +552,14 @@ export function computeUpstream(nodes: Node[], edges: Edge[], workId: string): C
         n.type === 'proof'
       ) {
         // 提示词商城产物/循环当前项/文件夹图片/切分拼合图/对稿报告：与分组子节点同一套自身产出识别
-        collectOwnOutput(n, images, prompts, refs, videos, sizes);
+        collectOwnOutput(n, images, prompts, refs, videos, sizes, imageFroms);
       }
     }
   };
   walk(workId);
-  return { images, prompts, refs, videos, sizes, inpaintMask, inpaintBase, masks };
+  // 防御：并联数组长度不齐说明有收集路径漏推 imageFroms —— 置 undefined（角标功能宁缺毋错，不给错序号）
+  const froms = imageFroms.length === images.length ? imageFroms : undefined;
+  return { images, prompts, imageFroms: froms, refs, videos, sizes, inpaintMask, inpaintBase, masks };
 }
 
 function collectInputs(workId: string): CollectedInputs {
@@ -803,7 +877,8 @@ function placeWorkResult(
   if (cascade && result.ok) {
     for (const e of st.edges.filter((x) => x.source === workId)) {
       const tgt = st.nodes.find((n) => n.id === e.target);
-      if (tgt?.type === 'work') void runWorkNode(tgt.id, visited);
+      // 跳过态（Alt+点击）的下游不被 cascade 自动触发
+      if (tgt?.type === 'work' && !(tgt.data as unknown as { skipped?: boolean }).skipped) void runWorkNode(tgt.id, visited);
     }
   }
 }
@@ -1145,8 +1220,10 @@ export function cancelWork(workId: string): void {
 /**
  * 单条重试：重跑最近一次「多条提示词逐条生图」批次中的第 pi 条（合集卡「重试此条」入口）。
  * 结果以同 batchId + shotIndex 推给下游结果节点 → 合集卡里该条状态翻新（聚合层取同位最新）。
+ * promptOverride：「✨ 改词重跑」用——以修改版提示词替换该条快照原词后重跑（同时更新快照，
+ * 让之后的普通「重试此条」也延续新词，符合结果驱动迭代语义）。
  */
-export async function retryPromptIndex(workId: string, pi: number): Promise<void> {
+export async function retryPromptIndex(workId: string, pi: number, promptOverride?: string): Promise<void> {
   const batch = lastBatchByWork.get(workId);
   const task = batch?.tasks[pi];
   if (!batch || !task) {
@@ -1161,6 +1238,10 @@ export async function retryPromptIndex(workId: string, pi: number): Promise<void
     toast.error('该节点正在运行', '等本轮结束或先取消');
     return;
   }
+  // 改词落快照放在全部 guard 之后：被拦下的重试（节点在跑等）不悄悄改词。
+  // task 是快照里的对象引用，直接改 prompt 即同步更新 lastBatchByWork 里的记录。
+  const ov = promptOverride?.trim();
+  if (ov) task.prompt = ov;
   const docId = currentDocId();
   const t0 = Date.now();
   cancelledWork.delete(workId);
@@ -1202,6 +1283,220 @@ export async function retryPromptIndex(workId: string, pi: number): Promise<void
   placeWorkResult(workId, wr, false, new Set(), docId, [wr]);
   if (retryErr && imgs.length === 0) toast.error('重试失败', retryErr);
   else toast.success(`第 ${pi + 1} 个重试完成`, `${imgs.length} 张`);
+}
+
+// ─────────────────────────────────────────────────────────────
+// AI 辅助（零新 IPC，复用 api:chat:optimize-prompt 的 systemPrompt 覆盖路径）：
+//  ① explainNodeError —— 失败自解释：把节点报错 + 上下文喂给文本模型，翻成「可能原因 + 怎么办」（面向画师）。
+//  ② rewriteAndRetryPrompt —— 结果驱动迭代：用户说哪里不满意 → LLM 改提示词 → 确认后单条重跑。
+// ─────────────────────────────────────────────────────────────
+
+/** 与智能体面板共用的模型记忆键（历史键名，保持兼容——老用户的记忆直接生效）。 */
+const AI_HELPER_MODEL_KEY = 'mengbi.sc.agent.textModel.v1';
+
+/**
+ * 解析 AI 辅助功能用的文本模型：localStorage 记忆 → 设置页「智能体·文本模型」偏好 → 首个可用。
+ * 都没有返回 null（调用方 toast 引导去设置页）。传显示名（与 translateText / AgentPanel 同约定）。
+ */
+function pickAiHelperModel(): { planId: number; modelId: string } | null {
+  const { configs, activePlanId, prefs } = useSettingsStore.getState();
+  if (activePlanId == null) return null;
+  const usable = listMappedModels(configs, activePlanId, 'text').filter((m) => m.usable);
+  if (!usable.length) return null;
+  let remembered = '';
+  try {
+    remembered = (localStorage.getItem(AI_HELPER_MODEL_KEY) ?? '').trim();
+  } catch {
+    // localStorage 不可用（极少见）：静默回退到偏好/首个可用
+  }
+  const pref = (prefs.agent_text_model || '').trim();
+  const chosen = [remembered, pref].find((m) => !!m && usable.some((u) => u.name === m)) ?? usable[0].name;
+  return { planId: activePlanId, modelId: chosen };
+}
+
+/** 截断长文本再喂诊断模型：提示词/报错可能巨长，开头信息量最大，全文只会稀释诊断质量还烧 token。 */
+function cutForDiag(s: string, n: number): string {
+  const t = s.trim();
+  return t.length > n ? `${t.slice(0, n)}…（已截断，全文 ${t.length} 字）` : t;
+}
+
+const EXPLAIN_SYSTEM = `你是一款 AI 绘画软件的售后工程师，读者是不懂技术的画师。
+根据下面给出的「节点信息 + 报错全文」，诊断这次生成为什么失败。输出格式：
+1~3 条「可能原因」，按可能性从高到低排序；每条先用一句大白话说清原因（不要堆技术术语、不要贴原始报错），
+紧跟一条具体可操作的建议（在软件里点什么 / 改什么参数 / 换什么模型 / 去哪里检查）。
+只输出诊断内容本身，不要客套话，不要复述输入。`;
+
+// 请求中的节点集合：模块级防重复点击兜底（按钮组件另有本地转圈态）
+const explainingNodes = new Set<string>();
+
+/**
+ * 失败自解释（「🤖 AI 解释」按钮入口）：收集 节点类型/模型/提示词/参数摘要/上游概况/报错全文 →
+ * 调文本模型 → SmartTextViewer 展示诊断。仅支持 生图(work)/ComfyUI(comfy)/视频(video) 三类节点。
+ */
+export async function explainNodeError(nodeId: string): Promise<void> {
+  if (explainingNodes.has(nodeId)) return;
+  const st = useSmartCanvasStore.getState();
+  const node = st.nodes.find((n) => n.id === nodeId);
+  if (!node) return;
+  const kindLabel = node.type === 'work' ? '生图' : node.type === 'comfy' ? 'ComfyUI' : node.type === 'video' ? '视频' : null;
+  if (!kindLabel) return;
+
+  // 组装诊断上下文：有什么给什么（比例/分辨率/张数/seed…），报错全文必须有
+  const up = computeUpstream(st.nodes, st.edges, nodeId);
+  const lines: string[] = [`【节点类型】${kindLabel}节点`];
+  let errText = '';
+  if (node.type === 'work') {
+    const d = node.data as unknown as WorkNodeData;
+    errText = (d.error ?? '').trim();
+    lines.push(`【工作类型】${WORK_TYPE_LABELS[d.workType]} · 运行方式 ${RUN_MODE_LABELS[d.runMode]}`);
+    lines.push(`【绘画模型】${d.modelId || firstImageModel() || '未选择'}`);
+    lines.push(
+      `【参数】${[
+        `比例 ${d.aspect || (d.autoAspect ? `自动→${d.autoAspect}` : '自动')}`,
+        d.imageSize ? `分辨率 ${d.imageSize}` : null,
+        d.quality ? `质量 ${d.quality}` : null,
+        `张数 ${d.n}`,
+        `seed ${d.seed ?? '随机'}`,
+        d.imageEach ? '逐张处理输入图' : null,
+        d.promptConcurrency ? '多提示词并发' : null
+      ]
+        .filter(Boolean)
+        .join(' · ')}`
+    );
+    const p = [d.prompt.trim(), ...up.prompts].filter(Boolean).join('\n');
+    if (p) lines.push(`【正向提示词】${cutForDiag(p, 600)}`);
+    if (d.negativePrompt?.trim()) lines.push(`【负向提示词】${cutForDiag(d.negativePrompt, 200)}`);
+  } else if (node.type === 'comfy') {
+    const d = node.data as unknown as ComfyNodeData;
+    errText = (d.error ?? '').trim();
+    lines.push(`【工作流模板】${d.templateName || '未选模板'}（本地 ComfyUI 工作流）`);
+    if (up.prompts.length) lines.push(`【外接提示词】${cutForDiag(up.prompts.join('\n'), 600)}`);
+  } else {
+    const d = node.data as unknown as VideoNodeData;
+    errText = (d.error ?? '').trim();
+    lines.push(`【视频模型】${d.modelId || '未选择'}`);
+    lines.push(
+      `【参数】${[
+        `模式 ${VIDEO_MODE_LABELS[normalizeVideoMode(d.mode)]}`,
+        `时长 ${d.duration}s`,
+        `画幅 ${d.aspect || (d.autoAspect ? `自动→${d.autoAspect}` : '自动')}`,
+        `分辨率 ${d.resolution}`,
+        `seed ${d.seed ?? '随机'}`
+      ].join(' · ')}`
+    );
+    const p = [d.prompt.trim(), ...up.prompts].filter(Boolean).join('\n');
+    if (p) lines.push(`【提示词】${cutForDiag(p, 600)}`);
+    if (d.negativePrompt?.trim()) lines.push(`【负向提示词】${cutForDiag(d.negativePrompt, 200)}`);
+  }
+  if (!errText) {
+    toast.error('该节点当前没有错误信息', '失败后再点「AI 解释」');
+    return;
+  }
+  lines.push(`【上游输入】${up.prompts.length} 条提示词 · ${up.images.length} 张图${up.videos.length ? ` · ${up.videos.length} 个视频` : ''}`);
+  lines.push(`【报错全文】\n${cutForDiag(errText, 1200)}`);
+
+  const picked = pickAiHelperModel();
+  if (!picked) {
+    toast.error('当前方案没有可用对话模型', 'AI 解释需要一个对话模型——到设置页「模型方案」配置');
+    return;
+  }
+  explainingNodes.add(nodeId);
+  try {
+    const r = await window.electronAPI.chat.optimizePrompt({
+      planId: picked.planId,
+      modelId: picked.modelId,
+      userInput: lines.join('\n'),
+      systemPrompt: EXPLAIN_SYSTEM
+    });
+    if (!r.ok) {
+      toast.error(r.error.message, r.error.hint);
+      return;
+    }
+    // optimizedBy=null = 后端回退了原文（上游超时/报错），此时 optimized 是我们喂进去的上下文，不能当诊断展示
+    if (!r.data.optimizedBy) {
+      toast.error('AI 解释未生效', r.data.reason ? `上游报错：${r.data.reason}` : '上游可能超时或报错，稍后重试或换个对话模型');
+      return;
+    }
+    useSmartTextStore.getState().open(r.data.optimized.trim(), `AI 诊断 · ${kindLabel}节点`);
+  } catch (err) {
+    toast.error('AI 解释失败', err instanceof Error ? err.message : String(err));
+  } finally {
+    explainingNodes.delete(nodeId);
+  }
+}
+
+const REWRITE_SYSTEM = `你是资深 AI 绘画提示词工程师。用户会给你一段「原提示词」和「对生成结果不满意的地方」。
+请在尽量保留原提示词意图与结构的前提下，针对不满点做最小必要的修改或增补。
+只输出修改后的完整提示词本身——不要解释、不要标题、不要引号包裹、不要 markdown 围栏。`;
+
+/**
+ * 结果驱动迭代（合集卡「✨ 改词重跑」入口）：
+ * 问用户哪里不满意 → LLM 按反馈改该条提示词 → confirmDialog 过目（烧钱操作要确认）→
+ * retryPromptIndex(workId, pi, 新词) 单条重跑（快照同步更新，再次重试延续新词）。
+ * 仅生图(work)批次——ComfyUI 批次的 controlValues 结构复杂，本轮不做改词。
+ */
+export async function rewriteAndRetryPrompt(workId: string, pi: number): Promise<void> {
+  const batch = lastBatchByWork.get(workId);
+  const task = batch?.tasks[pi];
+  if (!batch || !task) {
+    toast.error('没有可重试的批次记录', '批次快照只在本次会话内保留，重新运行该生图节点即可');
+    return;
+  }
+  const node = useSmartCanvasStore.getState().nodes.find((n) => n.id === workId);
+  if (!node || node.type !== 'work') return;
+  if ((node.data as unknown as WorkNodeData).status === 'running') {
+    toast.error('该节点正在运行', '等本轮结束或先取消');
+    return;
+  }
+  const feedback = await promptDialog({
+    title: '✨ 改词重跑',
+    message: '哪里不满意？（如：太暗了 / 人物比例不对 / 背景太乱）',
+    placeholder: '用一句话描述对这张图不满意的地方',
+    okText: '让 AI 改词'
+  });
+  if (feedback == null) return; // 取消：不烧任何调用
+  if (!feedback.trim()) {
+    toast.error('请描述哪里不满意', '例如：太暗了 / 人物比例不对 / 背景太乱');
+    return;
+  }
+  const picked = pickAiHelperModel();
+  if (!picked) {
+    toast.error('当前方案没有可用对话模型', '改词需要一个对话模型——到设置页「模型方案」配置');
+    return;
+  }
+  try {
+    const r = await window.electronAPI.chat.optimizePrompt({
+      planId: picked.planId,
+      modelId: picked.modelId,
+      // 原提示词必须完整喂入（截断会让「输出完整提示词」丢内容）；反馈是一句话，无需截断
+      userInput: `【原提示词】\n${task.prompt}\n\n【用户对生成结果不满意的地方】\n${feedback.trim()}`,
+      systemPrompt: REWRITE_SYSTEM
+    });
+    if (!r.ok) {
+      toast.error(r.error.message, r.error.hint);
+      return;
+    }
+    if (!r.data.optimizedBy) {
+      toast.error('改词未生效', r.data.reason ? `上游报错：${r.data.reason}` : '上游可能超时或报错，稍后重试或换个对话模型');
+      return;
+    }
+    const newPrompt = r.data.optimized.trim();
+    if (!newPrompt) {
+      toast.error('模型没有返回新提示词', '换个说法再试一次');
+      return;
+    }
+    // 烧钱前过目：detail 展示新提示词全文，确认了才重跑
+    const go = await confirmDialog({
+      title: '确认重跑（会产生生成费用）',
+      message: `AI 已按你的反馈改好第 ${pi + 1} 条提示词，确认用它重跑这一条？`,
+      detail: newPrompt,
+      okText: '重跑这一条'
+    });
+    if (!go) return;
+    await retryPromptIndex(workId, pi, newPrompt);
+  } catch (err) {
+    toast.error('改词重跑失败', err instanceof Error ? err.message : String(err));
+  }
 }
 
 /** 把文本结果推给下游结果节点（结果节点统一集合现已支持文本/视频）。 */
@@ -1253,22 +1548,94 @@ const LLM_SYSTEM: Partial<Record<LlmOp, string>> = {
   decompose:
     '你是需求拆解助手。把输入拆解为结构化要素（主体 / 场景 / 风格 / 构图 / 光影 / 色彩 / 关键细节），用简洁条目逐项列出。',
   refine: '你是对话完善助手。把输入打磨得更清晰、完整、可执行，直接输出完善后的文本，不要解释。',
+  script:
+    '你是专业编剧。用户给你多段独立素材，每段以【素材N · 来源】开头——可能包含多个人物设定、场景描述、简短故事/故事结构与创作要求。' +
+    '铁律：严格区分每段素材，不同人物的外貌、性格、身份**绝不混用**——提到人物时使用其素材里的名字或称呼，素材没给名字就先起名并交代对应关系；场景与人物对号入座。' +
+    '基于全部设定与故事结构进行完整剧本创作，输出结构：' +
+    '【剧名】一行；【故事梗概】100-200 字；【人物表】每人一行（名字｜外貌关键词｜性格｜动机目标）；' +
+    '【正文】按 第X幕·第X场 展开——每场含 场景标题（内/外·地点·时间）、场景与氛围描述、人物动作与对白（对白自然、动作可拍摄），直到故事完整收束。' +
+    '保持素材给定的设定不改动，缺失的细节可合理补足。直接输出剧本本身，不要解释、不要 Markdown 代码围栏。',
   'to-json':
     '你是「提示词结构化」助手。把用户输入的自然语言图像/视频提示词转成结构化 JSON。要求：用常用字段组织——subject(主体)/scene(场景)/composition(构图景别)/lighting(光线)/color(色调)/style(风格媒介)/mood(氛围)/camera(镜头，可嵌套 lens/angle/aperture)/quality(质感细节)/negative(负向，可选)；只输出输入里明确或可合理推断的字段，没有的不要编造、不要留空字段；值用与输入相同的语言（中文输入→中文值），保持原意；只输出合法 JSON 本身，不要解释、不要 markdown 代码围栏、不要任何前后缀文字。'
   // 'optimize' 不设——用后端默认的图像提示词优化器
 };
 
-function llmSystemPrompt(op: LlmOp, instruction: string): string | undefined {
+// 「输出用途」目标说明：告诉模型「优化给谁用」——按 purpose 追加到 systemPrompt。
+// 解决「优化后的提示词对不上路」：不知道是给绘画模型还是视频模型、要角色还是场景时，模型只能瞎猜。
+const LLM_PURPOSE_GUIDE: Record<Exclude<LlmPurpose, 'free'>, string> = {
+  image:
+    '输出面向 AI 绘画模型（gpt-image-2 / Nano Banana 等指令跟随型）的中文图像提示词：主体、构图、光线、色彩、风格、质感要素齐全，描述具体可直接执行，不要寒暄或解释。',
+  video:
+    '输出面向 AI 视频生成模型的中文视频提示词：除画面要素外，重点描述主体动作、镜头运动（推拉摇移）、节奏与时长感、画面衔接——动态描述优先于静态罗列。',
+  character:
+    '输出「角色设定」文本：外貌特征（脸型/发型/身材/服装/配饰）、气质性格、可复用的一致性关键词，条理清晰，便于多次生成保持同一角色不跑偏。',
+  scene:
+    '输出「场景描述」文本：环境空间、时间天气、光影氛围、材质细节、前中后景层次，画面感强、可直接用于生成。'
+};
+
+/** 按 purpose/intent 生成注入段（仅 LLM_PURPOSE_OPS 文本类操作；翻译/反推保持本义不注入）。 */
+function llmGoalSuffix(op: LlmOp, purpose?: LlmPurpose, intent?: string): string {
+  if (!LLM_PURPOSE_OPS.has(op)) return '';
+  const parts: string[] = [];
+  if (purpose && purpose !== 'free') parts.push(`输出用途：${LLM_PURPOSE_GUIDE[purpose]}`);
+  const it = (intent ?? '').trim();
+  if (it) parts.push(`本次意图：${it}。一切改写围绕该意图展开，不要添加与意图无关的内容。`);
+  return parts.length ? `\n${parts.join('\n')}` : '';
+}
+
+function llmSystemPrompt(op: LlmOp, instruction: string, purpose?: LlmPurpose, intent?: string): string | undefined {
   const base = LLM_SYSTEM[op];
+  const goal = llmGoalSuffix(op, purpose, intent);
   const extra = instruction.trim() ? `\n额外要求：${instruction.trim()}` : '';
   if (op === 'optimize') {
-    return instruction.trim() ? `把输入改写为高质量的图像生成提示词。${instruction.trim()}` : undefined;
+    // 没有任何定制（无指令/无用途/无意图）时维持旧行为：不传 systemPrompt，走后端默认图像提示词优化器
+    if (!instruction.trim() && !goal) return undefined;
+    return `你是提示词优化助手。把输入改写为高质量的生成提示词：保留原意、补足关键要素、描述具体可执行，直接输出改写结果，不要解释。${goal}${extra}`;
   }
-  return (base ?? '') + extra;
+  return (base ?? '') + goal + extra;
 }
 
 function setLlm(id: string, patch: Partial<LlmNodeData>): void {
   useSmartCanvasStore.getState().updateNodeData(id, patch as Partial<SmartNodeData>);
+}
+
+/** 剧本创作（op='script'）的素材装配：每段上游文本独立成【素材N · 来源】小节——
+ *  多个人物描述 / 场景描述 / 故事各自独立标注来源（来源节点的名称/标签，否则类型名），
+ *  绝不合并成一坨，配合 script 系统提示词防止模型混淆不同人物的设定。 */
+function buildScriptMaterials(nodes: Node[], own: string, up: CollectedInputs): string {
+  const kindName: Record<string, string> = {
+    prompt: '提示词',
+    llm: 'LLM',
+    'image-reverse': '角色反推',
+    'character-card': '角色卡',
+    'prompt-mall': '提示词商城',
+    proof: '对稿',
+    result: '结果',
+    group: '分组',
+    storyboard: '分镜'
+  };
+  const promptRefs = up.refs.filter((r) => r.kind === 'prompt');
+  // refs 与 prompts 一一对应时才用来源标注（分组合并等路径可能不齐，宁可退回通用标注也不错位）
+  const aligned = promptRefs.length === up.prompts.length;
+  const sections: string[] = [];
+  const push = (label: string, text: string): void => {
+    const t = text.trim();
+    if (t) sections.push(`【素材${sections.length + 1} · ${label}】\n${t}`);
+  };
+  if (own.trim()) push('本节点输入', own);
+  up.prompts.forEach((p, i) => {
+    let label = '上游文本';
+    if (aligned) {
+      const from = promptRefs[i]?.from;
+      const n = from ? nodes.find((x) => x.id === from) : undefined;
+      const meta = n?.data as { name?: string; label?: string } | undefined;
+      const base = kindName[n?.type ?? ''] ?? '上游文本';
+      const nm = (meta?.name ?? meta?.label ?? '').trim();
+      label = nm ? `${base}·${nm}` : base;
+    }
+    push(label, p);
+  });
+  return sections.join('\n\n');
 }
 
 /** 从反推返回里抽出纯文本：对象取最可能的文本字段、数组用「，」连接，其余转字符串。 */
@@ -1394,9 +1761,14 @@ export async function runLlmNode(llmId: string): Promise<void> {
   }
   // 「外接上游文本」开启时：上游提示词作为额外指令（注入 systemPrompt），待处理文本只取本节点 input；
   // 否则（默认）：上游提示词与本地 input 合并作为待处理文本，instruction 取本地填写。
+  // 剧本创作（script）：多段素材各自独立成【素材N · 来源】小节（人物/场景/故事分渠道标注，防混淆）。
   const fromUp = !!d.instructionFromUpstream && up.prompts.length > 0;
   const effInstruction = fromUp ? up.prompts.join('\n') : d.instruction;
-  const userInput = fromUp ? d.input.trim() : [d.input.trim(), ...up.prompts].filter(Boolean).join('\n');
+  const userInput = fromUp
+    ? d.input.trim()
+    : d.op === 'script'
+      ? buildScriptMaterials(st.nodes, d.input, up)
+      : [d.input.trim(), ...up.prompts].filter(Boolean).join('\n');
   if (!userInput) {
     setLlm(llmId, { status: 'idle' });
     toast.error('没有可处理的文本', fromUp ? '「外接上游文本」已把上游用作指令，请在节点里填入待处理文本' : '在节点里输入文字，或连一个提示词节点进来');
@@ -1406,7 +1778,8 @@ export async function runLlmNode(llmId: string): Promise<void> {
     planId,
     modelId: d.modelId,
     userInput,
-    systemPrompt: llmSystemPrompt(d.op, effInstruction)
+    // purpose/intent 注入：让模型知道「优化给谁用、要达到什么目的」（仅文本类 op，翻译保持本义）
+    systemPrompt: llmSystemPrompt(d.op, effInstruction, d.purpose, d.intent)
   });
   if (!r.ok) {
     setLlm(llmId, { status: 'error', error: r.error.message, logs: [r.error.message] });
@@ -1437,9 +1810,11 @@ export async function runLlmNode(llmId: string): Promise<void> {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 智能分镜节点：故事素材（文本 + 可选参考图自动反推）→ ① LLM 生成完整故事 →
-// ② 按数量拆成 N 条结构化分镜（{scene,shot,detail}）→ ③ 渲染端把固定约束段
-// （角色/风格/镜头/色彩/世界观/场景/服装）拼进每条 → 成品提示词喂下游。
+// 智能分镜节点（2026-07-11 视频制作工作流重做）：上游 LLM 已把故事完善好传进来——
+// 不再有「完善故事」LLM 步。流程：故事素材（上游文本/卡上输入 + 可选参考图自动反推）
+// → 一次 LLM 调用按「总时长 + 每镜秒数/手动镜头数」拆成 N 条带时间轴（startSec/endSec）
+// 的结构化分镜 → 时间连续性由代码校正（fillShotTimes）→ 固定约束段（画面定调等）由代码
+// 拼进每条 → 成品提示词喂下游生图；转场手法（transitionStyle）由代码强制注入转场条目。
 // 复用 api:chat:optimize-prompt + api:lab:reverse（零新 IPC）。
 // 提示词结构与解析的纯函数在 src/lib/storyboardPrompt.ts（配 vitest）。
 // ─────────────────────────────────────────────────────────────
@@ -1448,215 +1823,74 @@ function setSb(id: string, patch: Partial<StoryboardNodeData>): void {
   useSmartCanvasStore.getState().updateNodeData(id, patch as Partial<SmartNodeData>);
 }
 
-/** 合并旧 style 字段进 constraints（兼容旧画布文档）。 */
-function sbConstraints(d: StoryboardNodeData): StoryboardConstraints {
-  const c = { ...(d.constraints ?? {}) };
-  const legacy = (d.style ?? '').trim();
-  if (legacy && !c.style?.trim()) c.style = legacy;
-  return c;
-}
-
-interface SbPrereq {
-  d: StoryboardNodeData;
-  planId: number;
-}
-
-/** 分镜运行的公共预检：节点存在 / 模型可用 / 方案可用。失败已 toast，返回 null。 */
-function sbPrereq(id: string): SbPrereq | null {
+/**
+ * 运行智能分镜节点（2026-07-12 重做）：上游 角色描述 + 简短故事（+卡上素材）→ 一次 LLM 调用
+ * → 完整分镜脚本：开头【定调】段（稳定全片风格/场景/内容物）+「第X-Y秒：…」时间段逐段推进
+ *（每段写清 场景/人物动作/物体变化/镜头运动，每个时间段独立成段）。
+ * 版式由 formatTimelineText 兜底保证；单输出口喂下游（主要是视频节点）。
+ */
+export async function runStoryboardNode(id: string): Promise<void> {
   const st = useSmartCanvasStore.getState();
   const node = st.nodes.find((n) => n.id === id);
-  if (!node || node.type !== 'storyboard') return null;
+  if (!node || node.type !== 'storyboard') return;
   const d = node.data as unknown as StoryboardNodeData;
   if (!d.modelId) {
     toast.error('请先在节点上选一个对话模型');
-    return null;
+    return;
   }
   const sset = useSettingsStore.getState();
   const why = diagnoseChatModel(sset.configs, sset.plans, sset.activePlanId, d.modelId);
   if (why) {
     setSb(id, { status: 'error', error: why, logs: [why] });
     toast.error('该对话模型不可用', why);
-    return null;
+    return;
   }
-  if (sset.activePlanId === null) {
+  const planId = sset.activePlanId;
+  if (planId === null) {
     toast.error('没有可用方案', '先在设置页建一个方案并配置对话模型');
-    return null;
-  }
-  return { d, planId: sset.activePlanId };
-}
-
-/** 故事 → N 条分镜（拆分步，可单独重试）。成功写 shots/shotsMeta 并推下游。 */
-async function sbSplitShots(id: string, planId: number, d: StoryboardNodeData, story: string, t0: number): Promise<void> {
-  const count = Math.max(2, Math.min(20, d.shotCount || 4));
-  const constraints = sbConstraints(d);
-  const fixed = buildFixedBlock(constraints);
-  const r2 = await window.electronAPI.chat.optimizePrompt({
-    planId,
-    modelId: d.modelId,
-    userInput: story,
-    systemPrompt: shotsSystem(count, !!fixed)
-  });
-  if (!r2.ok || r2.data.optimizedBy === null) {
-    const msg = (!r2.ok ? r2.error.message : r2.data.reason) || '拆分分镜失败（上游超时/报错）';
-    setSb(id, { status: 'error', error: `${msg}（故事已生成，可点「重拆分镜」只重试这一步）`, logs: [msg] });
-    toast.error('拆分分镜失败', msg);
     return;
   }
-  const parsed = parseShots(r2.data.optimized, count);
-  if (!parsed.shots.length) {
-    const msg = '未能从模型回复解析出分镜，换个对话模型或减少分镜数量再试（故事已生成，可「重拆分镜」）';
-    setSb(id, { status: 'error', error: msg, logs: [msg] });
-    toast.error('拆分分镜失败', msg);
+  const up = computeUpstream(st.nodes, st.edges, id);
+  const material = [d.input.trim(), ...up.prompts].filter(Boolean).join('\n\n');
+  if (!material) {
+    toast.error('没有素材', '连上游文本（角色描述 / 简短故事）进来，或在节点里输入素材');
     return;
   }
-  // 固定约束段由代码拼进每条成品提示词（一致性不依赖模型自觉）；meta 仅作展示
-  const shots = parsed.shots.map((s) => composeShotPrompt(fixed, s));
-  setSb(id, {
-    shots,
-    shotsMeta: parsed.meta,
-    lastStage: 'shots',
-    error: null,
-    logs: [`${shots.length} 个分镜已生成，正在生成镜头转场…`]
-  });
-  // 下游结果节点同步看到全部分镜文本（仅分镜口 out 的连线）
-  pushTextDownstream(id, shots.map((s, i) => `【分镜 ${i + 1}】${s}`).join('\n\n'), '智能分镜', 'out');
-  // ③ 分镜 → 镜头转场动态（N-1 条；失败不连坐：分镜已落，可「重生转场」单独重试）
-  await sbGenTransitions(id, planId, d, shots, t0);
-}
-
-/** 分镜 → 镜头之间的转场动态提示词（N-1 条：运动轨迹/运镜衔接/场景过渡/主体延续）。
- *  失败只影响转场（分镜不回滚），节点仍置 success + toast 提示可「重生转场」。 */
-async function sbGenTransitions(id: string, planId: number, d: StoryboardNodeData, shots: string[], t0: number): Promise<void> {
-  const finish = (transitions: string[], note: string): void => {
-    setSb(id, {
-      status: 'success',
-      transitions,
-      logs: [`完成：${shots.length} 分镜${transitions.length ? ` + ${transitions.length} 转场` : ''} · ${d.modelId} · 用时 ${((Date.now() - t0) / 1000).toFixed(1)}s${note}`]
-    });
-  };
-  if (shots.length < 2) {
-    finish([], '');
-    toast.success(`已生成 ${shots.length} 个分镜`);
-    return;
-  }
+  const plan = resolveTimelinePlan(d);
+  const t0 = Date.now();
+  setSb(id, { status: 'running', error: null, resultText: '', logs: [`按 ${plan.durationSec}s 时间轴生成分镜脚本…`] });
   const r = await window.electronAPI.chat.optimizePrompt({
     planId,
     modelId: d.modelId,
-    userInput: transitionsUser(shots),
-    systemPrompt: transitionsSystem(shots.length)
+    userInput: material,
+    systemPrompt: timelineSystem({
+      durationSec: plan.durationSec,
+      secPerShot: plan.secPerShot,
+      count: plan.count,
+      extraNote: d.extraNote
+    })
   });
   if (!r.ok || r.data.optimizedBy === null) {
-    const msg = (!r.ok ? r.error.message : r.data.reason) || '转场生成失败（上游超时/报错）';
-    finish([], '（转场生成失败，可「重生转场」）');
-    toast.info('镜头转场生成失败（分镜不受影响）', `${msg}；可点「重生转场」单独重试`);
-    return;
-  }
-  const transitions = parseTransitions(r.data.optimized, shots.length);
-  finish(transitions, '');
-  // 下游结果节点同步看到全部转场文本（仅转场口 out-trans 的连线）
-  pushTextDownstream(id, transitions.map((s, i) => `【转场 ${i + 1}→${i + 2}】${s}`).join('\n\n'), '镜头转场', 'out-trans');
-  toast.success(`已生成 ${shots.length} 个分镜 + ${transitions.length} 条镜头转场`);
-}
-
-/** 只重新生成「镜头转场」（分镜已生成时单独重试，省故事 + 拆分两次调用）。 */
-export async function rerunStoryboardTransitions(id: string): Promise<void> {
-  const pre = sbPrereq(id);
-  if (!pre) return;
-  const { d, planId } = pre;
-  const shots = d.shots ?? [];
-  if (shots.length < 2) {
-    toast.error('分镜不足 2 条', '先生成分镜（转场是相邻分镜之间的衔接）');
-    return;
-  }
-  setSb(id, { status: 'running', error: null, logs: [`重新生成镜头转场（${shots.length - 1} 条）…`] });
-  await sbGenTransitions(id, planId, d, shots, Date.now());
-}
-
-/** 运行智能分镜节点：参考图分析（可选）→ 完整故事 → N 条分镜提示词。 */
-export async function runStoryboardNode(id: string): Promise<void> {
-  const pre = sbPrereq(id);
-  if (!pre) return;
-  const { d, planId } = pre;
-  const st = useSmartCanvasStore.getState();
-  const up = computeUpstream(st.nodes, st.edges, id);
-  const textMaterial = [d.input.trim(), ...up.prompts].filter(Boolean).join('\n');
-  const refImages = up.images.slice(0, 3); // 最多 3 张，控制成本
-  if (!textMaterial && !refImages.length) {
-    toast.error('没有故事素材', '在节点里输入故事/短句，或连提示词、参考图、提示词商城节点进来');
-    return;
-  }
-  const t0 = Date.now();
-  const totalSteps = refImages.length ? 3 : 2;
-  setSb(id, { status: 'running', error: null, logs: [`1/${totalSteps} ${refImages.length ? '分析参考图…' : '生成完整故事…'}`], shots: [], shotsMeta: undefined, transitions: undefined, analysis: undefined });
-
-  // ⓪ 参考图 → 视觉反推（复用 api:lab:reverse；单张失败降级继续，不整体失败）
-  let analysis = '';
-  if (refImages.length) {
-    const visionModel = (d.analysisModelId ?? '').trim() || d.modelId;
-    const parts: string[] = [];
-    for (let i = 0; i < refImages.length; i++) {
-      const r = await window.electronAPI.lab.reverse({
-        imagePaths: [refImages[i]],
-        modelId: visionModel,
-        resultType: 'description'
-      });
-      if (r.ok) {
-        const res = (r.data as { result?: unknown }).result;
-        const text = typeof res === 'string' ? res.trim() : '';
-        if (text) parts.push(`图${i + 1}：${text}`);
-      } else {
-        setSb(id, { logs: [`参考图 ${i + 1} 分析失败（${r.error.message}），跳过继续`] });
-      }
-    }
-    if (parts.length) {
-      analysis = `【参考图分析】\n${parts.join('\n')}`;
-      setSb(id, { analysis });
-    }
-    setSb(id, { logs: [`2/${totalSteps} 生成完整故事…`] });
-  }
-
-  const material = [textMaterial, analysis].filter(Boolean).join('\n\n');
-  if (!material) {
-    const msg = '参考图分析全部失败且无文本素材，检查视觉模型是否可用';
+    const msg = (!r.ok ? r.error.message : r.data.reason) || '分镜生成失败（上游超时/报错）';
     setSb(id, { status: 'error', error: msg, logs: [msg] });
-    toast.error('生成故事失败', msg);
+    toast.error('生成分镜失败', msg);
     return;
   }
-
-  // ① 素材（文本 + 参考图分析）→ 完整故事
-  const r1 = await window.electronAPI.chat.optimizePrompt({
-    planId,
-    modelId: d.modelId,
-    userInput: material,
-    systemPrompt: STORY_SYSTEM
+  // 版式由代码保证：【定调】+ 每个时间段各占一段（模型挤成一坨时由代码拆开）
+  const text = formatTimelineText(r.data.optimized);
+  if (!text) {
+    const msg = '模型回复为空，换个对话模型再试';
+    setSb(id, { status: 'error', error: msg, logs: [msg] });
+    toast.error('生成分镜失败', msg);
+    return;
+  }
+  setSb(id, {
+    status: 'success',
+    resultText: text,
+    logs: [`完成：${plan.durationSec}s 分镜脚本（约 ${plan.count} 段）· ${d.modelId} · 用时 ${((Date.now() - t0) / 1000).toFixed(1)}s`]
   });
-  if (!r1.ok || r1.data.optimizedBy === null) {
-    const msg = (!r1.ok ? r1.error.message : r1.data.reason) || '生成故事失败（上游超时/报错）';
-    setSb(id, { status: 'error', error: msg, logs: [msg] });
-    toast.error('生成故事失败', msg);
-    return;
-  }
-  const story = r1.data.optimized.trim();
-  // 故事先落节点（拆分失败也保留，可「重拆分镜」省一次故事调用）
-  setSb(id, { story, lastStage: 'story', logs: [`${totalSteps}/${totalSteps} 拆分 ${Math.max(2, Math.min(20, d.shotCount || 4))} 个分镜…`] });
-
-  // ② 故事 → N 条分镜
-  await sbSplitShots(id, planId, d, story, t0);
-}
-
-/** 只重试「拆分分镜」步（故事已生成时省一次故事调用 + 不重新分析参考图）。 */
-export async function rerunStoryboardShots(id: string): Promise<void> {
-  const pre = sbPrereq(id);
-  if (!pre) return;
-  const { d, planId } = pre;
-  const story = (d.story ?? '').trim();
-  if (!story) {
-    toast.error('还没有生成故事', '先点「生成分镜」完整跑一遍');
-    return;
-  }
-  const t0 = Date.now();
-  setSb(id, { status: 'running', error: null, logs: ['重拆分镜中…'] });
-  await sbSplitShots(id, planId, d, story, t0);
+  pushTextDownstream(id, text, '智能分镜');
+  toast.success('分镜脚本已生成', `【定调】+ ${plan.durationSec}s 时间轴逐段分镜，可直接喂视频节点`);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1760,13 +1994,24 @@ export async function sendLlmChat(nodeId: string, text: string): Promise<void> {
 
   // 本地大模型推理中 → html data-busy 降效（chat:done 解除；非本地模型为 no-op）
   const endBusy = beginLocalLlmBusy(d.modelId ?? '');
+  // 聊天也吃 purpose/intent：注入 system（与单次操作同一套目标说明），让对话完善始终围绕用户意图。
+  // 二者都空时不传（保持旧行为：无 system、纯对话）。
+  const chatGoal = ((): string | undefined => {
+    const parts: string[] = [];
+    if (d.purpose && d.purpose !== 'free') parts.push(`输出用途：${LLM_PURPOSE_GUIDE[d.purpose]}`);
+    const it = (d.intent ?? '').trim();
+    if (it) parts.push(`本次意图：${it}。回复与改写围绕该意图展开。`);
+    if (!parts.length) return undefined;
+    return `你是「梦笔」智能画布里的创作助手，帮用户完善提示词与创意。\n${parts.join('\n')}`;
+  })();
   // 无状态发送：不落 conversations/messages 表、不进生图页对话列表（与生图对话**互不互通**）；
   // 每次都带「节点当前 modelId + 完整消息序列」，模型永远跟随节点选择（修复切模型后仍报旧模型错）。
   const r = await window.electronAPI.chat.sendEphemeral({
     planId,
     modelId: d.modelId,
     messages: sendMessages,
-    attachedImages: attached && attached.length ? attached : undefined
+    attachedImages: attached && attached.length ? attached : undefined,
+    systemPrompt: chatGoal
   });
   if (!r.ok) {
     endBusy();
@@ -2415,13 +2660,15 @@ export async function runPromptMallNode(id: string): Promise<void> {
     .map((t) => t.trim())
     .filter(Boolean)
     .map((t) => ({ cat: '_upstream', sub: '', zh: t, en: t }));
-  const cartItems = (d.cart ?? []).map((it) => ({ cat: it.cat, sub: it.sub, zh: it.zh, en: it.en, group: it.group }));
+  // Array.isArray 兜底：cart 来自持久化画布文档，损坏形状（非数组）会让 map 抛错、节点卡死在点击瞬间
+  const cartItems = (Array.isArray(d.cart) ? d.cart : []).map((it) => ({ cat: it.cat, sub: it.sub, zh: it.zh, en: it.en, group: it.group }));
   const items = [...cartItems, ...upstreamItems];
   if (!items.length) {
     toast.error('购物车是空的', '打开「提示词商城」把卡片拖进购物车，或连上游提示词进来');
     return;
   }
-  const groups = d.groups?.length ? d.groups : [{ id: 'g1', name: '组 1' }];
+  // 同上：groups 非数组（如被写成对象/字符串）时 ?.length 仍为真值，会把脏值直接喂给 assembleCartGrouped
+  const groups = Array.isArray(d.groups) && d.groups.length ? d.groups : [{ id: 'g1', name: '组 1' }];
   const raw = assembleCartGrouped(items, groups, lang);
   if (!raw.trim()) {
     toast.error('没有可用片段', '购物车里的片段文本为空');
@@ -2702,6 +2949,7 @@ async function runBatchIteration(
         if (ctl.stop) break;
         const live = useSmartCanvasStore.getState().nodes.find((n) => n.id === t.id);
         if (!live) continue;
+        if ((live.data as unknown as { skipped?: boolean }).skipped) continue; // Alt+跳过的目标：循环逐项也绕过
         ctl.currentTarget = { id: t.id, type: live.type ?? '' };
         await runOne(live, false); // 下游完成感知 = 现有 Promise 语义（runWork/Comfy/Video 都 await 到终态）
         ctl.currentTarget = null;
@@ -2853,7 +3101,7 @@ function topoOrder(nodes: Node[], edges: Edge[]): string[] {
 }
 
 // loop 有意不进 RUNNABLE：运行全部跳过循环节点（与循环驱动器双向互斥，防死锁）
-const RUNNABLE = new Set(['work', 'comfy', 'llm', 'storyboard', 'prompt-mall', 'frame-interp', 'video-clip', 'upscale', 'vectorize', 'segment', 'proof']);
+const RUNNABLE = new Set(['work', 'comfy', 'llm', 'storyboard', 'character-card', 'prompt-mall', 'frame-interp', 'video-clip', 'upscale', 'vectorize', 'segment', 'proof']);
 // 运行全部时「当前正在跑」的节点（点停止时据此终止在途任务，而非等它自然跑完）
 let currentRunNode: { id: string; type: string } | null = null;
 
@@ -2911,7 +3159,8 @@ export async function runAllNodes(): Promise<void> {
   const st0 = useSmartCanvasStore.getState();
   const order = topoOrder(st0.nodes, st0.edges).filter((id) => {
     const n = st0.nodes.find((x) => x.id === id);
-    return n && RUNNABLE.has(n.type ?? '');
+    // Alt+点击跳过的节点：运行全部直接绕过（灰显态）
+    return n && RUNNABLE.has(n.type ?? '') && !(n.data as unknown as { skipped?: boolean }).skipped;
   });
   if (!order.length) {
     toast.error('没有可运行的节点', '加工作 / ComfyUI / LLM 节点后再运行全部');
@@ -2940,6 +3189,8 @@ export async function runAllNodes(): Promise<void> {
       // 显式触发（工作台按钮 / 右键运行此节点）直接调用 runSegmentNode/runProofNode，不经此门控，照常可重跑。
       else if (n.type === 'segment') { if (needsRun(n)) await runSegmentNode(id); }
       else if (n.type === 'proof') { if (needsRun(n)) await runProofNode(id); }
+      // 角色卡 = 视觉分析 + 组卡两次调用，已完成的按 needsRun 跳过（同 切分/对稿 的防重复扣费门控）
+      else if (n.type === 'character-card') { if (needsRun(n)) await runCharacterCardNode(id); }
       currentRunNode = null;
     }
     useSmartRunStore.getState().tick();
@@ -2956,16 +3207,18 @@ export async function runAllNodes(): Promise<void> {
 /** 该节点是否还需要运行：仅 work/comfy/llm 参与；按状态判断（非 running 且非 success），
  *  避免「成功但无图的 mock 节点」每次都被重复跑（不按图片数判断）。 */
 function needsRun(node: Node): boolean {
+  // Alt+点击跳过的节点：链式补跑/循环一律不自动运行它（已有输出仍喂下游）
+  if ((node.data as unknown as { skipped?: boolean } | undefined)?.skipped) return false;
   const t = node.type ?? '';
   if (
     t !== 'work' &&
     t !== 'comfy' &&
     t !== 'llm' &&
     t !== 'image-reverse' &&
-    t !== 'video-reverse' &&
     t !== 'frame-interp' &&
     t !== 'video-clip' &&
     t !== 'storyboard' &&
+    t !== 'character-card' &&
     t !== 'prompt-mall' &&
     t !== 'upscale' &&
     t !== 'vectorize' &&
@@ -2983,10 +3236,10 @@ async function runOne(node: Node, allowCascade = true): Promise<void> {
   else if (node.type === 'llm') await runLlmNode(node.id);
   else if (node.type === 'video') await runVideoNode(node.id);
   else if (node.type === 'image-reverse') await runImageReverseNode(node.id);
-  else if (node.type === 'video-reverse') await runVideoReverseNode(node.id);
   else if (node.type === 'frame-interp') await runFrameInterpNode(node.id);
   else if (node.type === 'video-clip') await runVideoClipNode(node.id);
   else if (node.type === 'storyboard') await runStoryboardNode(node.id);
+  else if (node.type === 'character-card') await runCharacterCardNode(node.id);
   else if (node.type === 'prompt-mall') await runPromptMallNode(node.id);
   else if (node.type === 'upscale') await runUpscaleNode(node.id);
   else if (node.type === 'vectorize') await runVectorizeNode(node.id);
@@ -2994,15 +3247,39 @@ async function runOne(node: Node, allowCascade = true): Promise<void> {
   else if (node.type === 'proof') await runProofNode(node.id);
 }
 
-// ───────────────────────── 图像 / 视频反推（复用 api:lab:reverse）─────────────────────────
+// ───────────────────────── 反推（图/视频合一，复用 api:lab:reverse + api:lab:vision-analyze，零新 IPC）─────────────────────────
 
-/** 图像反推：上游图片（或本地上传）→ 视觉模型反推 → 描述/标签/风格文本，喂下游。 */
+/** 各输出模式的系统提示词。为什么在渲染端也放一份 description/tags/style：
+ *  api:lab:reverse 的主进程实现只消费 imagePaths[0]（单图），视频抽帧的多图必须走支持多图的
+ *  api:lab:vision-analyze（自定义 systemPrompt）——三档文案与 lab.ts 的 REVERSE_SYSTEM 语义保持一致，
+ *  只额外加了「多帧=同一视频连续抽帧」的综合指引。prompt 模式（新增默认档）只在渲染端定义。 */
+const REVERSE_MODE_SYSTEM: Record<ReverseOutputMode, string> = {
+  prompt:
+    '你是资深 AI 绘画提示词工程师。给定图片（多张时为同一视频按时间顺序的连续抽帧，请综合成整体画面理解），直接输出一段可喂给绘画模型的中文生图提示词：主体（外观/动作/服饰）、构图与镜头、场景环境、光线、色彩色调、风格与质感要素齐全，语句连贯紧凑。只输出提示词本身，不要解说文字，不要 Markdown，不要列表。',
+  character:
+    '你是资深角色设定师。给定人物图片或角色文字素材（可能两者都有；多张图时为同一人物的不同画面，请综合理解），输出一段极其详细的中文角色外观描述，依次覆盖：脸型与五官（眉形、眼型与眼神、鼻、唇、眉宇间的气质）、发色与发型、肤色、体型与比例、衣着（每件单品的款式/材质/颜色/剪裁细节/层次搭配）、妆容（底妆/眼妆/唇色）、配饰（首饰/发饰/包袋/鞋履）、整体配色与气质关键词。描述要具体到可以据此稳定复现同一个角色。只输出描述本身，不要解说文字，不要 Markdown，不要列表。',
+  description:
+    '你是图像描述助手。给定图片（多张时为同一视频按时间顺序的连续抽帧，请综合描述画面与运动变化），用中文输出一段流畅、信息丰富的图像描述提示词，包含：主体、动作、姿态、服装/材质、场景、光线、镜头、色调、氛围。直接输出文本，不要 Markdown，不要列表。',
+  tags:
+    '你是图像反推助手。给定图片（多张时为同一视频按时间顺序的连续抽帧，请综合归纳），输出 8-15 个中文逗号分隔的标签，覆盖主体、风格、构图、光线、色调、材质等关键视觉要素。仅输出标签本身，用中文逗号分隔。',
+  style:
+    '你是图像风格分析师。给定图片（多张时为同一视频按时间顺序的连续抽帧，请综合分析），简洁说明它的视觉风格 / 拍摄手法 / 配色 / 镜头 / 光线 / 后期。中文输出，控制在 200 字以内。'
+};
+
+/** 反推（合并后单节点）：自动识别上游输入形态——有视频 → 抽帧多图反推；否则用上游图片 / 本地上传兜底；
+ *  角色反推（character，2026-07-12）额外支持**纯文字素材**（上游提示词/LLM 文本 → 详细角色外观描述）。
+ *  输出模式五选：prompt（默认）/ character（角色反推）/ description / tags / style。
+ *  通道选择：单图 + 三档固定模式 → api:lab:reverse（保留 prompt_lab_history 落库与 mock 行为不变）；
+ *  prompt / character 模式 或 多帧（视频）→ api:lab:vision-analyze（自定义系统提示词 + 多图 ≤8）；
+ *  character 且无图 → api:chat:optimize-prompt（纯文字扩写成角色描述）。 */
 export async function runImageReverseNode(id: string): Promise<void> {
   const st = useSmartCanvasStore.getState();
   const node = st.nodes.find((n) => n.id === id);
   if (!node) return;
   const d = node.data as unknown as ImageReverseNodeData;
   const setF = (p: Partial<ImageReverseNodeData>): void => st.updateNodeData(id, p as Partial<SmartNodeData>);
+  // 旧档兼容：没有 outputMode 的旧「图像反推/视频反推」节点回退到 reverseType 三档，不改变旧图行为
+  const mode: ReverseOutputMode = d.outputMode ?? d.reverseType ?? 'prompt';
   if (!d.modelId) {
     toast.error('未选视觉模型', '在节点上选一个支持识图的对话模型');
     return;
@@ -3012,67 +3289,188 @@ export async function runImageReverseNode(id: string): Promise<void> {
   if (why) {
     setF({ status: 'error', error: why, logs: [why] });
     toast.error('该对话模型不可用', why);
+    return;
+  }
+  const up = computeUpstream(st.nodes, st.edges, id);
+  // 上游文字素材：角色反推可只凭它运行；其余模式有图时作为补充说明一并给模型
+  const upText = up.prompts.map((t) => t.trim()).filter(Boolean).join('\n');
+
+  // 输入优先级：上游视频（抽帧）> 上游图片 > 本地上传图（与节点卡的输入形态徽章一致）
+  setF({ status: 'running', error: null });
+  let imgs: string[] = [];
+  let sourceLog = '';
+  if (up.videos.length) {
+    const v = up.videos[0];
+    const url = v.startsWith('data:') || v.startsWith('http') ? v : localPathToImageUrl(v);
+    const frames = await captureVideoFrames(url, d.frameCount ?? 6);
+    if (!frames.length) {
+      setF({ status: 'error', error: '无法从视频抽帧（解码失败）', logs: ['抽帧失败'] });
+      toast.error('视频抽帧失败', '换一个视频，或确认格式（mp4 / webm）');
+      return;
+    }
+    imgs = frames;
+    sourceLog = `视频抽 ${frames.length} 帧`;
+  } else {
+    const img = up.images[0] || d.inputImage?.url;
+    if (img) {
+      imgs = [img];
+      sourceLog = '图片';
+    } else if (mode === 'character' && upText) {
+      sourceLog = '文字素材';
+    } else {
+      setF({ status: 'idle' });
+      toast.error('反推需要图片或视频', '连一个图片 / 视频来源进来，或在节点上传一张图（角色反推也可只连文字描述）');
+      return;
+    }
+  }
+
+  const t0 = Date.now();
+  let text = '';
+  if (!imgs.length) {
+    // 角色反推·纯文字：对话模型把角色素材扩写成极详细的外观描述
+    const planId = sset.activePlanId;
+    if (planId === null) {
+      setF({ status: 'idle' });
+      toast.error('没有可用方案', '先在设置页建一个方案并配置对话模型');
+      return;
+    }
+    const r = await window.electronAPI.chat.optimizePrompt({
+      planId,
+      modelId: d.modelId,
+      userInput: upText,
+      systemPrompt: REVERSE_MODE_SYSTEM.character
+    });
+    if (!r.ok || r.data.optimizedBy === null) {
+      const msg = (!r.ok ? r.error.message : r.data.reason) || '角色反推失败（上游超时/报错）';
+      setF({ status: 'error', error: msg, logs: [msg] });
+      toast.error('角色反推失败', msg);
+      return;
+    }
+    text = cleanReversePrompt(r.data.optimized);
+  } else if (mode === 'prompt' || mode === 'character' || imgs.length > 1) {
+    // prompt / character 模式 / 视频多帧：走 vision-analyze（多图 + 自定义系统提示词）
+    const r = await window.electronAPI.lab.visionAnalyze({
+      imagePaths: imgs.slice(0, 8),
+      modelId: d.modelId,
+      systemPrompt: REVERSE_MODE_SYSTEM[mode],
+      instruction: [
+        imgs.length > 1 ? '这些是同一视频按时间顺序均匀抽取的帧，请按系统要求综合输出。' : '请按系统要求分析这张图，直接输出结果。',
+        upText ? `补充文字素材（一并参考）：${upText}` : ''
+      ]
+        .filter(Boolean)
+        .join('\n')
+    });
+    if (!r.ok) {
+      setF({ status: 'error', error: r.error.message, logs: [r.error.message] });
+      toast.error(r.error.message, r.error.hint);
+      return;
+    }
+    text = cleanReversePrompt((r.data as { text?: unknown }).text);
+  } else {
+    // 单图三档：沿用 api:lab:reverse（此分支 mode 已被 TS 收窄为 ReverseType）
+    const r = await window.electronAPI.lab.reverse({ imagePaths: imgs, modelId: d.modelId, resultType: mode });
+    if (!r.ok) {
+      setF({ status: 'error', error: r.error.message, logs: [r.error.message] });
+      toast.error(r.error.message, r.error.hint);
+      return;
+    }
+    text = cleanReversePrompt((r.data as { result?: unknown }).result);
+  }
+  setF({
+    status: 'success',
+    resultText: text,
+    logs: [`反推 · ${sourceLog} · ${d.modelId} · ${REVERSE_OUTPUT_LABELS[mode]} · 用时 ${((Date.now() - t0) / 1000).toFixed(1)}s`]
+  });
+}
+
+// ───────────────────────── 角色卡（照片 + 简述 → 外观分析 → 参考图生图提示词，2026-07-12）─────────────────────────
+
+/** 运行角色卡节点：① 视觉模型详细分析照片外观（人物/动物两套分析口径；无照片时用文字素材）
+ *  → ② 按「输出类型」组装生图提示词——完整设定卡（按版面风格）/ 三视图 / 面部特写 / 表情九宫格 /
+ *  身材比例 / 动作姿势 → 上口喂下游生图；外观分析走下口（out-desc）作角色描述。 */
+export async function runCharacterCardNode(id: string): Promise<void> {
+  const st = useSmartCanvasStore.getState();
+  const node = st.nodes.find((n) => n.id === id);
+  if (!node || node.type !== 'character-card') return;
+  const d = node.data as unknown as CharacterCardNodeData;
+  const setF = (p: Partial<CharacterCardNodeData>): void => st.updateNodeData(id, p as Partial<SmartNodeData>);
+  if (!d.modelId) {
+    toast.error('未选模型', '在节点上选一个支持识图的对话模型');
+    return;
+  }
+  const sset = useSettingsStore.getState();
+  const why = diagnoseChatModel(sset.configs, sset.plans, sset.activePlanId, d.modelId);
+  if (why) {
+    setF({ status: 'error', error: why, logs: [why] });
+    toast.error('该对话模型不可用', why);
+    return;
+  }
+  const planId = sset.activePlanId;
+  if (planId === null) {
+    toast.error('没有可用方案', '先在设置页建一个方案并配置对话模型');
     return;
   }
   const up = computeUpstream(st.nodes, st.edges, id);
   const img = up.images[0] || d.inputImage?.url;
-  if (!img) {
-    toast.error('图像反推需要图片', '连一个图片来源，或在节点上传一张图');
+  const desc = [d.desc.trim(), ...up.prompts].filter(Boolean).join('\n');
+  const subject = d.subjectType ?? 'person';
+  const subjectWord = subject === 'animal' ? '动物' : '人物';
+  if (!img && !desc) {
+    toast.error('没有素材', `连一张${subjectWord}照片（或在节点上传），或给一段角色简单描述`);
     return;
   }
-  setF({ status: 'running', error: null });
+  const sheet = d.sheetType ?? 'card';
+  const style = d.cardStyle ?? 'magazine';
+  const sheetLabel = sheetTypeLabel(sheet);
   const t0 = Date.now();
-  const r = await window.electronAPI.lab.reverse({ imagePaths: [img], modelId: d.modelId, resultType: d.reverseType });
-  if (!r.ok) {
-    setF({ status: 'error', error: r.error.message, logs: [r.error.message] });
-    toast.error(r.error.message, r.error.hint);
-    return;
-  }
-  const text = cleanReversePrompt((r.data as { result?: unknown }).result);
-  setF({ status: 'success', resultText: text, logs: [`图像反推 · ${d.modelId} · ${d.reverseType} · 用时 ${((Date.now() - t0) / 1000).toFixed(1)}s`] });
-}
+  setF({ status: 'running', error: null, resultText: '', logs: [img ? `1/2 详细分析${subjectWord}外观…` : '1/2 整理角色描述…'] });
 
-/** 视频反推：上游视频 → 渲染端抽帧 → 多图反推 → 文本，喂下游。 */
-export async function runVideoReverseNode(id: string): Promise<void> {
-  const st = useSmartCanvasStore.getState();
-  const node = st.nodes.find((n) => n.id === id);
-  if (!node) return;
-  const d = node.data as unknown as VideoReverseNodeData;
-  const setF = (p: Partial<VideoReverseNodeData>): void => st.updateNodeData(id, p as Partial<SmartNodeData>);
-  if (!d.modelId) {
-    toast.error('未选视觉模型', '在节点上选一个支持识图的对话模型');
+  // ① 外观分析：有照片走视觉模型（人物/动物两套口径，越细越好）；无照片直接用文字素材
+  let analysis = '';
+  if (img) {
+    const r = await window.electronAPI.lab.visionAnalyze({
+      imagePaths: [img],
+      modelId: d.modelId,
+      systemPrompt: characterAnalysisSystem(subject),
+      instruction: desc
+        ? `请按系统要求详细分析这张${subjectWord}照片。用户补充描述（一并参考）：${desc}`
+        : `请按系统要求详细分析这张${subjectWord}照片，直接输出结果。`
+    });
+    if (!r.ok) {
+      setF({ status: 'error', error: r.error.message, logs: [r.error.message] });
+      toast.error(r.error.message, r.error.hint);
+      return;
+    }
+    analysis = cleanReversePrompt((r.data as { text?: unknown }).text);
+  }
+  setF({ analysisText: analysis || desc, logs: [`2/2 组装「${sheetLabel}」提示词…`] });
+  // 下口（out-desc）= 角色描述提示词：分析一出即推给该口的下游结果节点（分镜/生图等经 computeUpstream 拉取）
+  pushTextDownstream(id, analysis || desc, '角色描述', 'out-desc');
+
+  // ② 外观分析 + 简述 → 指定输出类型的生图提示词（card 按版面风格；三视图/面部/表情/身材/姿势 各自版面）
+  const userInput = [analysis && `【外观分析】\n${analysis}`, desc && `【用户描述】\n${desc}`].filter(Boolean).join('\n\n');
+  const r2 = await window.electronAPI.chat.optimizePrompt({
+    planId,
+    modelId: d.modelId,
+    userInput,
+    systemPrompt: characterSheetSystem(sheet, style, subject)
+  });
+  if (!r2.ok || r2.data.optimizedBy === null) {
+    const msg = (!r2.ok ? r2.error.message : r2.data.reason) || `组装「${sheetLabel}」提示词失败（上游超时/报错）`;
+    setF({ status: 'error', error: msg, logs: [msg] });
+    toast.error(`生成「${sheetLabel}」提示词失败`, msg);
     return;
   }
-  const sset = useSettingsStore.getState();
-  const why = diagnoseChatModel(sset.configs, sset.plans, sset.activePlanId, d.modelId);
-  if (why) {
-    setF({ status: 'error', error: why, logs: [why] });
-    toast.error('该对话模型不可用', why);
-    return;
-  }
-  const up = computeUpstream(st.nodes, st.edges, id);
-  const v = up.videos[0];
-  if (!v) {
-    toast.error('视频反推需要视频', '连一个「视频上传」或「视频生成」节点进来');
-    return;
-  }
-  setF({ status: 'running', error: null });
-  const t0 = Date.now();
-  const url = v.startsWith('data:') || v.startsWith('http') ? v : localPathToImageUrl(v);
-  const frames = await captureVideoFrames(url, d.frameCount ?? 6);
-  if (!frames.length) {
-    setF({ status: 'error', error: '无法从视频抽帧（解码失败）', logs: ['抽帧失败'] });
-    toast.error('视频抽帧失败', '换一个视频，或确认格式（mp4 / webm）');
-    return;
-  }
-  const r = await window.electronAPI.lab.reverse({ imagePaths: frames, modelId: d.modelId, resultType: d.reverseType });
-  if (!r.ok) {
-    setF({ status: 'error', error: r.error.message, logs: [r.error.message] });
-    toast.error(r.error.message, r.error.hint);
-    return;
-  }
-  const text = cleanReversePrompt((r.data as { result?: unknown }).result);
-  setF({ status: 'success', resultText: text, logs: [`视频反推 · ${frames.length} 帧 · ${d.modelId} · 用时 ${((Date.now() - t0) / 1000).toFixed(1)}s`] });
+  const text = cleanReversePrompt(r2.data.optimized);
+  setF({
+    status: 'success',
+    resultText: text,
+    logs: [
+      `完成：「${sheetLabel}」提示词${sheet === 'card' ? `（${cardStyleLabel(style)}）` : ''} · ${subjectWord} · ${d.modelId} · 用时 ${((Date.now() - t0) / 1000).toFixed(1)}s`
+    ]
+  });
+  pushTextDownstream(id, text, '角色卡', 'out');
+  toast.success(`「${sheetLabel}」提示词已生成`, '上口=生图提示词（连生图出图） / 下口=角色描述提示词');
 }
 
 /** 视频缩放/补帧：上游视频 → 主进程 ffmpeg 重编码到目标宽高（可选 minterpolate 补帧到 30/60fps）→ 输出本地 mp4 喂下游。 */
@@ -3142,8 +3540,10 @@ export async function runSegmentDetect(id: string): Promise<void> {
   patchSmartNode(docId, id, { status: 'running', phase: '识别元素中…', error: null });
   liveRunningNodes.add(id);
   try {
-    const dim = await measureImage(src);
-    const sendable = await sendableUrl(src);
+    // 识别精度：最长边 <1536 的图等比放大后再发（vision 按 tile 切图，图太小丢小元素）；>3072 缩小防 base64 爆长；
+    // 区间内不重编码、原样发。坐标解析按「发送尺寸」做，再换算回源图像素（模型回像素坐标时参照系才正确）。
+    const prep = await prepareDetectImage(src);
+    const sendable = prep.scaledUri ?? (await sendableUrl(src));
     if (!sendable) throw new Error('读取图片失败');
     const r = await window.electronAPI.lab.visionAnalyze({
       imagePaths: [sendable],
@@ -3151,13 +3551,13 @@ export async function runSegmentDetect(id: string): Promise<void> {
       systemPrompt: SEGMENT_DETECT_SYSTEM
     });
     if (!r.ok) throw new Error(r.error.message);
-    const els = parseSegElements(r.data.text, dim.w, dim.h);
+    const els = parseSegElementsScaled(r.data.text, prep.w, prep.h, prep.origW, prep.origH);
     if (!els.length) throw new Error('没有识别到元素（可换更强的视觉模型，或在工作台手动加框）');
     patchSmartNode(docId, id, {
       status: 'idle',
       phase: undefined,
-      imgW: dim.w,
-      imgH: dim.h,
+      imgW: prep.origW,
+      imgH: prep.origH,
       elements: els,
       analysisSrc: src,
       composedSrc: undefined,
@@ -3168,6 +3568,71 @@ export async function runSegmentDetect(id: string): Promise<void> {
     const msg = (e as Error).message;
     patchSmartNode(docId, id, { status: 'error', phase: undefined, error: msg, logs: [msg] });
     toast.error('识别元素失败', msg);
+  } finally {
+    liveRunningNodes.delete(id);
+  }
+}
+
+/** 切分：二次细化——把当前框列表回喂视觉模型查漏补缺 + 修正边界（用户可选的一次额外调用，换更高精度）。
+ *  命中原 id 的元素保留已重绘产物与手改提示词（mergeRefinedElements），失败时原结果原样保留。 */
+export async function runSegmentRefine(id: string): Promise<void> {
+  const st = useSmartCanvasStore.getState();
+  const node = st.nodes.find((n) => n.id === id);
+  if (!node) return;
+  const d = node.data as unknown as SegmentNodeData;
+  const els = d.elements ?? [];
+  if (!els.length) {
+    toast.error('先识别元素', '二次细化是在已有识别结果上查漏补缺');
+    return;
+  }
+  const docId = currentDocId();
+  const why = visionModelGuard(d.modelId);
+  if (why) {
+    patchSmartNode(docId, id, { status: 'error', error: why, logs: [why] });
+    toast.error('视觉模型不可用', why);
+    return;
+  }
+  const up = computeUpstream(st.nodes, st.edges, id);
+  const src = visionInputSrc(d, up);
+  if (!src) {
+    toast.error('切分需要一张图', '连一个图片来源，或在工作台上传一张图');
+    return;
+  }
+  patchSmartNode(docId, id, { status: 'running', phase: '二次细化中…', error: null });
+  liveRunningNodes.add(id);
+  try {
+    const prep = await prepareDetectImage(src);
+    const sendable = prep.scaledUri ?? (await sendableUrl(src));
+    if (!sendable) throw new Error('读取图片失败');
+    // 现有框按「识别时的参照系」归一化回喂（源图没换 = d.imgW/H；换了图或手动加框场景则用现量尺寸，细化会整体重锚）
+    const sameSrc = d.analysisSrc === src;
+    const refW = sameSrc && d.imgW ? d.imgW : prep.origW;
+    const refH = sameSrc && d.imgH ? d.imgH : prep.origH;
+    const r = await window.electronAPI.lab.visionAnalyze({
+      imagePaths: [sendable],
+      modelId: d.modelId as string,
+      systemPrompt: SEGMENT_REFINE_SYSTEM,
+      instruction: segRefineInstruction(els, refW, refH)
+    });
+    if (!r.ok) throw new Error(r.error.message);
+    const next = parseSegElementsScaled(r.data.text, prep.w, prep.h, prep.origW, prep.origH);
+    if (!next.length) throw new Error('细化没有返回有效元素（原结果已保留，可重试或换视觉模型）');
+    const merged = mergeRefinedElements(els, next);
+    patchSmartNode(docId, id, {
+      status: 'idle',
+      phase: undefined,
+      imgW: prep.origW,
+      imgH: prep.origH,
+      elements: merged,
+      analysisSrc: src,
+      error: null,
+      logs: [`二次细化：${els.length} → ${merged.length} 个元素 · ${d.modelId}`]
+    });
+  } catch (e) {
+    const msg = (e as Error).message;
+    // 细化失败不动 elements（原识别结果保留可用），只报错误
+    patchSmartNode(docId, id, { status: 'error', phase: undefined, error: msg, logs: [msg] });
+    toast.error('二次细化失败', msg);
   } finally {
     liveRunningNodes.delete(id);
   }
@@ -4373,6 +4838,10 @@ async function ensureUpstreamRun(nodeId: string, visited: Set<string>): Promise<
 export async function runWithUpstream(nodeId: string): Promise<void> {
   // 生成时若 work/comfy 节点下游没接结果节点，自动创建一个并连上（让结果有处可显示）
   const me = useSmartCanvasStore.getState().nodes.find((n) => n.id === nodeId);
+  if ((me?.data as unknown as { skipped?: boolean } | undefined)?.skipped) {
+    toast.info('该节点已跳过', 'Alt+点击节点恢复参与运行后再试');
+    return;
+  }
   if (me && (me.type === 'work' || me.type === 'comfy' || me.type === 'video'))
     useSmartCanvasStore.getState().ensureResultNode(nodeId);
   await ensureUpstreamRun(nodeId, new Set());

@@ -6,7 +6,7 @@
  *  - CATALOG 类型为 Record<SmartNodeKind, …> → 新增第 N 类节点漏配目录则 tsc 直接报错（编译期完整性）。
  */
 import type { SmartNodeKind } from '@shared/smartCanvas';
-import { WORK_TYPE_LABELS, LLM_OP_LABELS, REVERSE_TYPE_LABELS, VIDEO_MODE_LABELS } from '@shared/smartCanvas';
+import { WORK_TYPE_LABELS, LLM_OP_LABELS, REVERSE_OUTPUT_LABELS, VIDEO_MODE_LABELS } from '@shared/smartCanvas';
 import { canConnectKinds, PRODUCERS, CONSUMERS } from '@/lib/canvasConnectRules';
 import { RATIO_ASPECTS, SIZE_TIERS } from '@/lib/sizeSpec';
 
@@ -31,7 +31,7 @@ export interface AgentNodeSpec {
 
 const WORK_TYPES = Object.keys(WORK_TYPE_LABELS).join(' / ');
 const LLM_OPS = Object.keys(LLM_OP_LABELS).join(' / ');
-const REVERSE_TYPES = Object.keys(REVERSE_TYPE_LABELS).join(' / ');
+const REVERSE_OUTPUTS = Object.keys(REVERSE_OUTPUT_LABELS).join(' / ');
 const VIDEO_MODES = Object.keys(VIDEO_MODE_LABELS).join(' / ');
 
 /**
@@ -76,7 +76,7 @@ export const CATALOG: Record<SmartNodeKind, AgentNodeSpec> = {
   llm: {
     label: 'LLM',
     tier: 'core',
-    purpose: '文本模型处理：优化提示词 / 翻译 / 扩写 / 反推等。上游连文本（或反推用的图片），输出文本。',
+    purpose: '文本模型处理：优化提示词 / 翻译 / 扩写 / 剧本创作（script：多段人物/场景/故事素材分渠道标注防混淆 → 完整剧本）/ 反推等。上游连文本（或反推用的图片），输出文本。',
     needsModel: 'text',
     params: [
       { key: 'op', desc: `操作类型，枚举：${LLM_OPS}` },
@@ -160,11 +160,14 @@ export const CATALOG: Record<SmartNodeKind, AgentNodeSpec> = {
     ]
   },
   'image-reverse': {
-    label: '图像反推',
+    label: '反推',
     tier: 'core',
-    purpose: '接一张图 → 视觉模型反推出 描述 / 标签 / 风格 文本喂下游（需带视觉能力的文本模型）。',
+    purpose: '接一张图或一个视频（视频自动抽帧）→ 视觉模型反推出 生图提示词 / 描述 / 标签 / 风格 文本喂下游（需带视觉能力的文本模型）。',
     needsModel: 'text',
-    params: [{ key: 'reverseType', desc: `反推类型，枚举：${REVERSE_TYPES}` }]
+    params: [
+      { key: 'outputMode', desc: `输出模式，枚举：${REVERSE_OUTPUTS}（prompt=直接可用的生图提示词，默认）` },
+      { key: 'frameCount', desc: '上游是视频时的抽帧数量，默认 6' }
+    ]
   },
   compare: {
     label: '对比',
@@ -214,16 +217,6 @@ export const CATALOG: Record<SmartNodeKind, AgentNodeSpec> = {
     purpose: '提供视频输入来源（需用户后续指定本地视频 / URL）。',
     params: []
   },
-  'video-reverse': {
-    label: '视频反推',
-    tier: 'extended',
-    purpose: '接一个视频 → 抽帧 → 视觉模型反推文本喂下游。',
-    needsModel: 'text',
-    params: [
-      { key: 'reverseType', desc: `反推类型，枚举：${REVERSE_TYPES}` },
-      { key: 'frameCount', desc: '抽帧数量，默认 6' }
-    ]
-  },
   'frame-interp': {
     label: '插帧',
     tier: 'extended',
@@ -239,11 +232,24 @@ export const CATALOG: Record<SmartNodeKind, AgentNodeSpec> = {
   storyboard: {
     label: '智能分镜',
     tier: 'extended',
-    purpose: '把一个故事 / 短句 → 拆成 N 条按时间顺序的图像提示词，按序喂下游生图。',
+    purpose: '把上游的 角色描述 + 简短故事 → 视频分镜脚本：开头【定调】段（稳定全片风格/场景）+ 按时间轴（第X-Y秒…）逐段分镜，整份喂视频节点。',
     needsModel: 'text',
     params: [
-      { key: 'input', desc: '故事素材 / 短句（也可由上游提示词连入）' },
-      { key: 'shotCount', desc: '分镜数量 2–20' }
+      { key: 'input', desc: '素材：角色描述 / 简短故事（也可由上游文本连入）' },
+      { key: 'videoDurationSec', desc: '视频总时长（秒，4-600，默认 30）' },
+      { key: 'secPerShot', desc: '每个时间段约几秒（2-15，默认 5）' }
+    ]
+  },
+  'character-card': {
+    label: '角色卡',
+    tier: 'extended',
+    purpose: '人物/动物照片 + 简单描述 → 先详细分析外观 → 双输出口：上口=按输出类型的生图提示词（完整设定卡/三视图/面部特写/表情九宫格/身材比例/动作姿势）；下口=角色描述提示词（外观详细描述，可喂分镜作角色设定）。',
+    needsModel: 'text',
+    params: [
+      { key: 'desc', desc: '角色简单描述（可由上游文本连入）' },
+      { key: 'sheetType', desc: '输出类型，枚举：card 完整设定卡 / turnaround 三视图 / face 面部特写 / expressions 表情九宫格 / body 身材比例 / pose 动作姿势' },
+      { key: 'subjectType', desc: '主体类型，枚举：person 人物 / animal 动物' },
+      { key: 'cardStyle', desc: '版面风格（仅 sheetType=card 生效），枚举：magazine 时尚杂志 / journal 手账拼贴 / photoset 写真设定集 / minimal 简约设计稿' }
     ]
   },
   'prompt-mall': {

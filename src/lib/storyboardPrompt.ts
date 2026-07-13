@@ -1,213 +1,91 @@
 /**
- * 智能分镜提示词结构（纯函数，配 storyboardPrompt.test.ts）。
+ * 智能分镜提示词（纯函数，配 storyboardPrompt.test.ts）。
  *
- * 设计：分镜提示词 = 「固定约束段 + 当前剧情 + 镜头变化 + 画面细节」。
- * 固定约束段（角色/风格/镜头/色彩/世界观/场景/服装）由**渲染端拼接**进每条分镜——
- * 跨分镜的一致性由代码保证，不依赖 LLM 自觉「每条重复角色特征」（历史上模型经常漏）。
- * LLM 只负责产 {scene, shot, detail} 对象数组（双兜底：字符串数组 / 编号行）。
+ * 2026-07-12 按「视频工作流」重做（旧「N 条分镜 + N-1 条转场」双输出方案整体删除）：
+ * - 输入 = 角色描述 + 简短故事（上游文本 / 卡上素材），**一次** LLM 调用；
+ * - 输出 = 一份完整的视频分镜脚本，版式（同日按用户反馈定稿）：
+ *   开头一段「【定调】…」——固定整个视频的 画面风格/场景环境/主要内容物/光线色彩基调（稳定全片）；
+ *   之后按时间轴「第X-Y秒：…」推进，**每个时间段独立成段（一段一段往下）**，段内写清
+ *   场景有什么 / 人物做什么 / 物体如何变化 / 镜头如何运动；不用列表符号/编号标题/Markdown；
+ * - 版式由代码保证（formatTimelineText：剥围栏/列表记号 + 每个时间段强制另起一段），不依赖模型自觉。
  */
-import type { StoryboardConstraints, StoryboardShotMeta } from '@shared/smartCanvas';
-import { extractJsonBlock } from './jsonPrompt';
 
-const CONSTRAINT_LABELS: Array<[keyof StoryboardConstraints, string]> = [
-  ['character', '角色'],
-  ['style', '风格'],
-  ['camera', '镜头语言'],
-  ['palette', '色彩氛围'],
-  ['world', '世界观'],
-  ['scene', '场景基调'],
-  ['wardrobe', '服装外貌']
+/** 视频总时长预设 chips（秒 → 显示名）。 */
+export const DURATION_PRESETS: Array<{ value: number; label: string }> = [
+  { value: 15, label: '15s' },
+  { value: 30, label: '30s' },
+  { value: 60, label: '1min' },
+  { value: 120, label: '2min' }
 ];
 
-/** 把非空约束项拼成「角色：…，风格：…」固定段；全空返回 ''。 */
-export function buildFixedBlock(c?: StoryboardConstraints): string {
-  if (!c) return '';
-  const parts: string[] = [];
-  for (const [key, label] of CONSTRAINT_LABELS) {
-    const v = c[key]?.trim();
-    if (v) parts.push(`${label}：${v}`);
-  }
-  return parts.join('，');
+/** 自定义总时长的允许范围（秒）。 */
+export const DURATION_MIN = 4;
+export const DURATION_MAX = 600;
+
+/** 每个时间段的秒数范围（时间轴颗粒度）。 */
+export const SEC_PER_SHOT_MIN = 2;
+export const SEC_PER_SHOT_MAX = 15;
+
+const clampInt = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, Math.round(v)));
+
+/** 时间轴规划（一切时长/段数口径的单一来源）。 */
+export interface TimelinePlan {
+  /** 视频总时长（秒，整数，4-600） */
+  durationSec: number;
+  /** 每段约几秒（2-15） */
+  secPerShot: number;
+  /** 预计时间段数（2-30，且不超过总秒数——保证每段 ≥1s） */
+  count: number;
 }
 
-/** 固定段 + 单条分镜元信息 → 成品图像提示词（可直接喂生图）。 */
-export function composeShotPrompt(fixed: string, m: StoryboardShotMeta | string): string {
-  const body =
-    typeof m === 'string'
-      ? m.trim()
-      : [m.scene?.trim(), m.characters?.trim(), m.action?.trim(), m.shot?.trim(), m.detail?.trim()].filter(Boolean).join('，');
-  if (!body) return fixed;
-  return fixed ? `${fixed}。${body}` : body;
-}
-
-/** 拆分镜的系统提示词（电影分镜师）：要求 LLM 输出 {scene,characters,action,shot,detail} 对象数组（字符串数组为可接受备选）。 */
-export function shotsSystem(n: number, hasConstraints: boolean): string {
-  return (
-    `你是专业电影分镜师。把用户给的故事拆成恰好 ${n} 个按时间顺序、镜头连贯的画面分镜。` +
-    '每个分镜输出一个 JSON 对象：' +
-    '{"scene":"场景与环境（地点/时间/天气/光线氛围）",' +
-    '"characters":"出场人物或主体：关键外观特征 + 当前动作 + 表情神态（不许用「同上」「她」等指代省略，每条都完整复述）",' +
-    '"action":"画面中正在发生的动作/事件/转变",' +
-    '"shot":"景别+机位+运镜（如：中景，平视机位，缓慢推近）",' +
-    '"detail":"画面细节（构图要素/色彩/材质/氛围）"}。' +
-    '要求：① 像电影分镜脚本一样具体，每条各字段合计不少于 60 字；' +
-    '② 相邻分镜在时间与空间上自然衔接（交代人物位置与动作的延续）；' +
-    '③ 每条都必须完整复述核心人物特征与场景特征，保证单条可独立用于文生图。' +
-    (hasConstraints
-      ? '角色外观、画面风格等固定设定由系统统一附加在每条开头，但场景与人物动作仍须每条写全。'
-      : '保持整组角色外观与画面风格一致。') +
-    `只输出一个 JSON 数组（长度恰好 ${n}），不要解释、不要 markdown 代码围栏。` +
-    '若无法输出对象数组，可输出纯字符串数组，每条为一句完整的图像提示词。'
-  );
-}
-
-/** 镜头转场的系统提示词：N 条分镜 → N-1 条「镜头之间的转场动态」描述。 */
-export function transitionsSystem(n: number): string {
-  const want = Math.max(1, n - 1);
-  return (
-    `你是电影剪辑与运镜设计师。用户给你 ${n} 条按顺序的分镜描述，请为每对相邻分镜设计「镜头之间的转场动态」，共恰好 ${want} 条（第 i 条对应 分镜 i → 分镜 i+1）。` +
-    '每条输出一个 JSON 对象：' +
-    '{"motion":"镜头运动轨迹（画面如何从上一镜运动/切换到下一镜，如：镜头从面部特写缓缓拉远并向右横移）",' +
-    '"transition":"运镜衔接 / 转场手法（如：硬切/叠化/匹配剪辑/甩镜/遮挡转场/推拉摇移跟）",' +
-    '"change":"场景与时间的过渡（地点/光线/时间如何变化）",' +
-    '"subject":"主体动作的延续（人物或主体从什么状态过渡到什么状态）"}。' +
-    `只输出一个 JSON 数组（长度恰好 ${want}），不要解释、不要 markdown 代码围栏。` +
-    '若无法输出对象数组，可输出纯字符串数组，每条为一段完整的转场描述。'
-  );
-}
-
-/** 转场生成的用户输入：把成品分镜编号列出。 */
-export function transitionsUser(shots: string[]): string {
-  return shots.map((s, i) => `分镜 ${i + 1}：${s}`).join('\n');
+/** 由节点配置解出时间轴规划：总时长缺省 30s；段数 = 总时长 ÷ 每段秒数（四舍五入）。 */
+export function resolveTimelinePlan(d: { videoDurationSec?: number; secPerShot?: number }): TimelinePlan {
+  const durationSec = clampInt(d.videoDurationSec ?? 30, DURATION_MIN, DURATION_MAX);
+  const secPerShot = clampInt(d.secPerShot ?? 5, SEC_PER_SHOT_MIN, SEC_PER_SHOT_MAX);
+  let count = clampInt(durationSec / secPerShot, 2, 30);
+  // 每段至少 1 秒：段数不超过总秒数（极短时长的护栏）
+  count = Math.min(count, Math.max(2, Math.floor(durationSec)));
+  return { durationSec, secPerShot, count };
 }
 
 /**
- * 解析转场回复（与 parseShots 同样的健壮化）：JSON 对象数组（motion/transition/change/subject 拼接）
- * → 字符串数组 → 编号行兜底。n = 分镜数，返回最多 n-1 条。
+ * 分镜脚本的系统提示词（视频导演 + 分镜师，一次调用）：
+ * 素材 = 角色描述 + 简短故事 → 开头【定调】段（稳定全片风格/场景/内容物）+
+ * 按时间轴「第X-Y秒：…」推进的分镜段（每个时间段独立成段）。
+ * 版式最终由 formatTimelineText 兜底（时间段挤成一坨时由代码拆开）。
  */
-export function parseTransitions(raw: string, n: number): string[] {
-  const want = Math.max(0, n - 1);
-  if (!want) return [];
-  const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
-  try {
-    const arr = JSON.parse(extractJsonBlock(raw)) as unknown;
-    if (Array.isArray(arr)) {
-      const out: string[] = [];
-      for (const x of arr) {
-        if (typeof x === 'string') {
-          const t = x.trim();
-          if (t) out.push(t);
-        } else if (x && typeof x === 'object') {
-          const o = x as Record<string, unknown>;
-          const parts = [str(o.motion), str(o.transition), str(o.change), str(o.subject)].filter(Boolean);
-          if (parts.length) out.push(parts.join('，'));
-          else {
-            let best = '';
-            for (const v of Object.values(o)) {
-              const s = str(v);
-              if (s.length > best.length) best = s;
-            }
-            if (best) out.push(best);
-          }
-        }
-      }
-      if (out.length) return out.slice(0, want);
-    }
-  } catch {
-    /* 非 JSON 回复 → 编号行兜底 */
-  }
-  const lines = raw
-    .split(/\n+/)
-    .map((l) => l.replace(/^\s*(?:转场|镜头|分镜)?\s*\d+(?:\s*[-→~至到]+\s*\d+)?\s*[.、:：)）\]】]\s*/, '').trim())
-    .filter((l) => l.length > 4);
-  return lines.slice(0, want);
-}
-
-/** 故事生成的系统提示词。 */
-export const STORY_SYSTEM =
-  '你是故事创作助手。把用户给的素材（短句、故事片段或参考图分析）扩展成一篇结构完整的短篇故事：' +
-  '有开端、发展、高潮、结尾，画面感强、角色与场景具体（外观、服装、环境可视化描述）。' +
-  '用与输入相同的语言输出，只输出故事正文，不要标题、不要解释。' +
-  '若输入已是完整故事，则在保留原文情节的前提下梳理润色后输出。';
-
-/** 从对象元素里提取分镜文本（按字段优先级；彻底消灭 "[object Object]"）。 */
-function shotFromObject(o: Record<string, unknown>): { text: string; meta?: StoryboardShotMeta } {
-  const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
-  const scene = str(o.scene);
-  const shot = str(o.shot ?? o.camera);
-  const detail = str(o.detail);
-  const characters = str(o.characters ?? o.character);
-  const action = str(o.action);
-  if (scene || shot || detail || characters || action) {
-    return {
-      text: [scene, characters, action, shot, detail].filter(Boolean).join('，'),
-      meta: { scene, shot, detail, characters, action }
-    };
-  }
-  // 常见替代字段
-  for (const key of ['prompt', 'text', 'description', 'content', 'caption']) {
-    const v = str(o[key]);
-    if (v) return { text: v };
-  }
-  // 最后兜底：取值里最长的字符串（绝不输出 [object Object]）
-  let best = '';
-  for (const v of Object.values(o)) {
-    const s = str(v);
-    if (s.length > best.length) best = s;
-  }
-  return { text: best };
-}
-
-export interface ParsedShots {
-  shots: string[];
-  meta?: StoryboardShotMeta[];
+export function timelineSystem(opts: { durationSec: number; secPerShot: number; count: number; extraNote?: string }): string {
+  const { durationSec, secPerShot, count, extraNote } = opts;
+  const note = (extraNote ?? '').trim();
+  return (
+    `你是专业视频导演兼分镜师。用户素材里包含角色描述与一个简短的故事（可能分多条给出），请把它设计成一段总时长 ${durationSec} 秒的完整视频分镜脚本。输出分两部分：` +
+    '第一段是定调段：以「【定调】」开头，用一段话固定整个视频的 画面风格（媒介/质感/画质）、场景与环境（地点/时代/氛围）、主要内容物与人物外观、光线与色彩基调——后续所有镜头都遵循这段定调，保证整个剧本与画面稳定统一。' +
+    `之后按时间顺序输出约 ${count} 个时间段（每段约 ${secPerShot} 秒，可按叙事需要浮动）：**每个时间段独立成段（单独一行）**，以「第X-Y秒：」开头（X、Y 为秒数；第一段从 0 秒开始、最后一段到 ${durationSec} 秒结束，相邻段首尾相接、不重叠不留空），段内依次写清：` +
+    '①场景与环境（地点、时间、光线氛围，场景里有什么）；' +
+    '②人物在做什么（动作、表情神态、位置变化——人物外观特征必须与素材里的角色描述一致，且每一段保持一致，不许用「同上」等省略）；' +
+    '③画面中物体的变化（出现/消失/移动/状态改变）；' +
+    '④镜头运动（推、拉、摇、移、跟，景别与机位变化）。' +
+    '格式要求：【定调】一段 + 每个时间段各占一段（段内是连续文本）；不要列表符号、不要编号标题、不要 Markdown。' +
+    (note ? `额外要求：${note}。` : '') +
+    '不要输出任何解释、前言或结尾，只输出脚本本身。'
+  );
 }
 
 /**
- * 解析 LLM 的分镜回复（健壮化三层兜底）：
- * ① JSON 数组：对象元素按 scene/shot/detail → prompt/text/description/content → 最长字符串值 提取；
- *    字符串元素原样。② 非 JSON：编号行拆分。返回的 shots 不含固定约束段（由调用方 compose）。
+ * 把 LLM 回复整理成定稿版式（由**代码**保证，不靠模型自觉）：
+ * 剥 markdown 代码围栏 → 逐行剥列表/编号记号 →「【定调】」与每个「第X-Y秒：」强制另起一段
+ * （模型把时间段挤成一坨时由代码拆开），段间单个换行、无空行。
  */
-export function parseShots(raw: string, n: number): ParsedShots {
-  try {
-    const arr = JSON.parse(extractJsonBlock(raw)) as unknown;
-    if (Array.isArray(arr)) {
-      const shots: string[] = [];
-      const meta: StoryboardShotMeta[] = [];
-      let hasMeta = false;
-      for (const x of arr) {
-        if (typeof x === 'string') {
-          const t = x.trim();
-          if (t) {
-            shots.push(t);
-            meta.push({});
-          }
-        } else if (x && typeof x === 'object') {
-          const r = shotFromObject(x as Record<string, unknown>);
-          if (r.text) {
-            shots.push(r.text);
-            meta.push(r.meta ?? {});
-            if (r.meta) hasMeta = true;
-          }
-        } else if (x != null) {
-          const t = String(x).trim();
-          if (t) {
-            shots.push(t);
-            meta.push({});
-          }
-        }
-      }
-      if (shots.length) {
-        const cap = Math.max(n, 1);
-        return { shots: shots.slice(0, cap), meta: hasMeta ? meta.slice(0, cap) : undefined };
-      }
-    }
-  } catch {
-    /* 非 JSON 回复 → 编号行兜底 */
-  }
-  const lines = raw
+export function formatTimelineText(raw: string): string {
+  let s = (raw ?? '').trim();
+  s = s.replace(/^```[a-zA-Z]*\s*/, '').replace(/\s*```\s*$/, '');
+  const lines = s
     .split(/\n+/)
-    .map((l) => l.replace(/^\s*(?:分镜|镜头|场景)?\s*\d+\s*[.、:：)）\]】]\s*/, '').trim())
-    .filter((l) => l.length > 4);
-  return { shots: lines.slice(0, Math.max(n, 1)) };
+    .map((l) => l.replace(/^\s*(?:[-*•·>]+|\d+\s*[.、)）])\s*/, '').trim())
+    .filter(Boolean);
+  let joined = lines.join('\n');
+  // 每个时间段/定调段强制另起一段（「第X-Y秒：」支持 -、~、－、至、到 等区间写法）
+  joined = joined.replace(/\s*(第\s*\d+\s*[-~－至到]+\s*\d+\s*秒\s*[:：])/g, '\n$1');
+  joined = joined.replace(/\s*(【定调】)/g, '\n$1');
+  return joined.replace(/\n{2,}/g, '\n').trim();
 }

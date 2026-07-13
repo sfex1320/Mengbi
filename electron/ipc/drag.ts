@@ -76,12 +76,20 @@ export function registerDragHandlers(): void {
 
   ipcMain.on('api:drag:start-from-path', (event, payload: unknown) => {
     try {
-      const { filePath } = (payload ?? {}) as { filePath?: string };
-      if (!filePath || !fs.existsSync(filePath)) return;
-      event.sender.startDrag({
-        file: filePath,
-        icon: placeholderIcon()
-      });
+      const { filePath, filePaths } = (payload ?? {}) as {
+        filePath?: string;
+        filePaths?: string[];
+      };
+      // 多文件：资产库批量选中拖出——Electron startDrag 的 files 数组一次带走整批
+      //（files 覆盖 file 字段；file 仍必填，给 list[0] 兜底）。不存在的文件静默剔除。
+      const list = (Array.isArray(filePaths) && filePaths.length ? filePaths : filePath ? [filePath] : [])
+        .filter((p): p is string => typeof p === 'string' && !!p && fs.existsSync(p));
+      if (!list.length) return;
+      event.sender.startDrag(
+        list.length > 1
+          ? { file: list[0], files: list, icon: placeholderIcon() }
+          : { file: list[0], icon: placeholderIcon() }
+      );
     } catch (e) {
       logger.warn('drag.start-from-path failed', e);
     }

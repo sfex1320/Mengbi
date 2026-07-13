@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import { NodeResizer, type NodeProps } from '@xyflow/react';
 import { useSmartCanvasStore, useSmartPreviewStore } from '@/store/smartCanvasStore';
 import { computeUpstream, runSegmentNode, cancelSegment } from '@/lib/smartCanvasRunner';
@@ -7,7 +7,7 @@ import { localPathToImageUrl } from '@/lib/imageUrl';
 import type { SegmentNodeData } from '@shared/smartCanvas';
 import { NodeShell } from './NodeShell';
 import { MeasuredThumb, thumbPair } from '../MeasuredThumb';
-import { autoGrowNode } from '../nodeArea';
+import { useFitNodeToContent } from '../nodeArea';
 
 const STATUS_TEXT: Record<string, string> = { idle: '待运行', running: '处理中…', success: '已完成', error: '失败' };
 
@@ -31,13 +31,12 @@ export function SegmentNode({ id, data }: NodeProps): JSX.Element {
   const running = d.status === 'running';
   const els = d.elements ?? [];
   const upImg = up.images.length > 0 || !!d.inputImage?.url;
+  // 空态 = 没图也没识别结果：卡体中央显示流程引导（取代原先会被遮的 tooltip 提示）
+  const empty = !upImg && els.length === 0;
 
-  useEffect(() => {
-    let need = 200;
-    if (els.length) need += 26;
-    if (d.composedSrc) need += 120;
-    autoGrowNode(id, need, 540);
-  }, [id, els.length, d.composedSrc]);
+  // 节点高度贴合真实内容（fitwrap 实测，双向；手动 > 自适应）——不再用 autoGrowNode 拍脑袋估高
+  const fitRef = useRef<HTMLDivElement>(null);
+  useFitNodeToContent(id, fitRef, 52, 700);
 
   const composed = d.composedSrc ? thumbPair(d.composedSrc) : null;
 
@@ -58,24 +57,36 @@ export function SegmentNode({ id, data }: NodeProps): JSX.Element {
           </span>
         }
       >
+        <div className="mb-sc-fitwrap nowheel" ref={fitRef}>
         <div className="mb-sc-revctl nodrag">
-          {upImg ? (
-            <div className="mb-sc-fromup is-fed">已接入图片{up.images.length > 1 ? `（用第 1 张，共 ${up.images.length} 张）` : ''}</div>
-          ) : (
-            <div className="mb-sc-note">连一个图片来源，或在工作台上传一张图</div>
-          )}
-          {els.length > 0 && (
-            <div className="mb-sc-note">
-              识别 {els.length} 个元素 · 已重绘 {els.filter((e) => e.status === 'done').length}/{els.length}
-            </div>
-          )}
-          <button
-            className="mb-btn mb-btn-sm mb-btn-primary mb-sc-studio-openbtn"
-            title="识别框 / 调整框 / 逐元素反推 / 统一风格 / 重绘 / 拼合 都在工作台里"
-            onClick={() => openStudio(id)}
-          >
+          {/* 主入口固定排在卡体第一位：常显渐变按钮，不靠 tooltip、不会被连接口/后续内容遮挡或挤出 */}
+          <button className="mb-btn mb-btn-sm mb-btn-primary mb-sc-seg-openbtn" onClick={() => openStudio(id)}>
             🎛 打开切分工作台
           </button>
+          {empty ? (
+            <div className="mb-sc-seg-guide">
+              <b>切分重绘流程</b>
+              <span>① 连一张图（或进工作台上传）</span>
+              <span>② 识别元素 → 拖框校准</span>
+              <span>③ 统一风格 · 逐元素重绘</span>
+              <span>④ 1:1 拼回整图输出</span>
+            </div>
+          ) : (
+            <>
+              {up.images.length > 0 ? (
+                <div className="mb-sc-fromup is-fed">已接入图片{up.images.length > 1 ? `（用第 1 张，共 ${up.images.length} 张）` : ''}</div>
+              ) : d.inputImage?.url ? (
+                <div className="mb-sc-note">已上传图片（在工作台可更换）</div>
+              ) : (
+                <div className="mb-sc-note">源图已断开：连一个图片来源，或到工作台重新上传</div>
+              )}
+              {els.length > 0 && (
+                <div className="mb-sc-note">
+                  识别 {els.length} 个元素 · 已重绘 {els.filter((e) => e.status === 'done').length}/{els.length}
+                </div>
+              )}
+            </>
+          )}
         </div>
 
         <div className="mb-sc-sb-runrow nodrag">
@@ -105,6 +116,7 @@ export function SegmentNode({ id, data }: NodeProps): JSX.Element {
             />
           </div>
         )}
+        </div>
       </NodeShell>
     </>
   );

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { NodeResizer, type NodeProps } from '@xyflow/react';
 import { useSmartCanvasStore } from '@/store/smartCanvasStore';
 import { computeUpstream } from '@/lib/smartCanvasRunner';
@@ -8,7 +8,7 @@ import type { RatioNodeData, RatioSizeMode, RatioEmit, SmartNodeData } from '@sh
 import { NodeShell } from './NodeShell';
 import { SegmentedControl, ClampNumberInput } from '../nodePanel/consoleControls';
 import { AspectGlyph } from '../nodeControls';
-import { autoGrowNode } from '../nodeArea';
+import { useFitNodeToContent } from '../nodeArea';
 
 interface Analysis {
   w: number;
@@ -92,10 +92,9 @@ export function RatioNode({ id, data }: NodeProps): JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [src]);
 
-  // 接图分析展开「各模型相近尺寸」建议后内容变高，节点自动撑高容纳（只增不减）
-  useEffect(() => {
-    if (src && info) autoGrowNode(id, 580, 640);
-  }, [id, src, info]);
+  // 节点高度贴合真实内容（fitwrap 实测，双向：接图展开分析变高、断图收矮；手动 > 自适应）
+  const fitRef = useRef<HTMLDivElement>(null);
+  useFitNodeToContent(id, fitRef, 52, 640);
 
   const spec = ratioOutputSize({ ...d, sizeMode, aspect, tier, customW, customH, emit });
   // original 模式优先用实时分析值显示（避免首帧 origW 尚未回写时闪「尺寸无效」）
@@ -112,6 +111,7 @@ export function RatioNode({ id, data }: NodeProps): JSX.Element {
     <>
       <NodeResizer isVisible minWidth={240} minHeight={260} />
       <NodeShell title="尺寸来源" accent="is-ratio" inputs outputs fill onDelete={() => remove(id)}>
+        <div className="mb-sc-fitwrap nowheel" ref={fitRef}>
         {/* 上：可选接图分析（原始尺寸 + 最接近常用比例 + 各模型系列的相近尺寸，点任一行即采用） */}
         {src && info && (
           <div className="mb-sc-ratio">
@@ -218,6 +218,7 @@ export function RatioNode({ id, data }: NodeProps): JSX.Element {
             onChange={(v) => setF({ emit: v })}
           />
           <div className="mb-sc-ratio-out">{echo ? <>输出：<b>{echo}</b></> : <span className="mb-sc-result-err">尺寸无效</span>}</div>
+        </div>
         </div>
       </NodeShell>
     </>

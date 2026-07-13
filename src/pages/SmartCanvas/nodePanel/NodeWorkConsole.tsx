@@ -19,6 +19,8 @@ import {
   type SmartNodeData
 } from '@shared/smartCanvas';
 import { ImageNodeIcon } from '../icons';
+import { thumbPair } from '../MeasuredThumb';
+import { localPathToImageUrl } from '@/lib/imageUrl';
 import { ResizablePanelWrapper } from './ResizablePanelWrapper';
 import { SegmentedControl, StepperInput, ModelDropdownButton, ClampNumberInput, type SegOption } from './consoleControls';
 import { AspectGlyph } from '../nodeControls';
@@ -365,6 +367,42 @@ function WorkConsoleInner({ id }: { id: string }): JSX.Element | null {
         </div>
       </div>
 
+      {up.images.length > 0 ? (
+        // 输入图顺序横条（与生图卡片同一来源）：顺序 = computeUpstream 图序 = 提交给中转站的 refs 顺序；
+        // 提示词里写「图N」就是角标 N 的那张（所见即所发）。
+        <div className="mb-np-bar-note">
+          <div className="mb-sc-uporder-label">输入图顺序（提示词里的「图N」按此角标对应）</div>
+          <div className="mb-sc-uporder" title="输入图顺序：与实际提交给中转站的参考图顺序一致">
+            {up.images.map((p, i) => (
+              <div key={`${p}-${i}`} className="mb-sc-uporder-item">
+                <img
+                  src={thumbPair(p).thumb}
+                  alt={`图${i + 1}`}
+                  loading="lazy"
+                  decoding="async"
+                  draggable={false}
+                  onError={(e) => {
+                    const full = thumbPair(p).full;
+                    if (e.currentTarget.src !== full) e.currentTarget.src = full;
+                  }}
+                  onClick={() =>
+                    useSmartPreviewStore
+                      .getState()
+                      .open(
+                        up.images.map((x) => ({
+                          src: x.startsWith('data:') ? x : localPathToImageUrl(x),
+                          meta: { filePath: x.startsWith('data:') ? undefined : x }
+                        })),
+                        i
+                      )
+                  }
+                />
+                <span className="mb-sc-uporder-i">图{i + 1}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
       {moreParams ? (
         <div className="mb-np-bar-more">
           <AdvParams d={d} setF={setF} />

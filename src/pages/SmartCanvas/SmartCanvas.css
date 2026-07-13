@@ -377,6 +377,111 @@
   border-color: var(--mb-danger, #e5484d);
 }
 
+/* ── 场景快速开始（启动页）：一键铺一套连好线的工作流 ── */
+.mb-sc-scenario-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mb-sc-scenario-title {
+  font-size: var(--mb-text-aux);
+  font-weight: 600;
+  color: var(--mb-text-secondary);
+}
+.mb-sc-scenario-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(196px, 1fr));
+  gap: 10px;
+}
+.mb-sc-scenario-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 12px 14px;
+  text-align: left;
+  border: 1px solid var(--mb-border);
+  border-radius: var(--mb-radius-card);
+  background: var(--mb-bg-card);
+  cursor: pointer;
+  /* 与启动页画布卡同款 hover 抬升；时长遵守 motion 规范（130–200ms） */
+  transition:
+    transform 160ms var(--mb-ease-default, ease),
+    box-shadow 160ms var(--mb-ease-default, ease),
+    border-color 160ms var(--mb-ease-default, ease);
+}
+.mb-sc-scenario-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--mb-accent);
+  box-shadow: var(--mb-shadow-md, 0 6px 18px rgba(0, 0, 0, 0.22));
+}
+.mb-sc-scenario-icon {
+  font-size: 20px;
+  line-height: 1;
+}
+.mb-sc-scenario-name {
+  font-size: var(--mb-text-body);
+  font-weight: 600;
+  color: var(--mb-text-primary);
+}
+.mb-sc-scenario-desc {
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+/* 第二排：从我的节点模板新建（小胶囊按钮，一行铺开可换行） */
+.mb-sc-scenario-tpls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.mb-sc-scenario-tpls-label {
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-muted);
+}
+.mb-sc-scenario-tpl {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 240px;
+  padding: 5px 12px;
+  font-size: var(--mb-text-aux);
+  color: var(--mb-text-secondary);
+  background: var(--mb-bg-card);
+  border: 1px solid var(--mb-border-soft);
+  border-radius: 999px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition:
+    color 160ms var(--mb-ease-default, ease),
+    border-color 160ms var(--mb-ease-default, ease),
+    transform 160ms var(--mb-ease-default, ease);
+}
+.mb-sc-scenario-tpl:hover {
+  color: var(--mb-text-primary);
+  border-color: var(--mb-accent);
+  transform: translateY(-1px);
+}
+.mb-sc-scenario-tpl-count {
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-accent);
+  background: var(--mb-accent-soft, var(--mb-bg-hover));
+  border-radius: 999px;
+  padding: 0 6px;
+}
+.mb-sc-scenario-hint {
+  margin: 0;
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-muted);
+}
+
 /* ── 主区：画布 + 检查器 ── */
 .mb-sc-main {
   flex: 1;
@@ -888,6 +993,13 @@
   border-radius: 8px;
   background: #000;
   max-height: 240px;
+}
+/* fitwrap 实测自适应（2026-07-11）：播放器高度 = 宽度 × 视频纵横比（metadata 未到前 16:9 兜底），
+   绝不 flex 拉伸/压缩——自然高度才是 useFitNodeToContent 的测量口径，拉伸高度在包裹层里会塌陷。 */
+.mb-sc-fitwrap .mb-sc-video-player {
+  flex: 0 0 auto;
+  height: auto;
+  aspect-ratio: auto 16 / 9;
 }
 /* 视频节点：模式/参考/费用/二次确认 */
 .mb-sc-vtoggles {
@@ -1688,6 +1800,17 @@
 .mb-sc-comfy-attach:hover {
   background: var(--mb-accent-soft);
 }
+/* fitwrap 实测自适应配套（仅 ComfyUI 节点）：
+   ① 运行行运行中有 3 个按钮（运行/取消/强制重置），默认宽度放不下时换行而不是互相挤扁；
+   ② 文本输出清单条数不可知——给清单自身限高 + 内部滚动，防止把节点顶到 maxH 后叠压
+     （只作用于 ComfyNode 加的 .mb-sc-comfy-texts，不影响结果节点共用的 .mb-sc-result-texts） */
+.mb-sc-node.is-comfy .mb-sc-work-runrow {
+  flex-wrap: wrap;
+}
+.mb-sc-comfy-texts {
+  max-height: 280px;
+  overflow-y: auto;
+}
 
 /* 角色节点：节点上直接选视图类型 + 生成视图提示词 */
 .mb-sc-char-sheet {
@@ -1942,7 +2065,8 @@
   color: var(--mb-text-muted);
 }
 
-/* LLM 节点：输出文本预览 */
+/* LLM / 反推 节点：输出文本预览。max-height + 内滚 = 节点走 fitwrap 实测自适应后
+   长输出的「天花板」——超出内部滚动，节点不再无限长高（看全文走点击/右键「放大查看」）。 */
 .mb-sc-llm-out {
   margin: 0;
   font-size: var(--mb-text-tiny);
@@ -1950,7 +2074,7 @@
   background: var(--mb-bg-hover);
   border-radius: 6px;
   padding: 6px;
-  max-height: 110px;
+  max-height: 240px;
   overflow: auto;
   white-space: pre-wrap;
   font-family: inherit;
@@ -2047,6 +2171,12 @@
   width: 100%;
   height: 100%;
   object-fit: contain;
+}
+/* fitwrap 实测自适应（2026-07-11）：单图区不再 flex:1 拉伸——拉伸高度在自然高度包裹层里会塌陷为 0。
+   高度 = 节点宽 × 图片纵横比（ImageNode 按 naturalW/H 内联 aspect-ratio），空态/无尺寸信息靠 min-height 保住拖放区。 */
+.mb-sc-fitwrap .mb-sc-img-area {
+  flex: 0 0 auto;
+  width: 100%;
 }
 .mb-sc-img-drop {
   width: 100%;
@@ -2383,9 +2513,10 @@
   border-color: var(--mb-accent);
 }
 
-/* 生成节点：运行 + 取消并排 */
+/* 生成节点：运行 + 取消并排（默认宽度下「自动比例」等 nowrap 尾巴放不下时折行，不横向溢出） */
 .mb-sc-work-runrow {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   align-items: center;
 }
@@ -2888,6 +3019,23 @@
   flex-direction: column;
   gap: 6px;
 }
+/* 通用「内容测量包裹层」（useFitNodeToContent 配套，与 .mb-sc-prompt-fit 同款）：
+   自然高度（flex:0 0 auto）= 节点自适应的唯一测量对象；
+   用户手动把节点缩小时 max-height:100% + overflow 让内容内部滚动而不是互相叠压。
+   子项一律不许被压扁（flex-shrink:0）——「行被压扁互相叠压」是分镜节点 UI 事故的直接原因。 */
+.mb-sc-fitwrap {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  max-height: 100%;
+  overflow-y: auto;
+}
+.mb-sc-fitwrap > *,
+.mb-sc-fitwrap .mb-sc-revctl > * {
+  flex-shrink: 0;
+}
 
 /* ── 便携资产库（工具栏「资产库」按钮 → 右侧非模态浮动面板）── */
 .mb-sc-glbtn {
@@ -3034,7 +3182,8 @@
 .mb-sc-sb-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap; /* 窄节点上 chips/输入自然换行，绝不挤压叠压 */
+  gap: 4px 8px;
   font-size: var(--mb-text-aux);
   color: var(--mb-text-secondary);
 }
@@ -3153,6 +3302,68 @@
   display: flex;
   align-items: center;
   gap: 6px;
+}
+/* 预设 chips（总时长 / 转场方式 / 画面定调）：小圆角按钮，选中描边 accent */
+.mb-sc-sb-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+.mb-sc-sb-chip {
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--mb-border-soft);
+  background: var(--mb-bg-base);
+  color: var(--mb-text-secondary);
+  font-size: var(--mb-text-tiny);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.mb-sc-sb-chip:hover {
+  border-color: var(--mb-accent);
+}
+.mb-sc-sb-chip.is-on {
+  border-color: var(--mb-accent);
+  color: var(--mb-accent);
+  background: color-mix(in srgb, var(--mb-accent) 12%, transparent);
+}
+/* 自定义总时长的秒数输入（窄，不吃 chips 空间） */
+.mb-sc-sb-num {
+  width: 58px;
+  flex-shrink: 0;
+  text-align: center;
+}
+/* 分镜条目的时间轴徽章「0:05-0:10」（第 X~Y 秒做什么） */
+.mb-sc-sb-time {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--mb-accent) 16%, transparent);
+  color: var(--mb-accent);
+  font-size: var(--mb-text-tiny);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* 「输出提示词带时间标注」开关行 */
+.mb-sc-sb-timeck {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+/* 工作台底部用法指引（分镜 → 生图 → 视频 → 剪辑） */
+.mb-sc-sb-guide {
+  font-size: var(--mb-text-tiny);
+  color: var(--mb-text-muted);
+  border-top: 1px dashed var(--mb-border-soft);
+  padding-top: 8px;
+  line-height: 1.6;
 }
 
 /* ── 角色设计节点（character）── */
@@ -3287,6 +3498,9 @@
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
+  /* fitwrap 实测自适应配套：购物车 chips 清单给自身限高 + 内部滚动，防止把节点顶到 maxH */
+  max-height: 240px;
+  overflow-y: auto;
 }
 .mb-sc-mall-chip {
   border: 1px solid var(--mb-border-soft);
@@ -3653,6 +3867,8 @@
   display: flex;
   align-items: center;
   gap: 6px;
+  /* fitwrap 实测自适应配套：缩略图夹/选夹/刷新/覆盖 一行默认宽度放不下时换行，不互相挤压 */
+  flex-wrap: wrap;
 }
 .mb-sc-mall-devrow .mb-select {
   flex: 1;
@@ -4790,6 +5006,24 @@
   flex: 1;
   min-height: 64px;
 }
+/* 提示词节点（2026-07-11 重做）：内容包裹层保持自然高度＝节点自适应的唯一测量对象；
+   手动缩小节点（manualSize）时 max-height:100% 让内容区内部滚动而不是被裁掉 */
+.mb-sc-prompt-fit {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 100%;
+  overflow-y: auto;
+}
+/* 输入框高度由 JS 按真实内容测量设置：禁 flex 拉伸（双类提特异性压过上面的 flex:1）、禁手动拖角 */
+.mb-sc-area > .mb-sc-textarea.mb-sc-prompt-ta,
+.mb-sc-textarea.mb-sc-prompt-ta {
+  flex: 0 0 auto;
+  resize: none;
+  overflow-y: auto;
+  min-height: 0;
+}
 .mb-sc-arearel {
   position: relative;
 }
@@ -4840,21 +5074,126 @@
   background: var(--mb-bg-card);
   color: var(--mb-accent);
 }
+/* ── LLM 节点（2026-07-11 重做）：op 图标行 + 展开网格 + 用途/意图 ──
+   op 行 = 当前操作的「图标 + 名 + 一句话副标」，点击展开 IconChoiceGrid 直选（替代原生下拉）；
+   铁律 16：不写死 height，min-height + padding 永不裁切文字。 */
+.mb-sc-llm-oprow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  min-height: 32px;
+  padding: 5px 10px;
+  border: 1px solid var(--mb-border);
+  border-radius: 10px;
+  background: var(--mb-bg-card);
+  color: var(--mb-text-primary);
+  cursor: pointer;
+  text-align: left;
+}
+.mb-sc-llm-oprow:hover,
+.mb-sc-llm-oprow.is-open {
+  border-color: var(--mb-accent);
+  background: var(--mb-bg-hover);
+}
+.mb-sc-llm-opico {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--mb-accent);
+}
+.mb-sc-llm-opname {
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.mb-sc-llm-opsub {
+  flex: 1;
+  min-width: 0;
+  font-size: 10.5px;
+  color: var(--mb-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mb-sc-llm-opcaret {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--mb-text-muted);
+}
+/* 卡上输入区（待处理文本）：随卡片拉伸、内部滚动 */
+.mb-sc-llm-in {
+  width: 100%;
+  min-height: 64px;
+  resize: none;
+  overflow-y: auto;
+}
+/* 聊天块：自然高度（flex:0 0 auto）——它在 .mb-sc-fitwrap 内，是节点实测自适应的测量对象；
+   flex:1 + flex-basis:0 会在自然高度容器里塌成 0（fitwrap 铁律：内部不许有依赖父高的拉伸元素）。 */
 .mb-sc-chat {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  flex: 1;
+  flex: 0 0 auto;
   min-height: 0;
 }
 .mb-sc-chat-model {
   font-size: var(--mb-text-tiny);
   color: var(--mb-text-muted);
 }
-.mb-sc-chat-msgs {
+/* 聊天头部一行：模型名（省略）+ 用途/意图胶囊 + 清空按钮 */
+.mb-sc-chat-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.mb-sc-chat-head .mb-sc-chat-model {
   flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mb-sc-chat-goal {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 46%;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--mb-accent);
+  background: var(--mb-accent-soft, var(--mb-bg-hover));
+  color: var(--mb-accent);
+  font-size: 10.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+}
+.mb-sc-chat-clear {
+  flex-shrink: 0;
+  border: none;
+  background: none;
+  color: var(--mb-text-muted);
+  font-size: var(--mb-text-tiny);
+  padding: 2px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.mb-sc-chat-clear:hover:not(:disabled) {
+  color: var(--mb-danger, #e5534b);
+  background: var(--mb-bg-hover);
+}
+.mb-sc-chat-clear:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+/* 对话记录区：自身 max-height + 内滚——消息越多只在区内滚动，节点不无限长高；
+   「底部智能跟随滚动」（msgsRef.scrollTop）依赖这里的 overflow 滚动容器，别去掉。 */
+.mb-sc-chat-msgs {
+  flex: 0 0 auto;
   min-height: 80px;
-  overflow: auto;
+  max-height: 340px;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -4863,6 +5202,7 @@
   border-radius: 8px;
 }
 .mb-sc-chat-msg {
+  flex-shrink: 0; /* 记录区被 max-height 封顶时消息只滚动、绝不被压扁叠压 */
   font-size: var(--mb-text-tiny);
   line-height: 1.5;
   padding: 5px 8px;
@@ -4980,6 +5320,15 @@
 }
 .mb-sc-guide-h {
   height: 1px;
+}
+
+/* 「分组」武装态的框选矩形：拖出多大分组就多大，虚线 accent 边 + 极淡填充 */
+.mb-sc-group-marquee {
+  border: 2px dashed var(--mb-accent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--mb-accent) 10%, transparent);
+  pointer-events: none;
+  z-index: 9;
 }
 
 /* 拖一个节点到另一个节点上时：目标节点浮现「上游 / 下游」分区高亮（半透明黄色，活动半区更亮、加大识别度）。
@@ -5334,6 +5683,30 @@
   opacity: 0.22;
   filter: grayscale(0.5);
   transition: opacity 0.15s ease;
+}
+
+/* 跳过态（Alt+点击节点切换）：整卡灰显 + 顶部徽章；运行全部/链式补跑/循环驱动绕过该节点。
+   灰显效果只作用于子元素，徽章（::after 挂在 wrapper 上）保持清晰可读。 */
+.react-flow__node.mb-sc-skipped > * {
+  opacity: 0.45;
+  filter: grayscale(0.85);
+  transition: opacity 0.15s ease;
+}
+.react-flow__node.mb-sc-skipped::after {
+  content: '⏭ 已跳过 · Alt+点击恢复';
+  position: absolute;
+  top: -24px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--mb-bg-card);
+  border: 1px solid var(--mb-border);
+  color: var(--mb-text-secondary);
+  font-size: var(--mb-text-tiny);
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 5;
 }
 
 /* 智能排布按钮（排布弹窗顶部，整宽） */
@@ -6603,6 +6976,193 @@ html[data-idle='true'] .mb-sc-video-prog-track i.is-indeterminate {
   color: var(--mb-danger, #d44);
   background: var(--mb-bg-card-hover);
 }
+/* 列表头右侧：提示 + 工作台按钮同排 */
+.mb-sc-plist-headright {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* ── 提示词列表工作台（PromptListStudio）：大窗完整编辑多条长提示词 ── */
+/* 节点卡上的入口按钮（渐变高亮小胶囊，单条工具行 / 列表头共用） */
+.mb-sc-plstudio-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 9px;
+  font-size: 11px;
+  line-height: 1.6;
+  font-weight: 600;
+  border: none;
+  border-radius: 999px;
+  background: linear-gradient(135deg, var(--mb-accent), #8b5cf6);
+  color: #fff;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.mb-sc-plstudio-open:hover {
+  filter: brightness(1.12);
+}
+/* 背板 z-index 比默认 .mb-modal-backdrop(800) 低一档：
+   工作台里「从库添加」打开的提示词库弹窗是 inline 渲染（z=800），必须能盖住 portal 到 body 的本工作台 */
+.mb-modal-backdrop.mb-sc-plstudio-bd {
+  z-index: 799;
+}
+/* 弹窗本体：复用 .mb-sc-studio 骨架，仅改尺寸（双类提特异性，铁律 27） */
+.mb-sc-plstudio.mb-card {
+  width: clamp(720px, 74vw, 1500px);
+  height: min(80vh, 960px);
+}
+.mb-sc-plstudio-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 14px;
+}
+/* 左列：条目编辑卡（每条 textarea 自动贴高无上限，滚动交给本容器） */
+.mb-sc-plstudio-main {
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-right: 4px;
+}
+.mb-sc-plstudio-card {
+  flex-shrink: 0;
+  border: 1px solid var(--mb-border-soft);
+  border-radius: 12px;
+  background: var(--mb-bg-base);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mb-sc-plstudio-card.is-dragover {
+  border-color: var(--mb-accent);
+  background: color-mix(in srgb, var(--mb-accent) 8%, var(--mb-bg-base));
+}
+.mb-sc-plstudio-cardhead {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.mb-sc-plstudio-idx {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--mb-accent) 12%, transparent);
+  color: var(--mb-accent);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: grab;
+  user-select: none;
+}
+.mb-sc-plstudio-count {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--mb-text-muted);
+}
+.mb-sc-plstudio-iconbtn {
+  flex-shrink: 0;
+  border: 1px solid var(--mb-border-soft);
+  border-radius: 7px;
+  background: var(--mb-bg-card);
+  color: var(--mb-text-secondary);
+  min-width: 24px;
+  min-height: 22px;
+  padding: 2px 6px;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.mb-sc-plstudio-iconbtn:hover:not(:disabled) {
+  border-color: var(--mb-accent);
+  color: var(--mb-accent);
+}
+.mb-sc-plstudio-iconbtn.is-on {
+  border-color: var(--mb-accent);
+  color: var(--mb-accent);
+}
+.mb-sc-plstudio-iconbtn.is-danger:hover:not(:disabled) {
+  border-color: var(--mb-danger, #d44);
+  color: var(--mb-danger, #d44);
+}
+.mb-sc-plstudio-iconbtn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+/* 自动贴高的 textarea：高度由 JS 按内容写入（fitTa），禁手动 resize、不出内滚动条 */
+.mb-sc-plstudio-ta {
+  width: 100%;
+  box-sizing: border-box;
+  resize: none;
+  overflow: hidden;
+  min-height: 64px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.mb-sc-plstudio-empty {
+  padding: 26px 10px;
+  text-align: center;
+  color: var(--mb-text-muted);
+  font-size: 12px;
+  border: 1px dashed var(--mb-border-soft);
+  border-radius: 12px;
+}
+.mb-sc-plstudio-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+/* 右列：统一提示词 + 批量操作块 */
+.mb-sc-plstudio-side {
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.mb-sc-plstudio-block {
+  flex-shrink: 0;
+  border: 1px solid var(--mb-border-soft);
+  border-radius: 12px;
+  background: var(--mb-bg-base);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mb-sc-plstudio-btitle {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--mb-text-secondary);
+}
+/* 弹窗头部「单条/列表」模式切换 */
+.mb-sc-plstudio-mode {
+  display: flex;
+  gap: 4px;
+}
+.mb-sc-plstudio-mode button {
+  min-height: 24px;
+  padding: 2px 12px;
+  border: 1px solid var(--mb-border-soft);
+  border-radius: 8px;
+  background: var(--mb-bg-base);
+  color: var(--mb-text-secondary);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.mb-sc-plstudio-mode button.is-on {
+  border-color: var(--mb-accent);
+  background: color-mix(in srgb, var(--mb-accent) 16%, var(--mb-bg-base));
+  color: var(--mb-text-primary);
+}
 
 /* 图片列表 */
 .mb-sc-imglist {
@@ -6697,6 +7257,148 @@ html[data-idle='true'] .mb-sc-video-prog-track i.is-indeterminate {
 .mb-sc-imglist-batchhint {
   font-size: 11px;
   color: var(--mb-text-muted);
+}
+
+/* ── 图片节点九宫格（2026-07-11）：3 列固定，≤9 张正好九宫格观感，更多往下加行。
+   角标序号 = 实际传下游的图序（跳过的不占号）——图序是烧钱级正确性，样式也要醒目。 */
+.mb-sc-img9-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+.mb-sc-img9-cell {
+  position: relative;
+  aspect-ratio: 1;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--mb-border);
+  background: var(--mb-bg-subtle, rgba(127, 127, 127, 0.06));
+  cursor: grab;
+}
+.mb-sc-img9-cell img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+/* 跳过的格子：整体置灰去饱和（Alt+点击恢复） */
+.mb-sc-img9-cell.is-skip img {
+  opacity: 0.32;
+  filter: grayscale(1);
+}
+/* 拖拽悬停靶格（重排落点 / 文件插入位置） */
+.mb-sc-img9-cell.is-dragover,
+.mb-sc-img9-add.is-dragover {
+  border-color: var(--mb-accent);
+  box-shadow: 0 0 0 2px var(--mb-accent);
+}
+/* 删除 × 仅悬停显现（不遮角标） */
+.mb-sc-img9-cell .mb-sc-imglist-x {
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.mb-sc-img9-cell:hover .mb-sc-imglist-x {
+  opacity: 1;
+}
+/* 左上角序号角标（1 起，大号醒目=「图N」的 N）；跳过态换灰底文字「跳过」 */
+.mb-sc-img9-idx {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  min-width: 20px;
+  text-align: center;
+  font-size: 12.5px;
+  font-weight: 700;
+  line-height: 1.5;
+  color: #fff;
+  background: color-mix(in srgb, var(--mb-accent) 82%, rgba(0, 0, 0, 0.5));
+  border-radius: 6px;
+  padding: 0 5px;
+  pointer-events: none;
+}
+.mb-sc-img9-idx.is-skip {
+  font-size: 10.5px;
+  font-weight: 600;
+  background: rgba(0, 0, 0, 0.6);
+  color: var(--mb-text-muted, #bbb);
+}
+/* 末尾「＋」空格：点选文件（多选）/ 拖文件进来追加 */
+.mb-sc-img9-add {
+  aspect-ratio: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border-radius: 8px;
+  border: 1.5px dashed var(--mb-border);
+  background: transparent;
+  color: var(--mb-text-muted);
+  font-size: 14px;
+  cursor: pointer;
+}
+.mb-sc-img9-add:hover {
+  border-color: var(--mb-accent);
+  color: var(--mb-accent);
+}
+
+/* ── 输入图顺序横条（生图卡片 + 生图控制台共用）：顺序 = refs 提交顺序，所见即所发 ── */
+.mb-sc-uporder {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 2px 0 4px;
+  scrollbar-width: thin;
+}
+.mb-sc-uporder-item {
+  position: relative;
+  flex: 0 0 auto;
+  width: 64px;
+  height: 64px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--mb-border);
+}
+.mb-sc-uporder-item img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  cursor: pointer;
+}
+/* 大号「图N」角标：与用户提示词里的「图N」一一对应 */
+.mb-sc-uporder-i {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  font-size: 11.5px;
+  font-weight: 700;
+  line-height: 1.5;
+  color: #fff;
+  background: color-mix(in srgb, var(--mb-accent) 82%, rgba(0, 0, 0, 0.5));
+  border-radius: 5px;
+  padding: 0 5px;
+  pointer-events: none;
+}
+.mb-sc-uporder-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--mb-text-secondary);
+  margin-bottom: 3px;
+}
+/* 单图节点的「下游序号」角标（左上）：显示这张图在直连生图节点里的图序 */
+.mb-sc-img-ord {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  padding: 1px 7px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #fff;
+  background: color-mix(in srgb, var(--mb-accent) 82%, rgba(0, 0, 0, 0.5));
+  pointer-events: auto;
+  z-index: 3;
 }
 
 /* 循环节点图片批次区 */
@@ -6968,6 +7670,140 @@ html[data-idle='true'] .mb-sc-video-prog-track i.is-indeterminate {
   font-size: var(--mb-text-tiny);
   color: var(--mb-text-muted);
   line-height: 1.5;
+}
+
+/* ── AI 优化建议清单（选区诊断浮层；portal 到 body + 双类提特异性，铁律 27）── */
+.mb-sc-agsug.mb-card {
+  position: fixed;
+  z-index: 62; /* 盖过智能体悬浮窗(61)，两者常同时出现 */
+  top: 76px;
+  right: 24px;
+  width: min(440px, 92vw);
+  max-height: min(76vh, 820px);
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+  box-shadow: 0 14px 46px rgba(0, 0, 0, 0.4);
+}
+.mb-sc-agsug-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  padding: 10px 12px 9px 16px;
+  border-bottom: 1px solid var(--mb-border-soft);
+  background: var(--mb-bg-card);
+}
+.mb-sc-agsug-head h3 {
+  margin: 0;
+  font-size: 15px;
+  flex: 1;
+}
+.mb-sc-agsug-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 14px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.mb-sc-agsug-item {
+  border: 1px solid var(--mb-border-soft);
+  border-radius: 12px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--mb-bg-hover);
+}
+.mb-sc-agsug-item.is-applied {
+  opacity: 0.55;
+}
+.mb-sc-agsug-titlerow {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.mb-sc-agsug-kind {
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 1.6;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--mb-border);
+  color: var(--mb-text-secondary);
+}
+.mb-sc-agsug-kind.is-prompt-rewrite {
+  color: var(--mb-accent);
+  border-color: var(--mb-accent);
+}
+.mb-sc-agsug-kind.is-structure {
+  color: var(--mb-text-muted);
+}
+.mb-sc-agsug-title {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+  word-break: break-word;
+}
+.mb-sc-agsug-target {
+  align-self: flex-start;
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: 11.5px;
+  color: var(--mb-text-muted);
+  cursor: pointer;
+}
+.mb-sc-agsug-target:hover {
+  color: var(--mb-accent);
+  text-decoration: underline;
+}
+.mb-sc-agsug-reason {
+  font-size: 12px;
+  color: var(--mb-text-secondary);
+  line-height: 1.55;
+  word-break: break-word;
+}
+.mb-sc-agsug-preview {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--mb-border-soft);
+  background: var(--mb-bg-card);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 140px;
+  overflow-y: auto;
+}
+.mb-sc-agsug-patch {
+  font-size: 12px;
+  color: var(--mb-accent);
+  word-break: break-word;
+}
+.mb-sc-agsug-ops {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mb-sc-agsug-done {
+  font-size: 12px;
+  color: var(--mb-text-muted);
+}
+.mb-sc-agsug-note {
+  font-size: 11.5px;
+  color: var(--mb-text-muted);
+}
+/* AgentPanel 里的「优化选中」小分区 */
+.mb-sc-agsug-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
 }
 
 /* ── 图片节点「编辑」按钮（单图态左下角小钮）── */
@@ -7336,18 +8172,26 @@ html[data-idle='true'] .mb-sc-video-prog-track i.is-indeterminate {
   background-position: center;
   user-select: none;
   touch-action: none;
+  cursor: crosshair;
 }
 .mb-sc-boxedit-box {
   position: absolute;
   border: 2px solid var(--mb-accent);
   border-radius: 3px;
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
-  cursor: move;
   box-sizing: border-box;
+  /* 命中测试收到容器层做（重叠框循环选择）：框本体不接指针事件，否则最上层框永远拦截点击、下层框选不中 */
+  pointer-events: none;
 }
 .mb-sc-boxedit-box.is-sel {
-  box-shadow: 0 0 0 2px var(--mb-accent), 0 0 10px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 0 0 2px var(--mb-accent), 0 0 14px rgba(0, 0, 0, 0.55);
+  background: rgba(255, 255, 255, 0.06);
   z-index: 3;
+}
+/* 右侧清单 hover 联动：对应框白色高亮（重叠遮挡场景，清单是兜底选择途径） */
+.mb-sc-boxedit-box.is-hover {
+  z-index: 4;
+  box-shadow: 0 0 0 2px #fff, 0 0 12px rgba(255, 255, 255, 0.45);
 }
 .mb-sc-boxedit-tag {
   position: absolute;
@@ -7374,6 +8218,8 @@ html[data-idle='true'] .mb-sc-video-prog-track i.is-indeterminate {
   background: var(--mb-accent);
   border: 2px solid #fff;
   cursor: nwse-resize;
+  /* 框本体 pointer-events:none，缩放手柄单独放行（只渲染在选中框上） */
+  pointer-events: auto;
 }
 
 /* 工作台 3 列（左设定 / 中图 / 右清单），复用 .mb-sc-studio-body 的网格 */
@@ -7427,6 +8273,76 @@ html[data-idle='true'] .mb-sc-video-prog-track i.is-indeterminate {
 }
 .mb-sc-seg-out {
   margin-top: 6px;
+}
+
+/* 节点卡主入口：常显渐变按钮——原实现靠 title 悬浮提示，会被连接口轨道/其它层遮住看不见，
+   改成永远可见的实体按钮（参照 .mb-sc-glbtn / 商城节点「🛒 打开商城」的做法） */
+.mb-sc-seg-openbtn.mb-btn {
+  width: 100%;
+  background: linear-gradient(135deg, var(--mb-accent), #8b5cf6) !important;
+  color: #fff !important;
+  border-color: transparent !important;
+  font-weight: 700;
+  box-shadow: 0 2px 10px rgba(139, 92, 246, 0.35);
+}
+/* 空态引导：卡体中央写清流程（取代会被遮的 tooltip 文案） */
+.mb-sc-seg-guide {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  align-items: center;
+  text-align: center;
+  padding: 9px 6px;
+  border: 1px dashed var(--mb-border-soft);
+  border-radius: 9px;
+  color: var(--mb-text-muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.mb-sc-seg-guide b {
+  color: var(--mb-text-secondary);
+  font-size: 12px;
+}
+
+/* 统一风格编辑区：工作台右栏顶部的显眼卡片（textarea + 一键预设 chips + 从原图反推） */
+.mb-sc-seg-stylebox {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--mb-accent);
+  border-radius: 10px;
+  background: var(--mb-accent-soft, var(--mb-bg-hover));
+  flex: 0 0 auto;
+}
+.mb-sc-seg-stylebox-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.mb-sc-seg-stylechips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.mb-sc-seg-stylechip {
+  padding: 2px 8px;
+  font-size: 11px;
+  border-radius: 999px;
+  border: 1px solid var(--mb-border-soft);
+  background: var(--mb-bg-card);
+  color: var(--mb-text-secondary);
+  cursor: pointer;
+}
+.mb-sc-seg-stylechip:hover {
+  border-color: var(--mb-accent);
+  color: var(--mb-accent);
+}
+.mb-sc-seg-stylechip.is-on {
+  border-color: var(--mb-accent);
+  background: var(--mb-accent);
+  color: #fff;
 }
 
 /* 右侧元素清单（切分） */
@@ -7555,4 +8471,243 @@ html[data-idle='true'] .mb-sc-video-prog-track i.is-indeterminate {
 }
 .mb-sc-proof-fix {
   color: var(--mb-text-primary);
+}
+
+/* ── 提示词 @ 引用参考图（2026-07-12）：缩略条 / @ 选图浮层 / @ 上方悬浮小图 ── */
+.mb-sc-atref-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 2px 0;
+}
+.mb-sc-atref-item {
+  position: relative;
+  border: 1px solid var(--mb-border-soft);
+  background: var(--mb-bg-hover);
+  border-radius: 8px;
+  padding: 2px;
+  cursor: pointer;
+  line-height: 0;
+}
+.mb-sc-atref-item:hover {
+  border-color: var(--mb-accent);
+}
+.mb-sc-atref-item img {
+  width: 34px;
+  height: 34px;
+  object-fit: cover;
+  border-radius: 6px;
+  display: block;
+}
+.mb-sc-atref-no {
+  position: absolute;
+  left: 2px;
+  bottom: 2px;
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--mb-bg-base) 82%, transparent);
+  color: var(--mb-text-primary);
+}
+/* @ 悬浮层/选图浮层的定位参照：单条=已有的 .mb-sc-area(relative)；列表行补 relative（不包 wrapper 不动原布局） */
+.mb-sc-plist-row {
+  position: relative;
+}
+.mb-sc-atref-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: visible;
+  z-index: 3;
+}
+.mb-sc-atref-thumb {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  object-fit: cover;
+  border-radius: 5px;
+  border: 1.5px solid var(--mb-accent);
+  background: var(--mb-bg-card);
+  box-shadow: var(--mb-shadow-card);
+}
+.mb-sc-atref-thumb.is-miss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--mb-danger, #ef4444);
+  border-color: var(--mb-danger, #ef4444);
+  font-size: 12px;
+  line-height: 1;
+}
+.mb-sc-atref-picker {
+  position: absolute;
+  left: 6px;
+  top: 36px;
+  z-index: 12;
+  max-width: 280px;
+  padding: 8px;
+  border-radius: 12px;
+  background: var(--mb-bg-base);
+  border: 1px solid var(--mb-border-soft);
+  box-shadow: var(--mb-shadow-card-lg);
+}
+.mb-sc-atref-picker-head {
+  font-size: 11px;
+  color: var(--mb-text-muted);
+  margin-bottom: 6px;
+}
+.mb-sc-atref-picker-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 180px;
+  overflow: auto;
+}
+
+/* ── 空格临时抓手（2026-07-12）：按住空格期间节点/连线不吃指针 → 拖到节点上也只平移画布 ── */
+.mb-sc-root.is-space-pan .react-flow__node,
+.mb-sc-root.is-space-pan .react-flow__edge,
+.mb-sc-root.is-space-pan .react-flow__handle {
+  pointer-events: none !important;
+}
+.mb-sc-root.is-space-pan .react-flow__pane {
+  cursor: grab !important;
+}
+.mb-sc-root.is-space-pan.is-panning .react-flow__pane {
+  cursor: grabbing !important;
+}
+
+/* ── Alt 拖动复制预览框（2026-07-12）：虚线框 + 浅灰底，标出副本将落在哪 ── */
+.mb-sc-altdup-ghost {
+  border: 2px dashed var(--mb-text-muted);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--mb-text-muted) 10%, transparent);
+  pointer-events: none;
+  z-index: 9;
+}
+
+/* ── Obsidian 库浮窗（2026-07-12）：复用 .mb-sc-glp 中心悬浮规格，内部左列表 + 右预览 ── */
+.mb-sc-vaultp-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: 12px;
+}
+.mb-sc-vaultp-list {
+  width: 300px;
+  flex: none;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-right: 4px;
+}
+.mb-sc-vaultp-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: var(--mb-radius-input);
+  border: 1px solid var(--mb-border);
+  background: var(--mb-bg-elevated);
+  color: var(--mb-text);
+  cursor: pointer;
+  transition: border-color 150ms var(--mb-ease-default);
+}
+.mb-sc-vaultp-item:hover {
+  border-color: var(--mb-accent);
+}
+.mb-sc-vaultp-item.is-on {
+  border-color: var(--mb-accent);
+  background: color-mix(in srgb, var(--mb-accent) 10%, var(--mb-bg-elevated));
+}
+.mb-sc-vaultp-item strong {
+  font-size: 13px;
+}
+.mb-sc-vaultp-item span {
+  font-size: 12px;
+  color: var(--mb-text-muted);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.mb-sc-vaultp-preview {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mb-sc-vaultp-pvhead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.mb-sc-vaultp-pvhead > strong {
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 40%;
+}
+.mb-sc-vaultp-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.mb-sc-vaultp-content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: var(--mb-radius-input);
+  border: 1px solid var(--mb-border);
+  background: var(--mb-bg-elevated);
+  color: var(--mb-text);
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.mb-sc-vaultp-hint {
+  margin: 12px 4px;
+  font-size: 13px;
+  color: var(--mb-text-muted);
+}
+
+/* ── 「存入 Obsidian 库」导出弹窗表单 ── */
+.mb-sc-vex-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.mb-sc-vex-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  flex: 1;
+  min-width: 0;
+}
+.mb-sc-vex-field > span {
+  font-size: 12px;
+  color: var(--mb-text-muted);
+}
+.mb-sc-vex-row {
+  display: flex;
+  gap: 10px;
+}
+.mb-sc-vex-content {
+  min-height: 160px;
+  max-height: 320px;
+  resize: vertical;
+}
+.mb-sc-vex-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--mb-warning, var(--mb-text-muted));
 }

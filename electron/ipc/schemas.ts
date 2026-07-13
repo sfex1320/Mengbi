@@ -173,7 +173,9 @@ export const ChatSendEphemeralSchema = z.object({
     .min(1)
     .max(400),
   attachedImages: z.array(z.string()).max(16).optional(),
-  forceWebSearch: z.boolean().optional()
+  forceWebSearch: z.boolean().optional(),
+  /** 可选 system 注入（智能画布 LLM 节点「输出用途/本次意图」，additive）；缺省不注入（旧行为） */
+  systemPrompt: z.string().max(8_000).optional()
 });
 
 export const ImageGenerateSchema = z.object({

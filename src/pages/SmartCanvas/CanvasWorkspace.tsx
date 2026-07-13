@@ -15,7 +15,7 @@ import { NodeLightConsole } from './nodePanel/NodeLightConsole';
  *  提示词/图片=卡内直接编辑文本 / 上传图；分组=卡内改分组名；
  *  结果=纯展示（图/文本/视频 + 拖出 + 右键都在卡上，弹窗作用不大反而干扰）。
  *  注意：镜头(angle-prompt) 用 NodeCameraConsole 弹窗、光源(light) 用 NodeLightConsole 弹窗（卡片只放基础调整）。 */
-const ON_NODE_TYPES = new Set(['palette', 'prompt', 'image', 'group', 'compare', 'image-reverse', 'video-source', 'video-reverse', 'frame-interp', 'video-clip', 'ratio', 'result', 'storyboard', 'prompt-mall', 'loop', 'upscale', 'vectorize', 'folder-input', 'folder-output', 'segment', 'proof']);
+const ON_NODE_TYPES = new Set(['palette', 'prompt', 'image', 'group', 'compare', 'image-reverse', 'video-source', 'frame-interp', 'video-clip', 'ratio', 'result', 'storyboard', 'character-card', 'prompt-mall', 'loop', 'upscale', 'vectorize', 'folder-input', 'folder-output', 'segment', 'proof']);
 
 /** 点在这些元素上视为「操作卡上控件」：选中节点但不弹属性面板（设定已完成，弹窗只会拖慢+干扰）。 */
 const CONTROL_SELECTOR = 'button, select, input, textarea, a, video, img, [role="slider"], .mb-np-seg, .mb-sc-runbtn';
@@ -24,7 +24,7 @@ const CONTROL_SELECTOR = 'button, select, input, textarea, a, video, img, [role=
 const NODE_OPS: Record<string, string> = {
   image: '上传 / 拖入 / 粘贴图，或从资产库选图 · 右键入资产库 / 另存 · 连到 生成 / 分组 节点',
   prompt: '输入提示词文本 · 连到 生成 / LLM 节点作为提示词来源',
-  llm: '节点模式：优化 / 翻译 / 扩写 / 反推 · 聊天模式：流式对话 · 文本输出喂下游',
+  llm: '节点模式：优化 / 翻译 / 扩写 / 剧本创作（多素材防混淆）/ 反推 · 聊天模式：流式对话 · 文本输出喂下游',
   'angle-prompt': '镜头节点：选中弹出控制台 → 拍照(相机/光圈/视角)或视频(运镜/焦距/构图) + 实时 3D 示意图 → 输出镜头提示词喂下游',
   light: '光源节点：卡上在图片上拖光点摆位 + 强度/色温（基础）；选中弹出控制台调 光位/光源类型/遮挡/光效（高级）→ 输出光照提示词喂下游',
   palette: '接图提取 N 个主色（HEX/RGB/CMYK/HSL/HSB 可复制）或 基准色推导 互补/对比/邻近 方案 · 导出 .ase/.aco 进 PS/AI · 输出配色提示词喂下游',
@@ -37,12 +37,12 @@ const NODE_OPS: Record<string, string> = {
   result: '统一集合：累积 图 / 文本 / 视频（重启清空）· 每项可拖出成节点 · 带输出口可继续连下游 · 入资产库 / 另存',
   group: '拖节点进框自动归组（智能扩容）· ▾ 折叠 · 整组连到 生成 节点一起喂入',
   compare: '接两张图（A=上游第1张 / B=第2张）· 拖分隔线 wipe 对比 · 往左/右半区拖图替换 · 双击放大',
-  'image-reverse': '接入图片 → 选视觉模型 + 描述/标签/风格 → 反推出文本，喂下游（提示词 / 生图）',
-  'video-source': '上传本地视频 / 填 URL → 卡上播放 → 输出视频给下游（视频反推 / 缩放 / 结果）',
-  'video-reverse': '接入视频 → 自动抽帧 → 视觉模型反推出「画面 + 运动」文本，喂下游',
+  'image-reverse': '接入图片或视频（自动识别，视频自动抽帧）→ 选视觉模型 + 输出模式（生图提示词/角色反推/描述/标签/风格）→ 反推出文本，喂下游 · 角色反推也可只连文字描述',
+  'video-source': '上传本地视频 / 填 URL → 卡上播放 → 输出视频给下游（反推 / 缩放 / 结果）',
   'frame-interp': '接入视频 → 本地 RIFE AI 运动插帧（24fps→60fps）→ 输出更流畅的视频喂下游（首次用需装引擎约 40MB）',
   'video-clip': '时间轴剪辑（剪映/PR 式）：多段拼接/排序/裁切 + 转场 + 每段音频/变速 + 整体调色 + 文字 · 双击进剪辑工作台 · 本地 ffmpeg 合成',
-  storyboard: '故事 → 电影级分镜提示词 + 镜头转场提示词 · 右上口=分镜 / 右下口=转场 · 约束/列表在「分镜工作台」弹窗',
+  storyboard: '角色描述 + 简短故事 → 【定调】段（稳定全片风格/场景）+ 按时间段逐段分镜（第X-Y秒…一段一段往下）→ 整份喂视频节点',
+  'character-card': '人物/动物照片 + 简述 → 详细外观分析 → 选输出类型（设定卡/三视图/面部特写/表情九宫/身材比例/动作姿势）出提示词 · 上口=生图提示词（连生图出图）/ 下口=角色描述提示词（连分镜作设定）',
   'prompt-mall': '逛店选购式提示词构建：左分类 / 中缩略图卡片墙 / 右购物车 · 拖卡进车自动排布 → 合成一条提示词喂下游 · 设置都在「提示词商城」弹窗 · 中/英输出可切',
   loop: '固定次数 / 数值范围 / 提示词列表 / 尺寸列表 / 文件夹图片 → 逐项驱动下游 生图/ComfyUI/视频 · 可暂停/跳过/续跑',
   upscale: '接入图片 → 本地 Real-ESRGAN 保真放大 2/3/4×（不烧中转站）→ 输出放大图喂下游（首次用需装引擎）',

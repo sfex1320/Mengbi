@@ -90,6 +90,29 @@ function findFreePosition(
   return { x: desired.x, y };
 }
 
+/** 「自动连接」邻居的槽位排布：在锚点左/右侧铺 4 列网格——一行最多 4 个、排满换下一行（向下）。
+ *  取代原「贴锚点 + 纯 y 顺延」的单列堆叠（多次拖入会在一列上无限拉高，观感差）。
+ *  index = 该侧已有的连接数（第 N 个邻居进第 N 个槽）；调用方再用 findFreePosition 兜底防重叠。 */
+function sideSlotPosition(
+  anchorAbs: { x: number; y: number },
+  anchorW: number,
+  side: 'left' | 'right',
+  index: number,
+  w: number,
+  h: number
+): { x: number; y: number } {
+  const GAPX = 64;
+  const GAPY = 40;
+  const PER_ROW = 4;
+  const col = index % PER_ROW;
+  const row = Math.floor(index / PER_ROW);
+  return {
+    // 左侧：第 1 个贴锚点、往左铺列；右侧对称往右铺
+    x: side === 'left' ? anchorAbs.x - (col + 1) * (w + GAPX) : anchorAbs.x + anchorW + GAPX + col * (w + GAPX),
+    y: anchorAbs.y + row * (h + GAPY)
+  };
+}
+
 /** 拓扑序（上游先于下游）。排布时按此顺序铺开，保留「生成 → 结果」这类先后流向。环上节点附末尾。 */
 function topoSorted(nodes: Node[], edges: Edge[]): Node[] {
   const indeg = new Map<string, number>();
@@ -170,9 +193,22 @@ export function hasNodeClipboard(): boolean {
 
 export type AlignEdge = 'left' | 'hcenter' | 'right' | 'top' | 'vcenter' | 'bottom';
 
-/** 存模板前剥离运行态（结果/状态/日志/会话），让模板只保留可复用的配置。 */
-function sanitizeTemplateNode(n: Node): Node {
+/** 存模板前剥离运行态（结果/状态/日志/会话），让模板只保留可复用的配置。
+ *  同时兜一道旧 kind 迁移：已删除的「视频反推」（video-reverse）原位转成合并后的「反推」（image-reverse），
+ *  字段（modelId/reverseType/frameCount 等）同名直接沿用（与 smartDocStorage.sanitize 的旧档迁移一致）。 */
+function sanitizeTemplateNode(input: Node): Node {
+  const n = (input.type as string) === 'video-reverse' ? { ...input, type: 'image-reverse' } : input;
   const data: Record<string, unknown> = { ...(n.data as Record<string, unknown>) };
+  delete data.skipped; // 跳过态（Alt+点击）是画布内的临时决策，模板不携带
+
+  if (n.type === 'image-reverse' || n.type === 'storyboard' || n.type === 'character-card') {
+    // 反推 / 智能分镜 / 角色卡：运行态与文本产物剥掉，模板只留配置
+    data.status = 'idle';
+    data.resultText = '';
+    data.logs = [];
+    data.error = null;
+    if (n.type === 'character-card') data.analysisText = '';
+  }
   if (n.type === 'work' || n.type === 'comfy' || n.type === 'llm') {
     data.status = 'idle';
     data.result = null;
@@ -388,11 +424,10 @@ export function defaultNodeData(kind: SmartNodeKind): SmartNodeData {
         status: 'idle'
       };
     case 'image-reverse':
-      return { modelId: '', reverseType: 'description', status: 'idle', resultText: '', logs: [], error: null };
+      // 合并后的「反推」节点：新建默认输出「生图提示词」（outputMode），reverseType 仅作旧档回退字段
+      return { modelId: '', reverseType: 'description', outputMode: 'prompt', frameCount: 6, status: 'idle', resultText: '', logs: [], error: null };
     case 'video-source':
       return {};
-    case 'video-reverse':
-      return { modelId: '', reverseType: 'description', frameCount: 6, status: 'idle', resultText: '', logs: [], error: null };
     case 'frame-interp':
       return { targetFps: 60, status: 'idle', outputVideo: null, error: null };
     case 'video-clip':
@@ -410,7 +445,9 @@ export function defaultNodeData(kind: SmartNodeKind): SmartNodeData {
         error: null
       };
     case 'storyboard':
-      return { modelId: '', input: '', shotCount: 4, style: '', story: '', shots: [], status: 'idle', logs: [], error: null };
+      return { modelId: '', input: '', videoDurationSec: 30, secPerShot: 5, extraNote: '', resultText: '', status: 'idle', logs: [], error: null };
+    case 'character-card':
+      return { modelId: '', desc: '', sheetType: 'card', subjectType: 'person', cardStyle: 'magazine', analysisText: '', resultText: '', status: 'idle', logs: [], error: null };
     case 'prompt-mall':
       return {
         cart: [],
@@ -463,22 +500,22 @@ const DEFAULT_SIZE: Record<SmartNodeKind, { width: number; height?: number }> = 
   prompt: { width: 270, height: 280 },
   work: { width: 268 },
   result: { width: 250 },
-  llm: { width: 262 },
+  llm: { width: 300 },
   comfy: { width: 268 },
   'angle-prompt': { width: 264, height: 320 },
   scale: { width: 240, height: 240 },
-  ratio: { width: 260, height: 360 },
+  ratio: { width: 280, height: 360 },
   text: { width: 260, height: 120 },
   light: { width: 300, height: 470 },
   palette: { width: 300, height: 420 },
   compare: { width: 300, height: 340 },
   video: { width: 268, height: 230 },
-  'image-reverse': { width: 262 },
+  'image-reverse': { width: 292 },
   'video-source': { width: 240, height: 220 },
-  'video-reverse': { width: 262 },
   'frame-interp': { width: 262 },
   'video-clip': { width: 480, height: 220 },
-  storyboard: { width: 290, height: 300 },
+  storyboard: { width: 310 },
+  'character-card': { width: 300 },
   'prompt-mall': { width: 300, height: 330 },
   loop: { width: 300, height: 380 },
   upscale: { width: 262 },
@@ -519,6 +556,8 @@ interface SmartCanvasState {
   setNodeParent: (id: string, parentId: string | null) => void;
   /** 把选中的顶层非分组节点群组成一个新分组容器，并自动网格排布进容器内。返回新分组 id（<2 个可组节点返回 null）。 */
   groupSelection: () => string | null;
+  /** 框选建组：分组大小=框选区域（不足最小值则钳制），框中（中心点落框内）的顶层非分组节点自动归入并网格排布 */
+  createGroupFromRect: (rect: { x: number; y: number; w: number; h: number }) => string | null;
   /** 折叠/展开分组：隐藏其子节点 + 相关连线，收起/还原组高度。 */
   toggleGroupCollapse: (id: string) => void;
   /** 排布：网格 / 按类型分组 / 对齐选中 / 均分选中（只动顶层非分组节点） */
@@ -558,9 +597,10 @@ interface SmartCanvasState {
   insertNodeOnEdge: (kind: SmartNodeKind, pos: { x: number; y: number }, edgeId: string) => string;
   /** 原地复制一个节点（右键 / 快捷键复制用）：克隆该节点（分组则连同子节点 + 内部连线）在原位、新 id、不选中。 */
   duplicateNodeInPlace: (id: string) => void;
-  /** Alt 拖动复制（拖动结束时调用）：原节点回到 originPos（连线全部保留不动），
-   *  副本放到 copyPos（= 拖到的位置，新 id、仅克隆内部连线、不连任何现有节点）= 把新副本「拉出来」。 */
-  altDragDuplicate: (id: string, originPos: { x: number; y: number }, copyPos: { x: number; y: number }) => void;
+  /** Alt 拖动复制（拖动结束时调用）：被拖的一组节点（单个或多选整套工作流）各自回到 originPos
+   *（连线全部保留不动），副本留在松手位置（新 id；克隆整组「内部连线」——含多选节点之间的连线；
+   *  不连任何组外现有节点）= 把整套副本「拉出来」。 */
+  altDragDuplicate: (entries: Array<{ id: string; originPos: { x: number; y: number } }>) => void;
   /** 自动连线 + 吸附：在 source→target 间加连线（若同向尚无连线），同时把 movedId 移到 newPos。一次进撤销栈。
    *  用于「把一个节点拖到另一个节点上」自动建立上下游关系（方向 / 合法性由调用方决定）。 */
   linkAndMove: (source: string, target: string, movedId: string, newPos: { x: number; y: number }) => void;
@@ -824,6 +864,60 @@ export const useSmartCanvasStore = create<SmartCanvasState>()((set, get) => ({
     }));
     const others = s.nodes
       .filter((n) => !selIds.has(n.id))
+      .map((n) => (n.selected ? { ...n, selected: false } : n));
+    set({
+      ...commitHistory(s._past, s.nodes, s.edges),
+      // React Flow 要求父节点在子节点之前：group 最前、children 最后
+      nodes: [group, ...others, ...children],
+      _spawn: s._spawn + 1
+    });
+    return groupId;
+  },
+
+  createGroupFromRect: (rect) => {
+    const s = get();
+    // 分组大小忠实于框选区域（太小钳到能用的最小值）
+    let gw = Math.max(240, rect.w);
+    let gh = Math.max(160, rect.h);
+    const headTop = 52;
+    const pad = 16;
+    const gap = 16;
+    // 框中判定用「节点中心点」：比外接框相交更符合直觉——擦到一条边的大节点不会被误吞
+    const captured = movableNodes(s.nodes).filter((n) => {
+      const cx = n.position.x + nodeW(n) / 2;
+      const cy = n.position.y + nodeH(n) / 2;
+      return cx >= rect.x && cx <= rect.x + rect.w && cy >= rect.y && cy <= rect.y + rect.h;
+    });
+    const groupId = rid();
+    let children: Node[] = [];
+    if (captured.length) {
+      const cellW = Math.max(...captured.map(nodeW));
+      const cellH = Math.max(...captured.map(nodeH));
+      // 列数按框宽定（框多宽排多少列）；放不下时宽度保底一列、高度向下撑（宽度尽量忠实框选）
+      const cols = Math.max(1, Math.min(captured.length, Math.floor((gw - pad * 2 + gap) / (cellW + gap))));
+      const rows = Math.ceil(captured.length / cols);
+      gw = Math.max(gw, pad * 2 + cols * cellW + (cols - 1) * gap);
+      gh = Math.max(gh, headTop + rows * cellH + (rows - 1) * gap + pad);
+      // 按原位置（上→下、左→右）排进网格，保留视觉直觉
+      const ordered = [...captured].sort((a, b) => a.position.y - b.position.y || a.position.x - b.position.x);
+      children = ordered.map((n, i) => ({
+        ...n,
+        parentId: groupId,
+        position: { x: pad + (i % cols) * (cellW + gap), y: headTop + Math.floor(i / cols) * (cellH + gap) },
+        selected: false
+      }));
+    }
+    const group: Node = {
+      id: groupId,
+      type: 'group',
+      position: { x: rect.x, y: rect.y },
+      data: { title: captured.length ? `分组（${captured.length}）` : '分组' } as unknown as Record<string, unknown>,
+      width: gw,
+      height: gh
+    };
+    const capIds = new Set(captured.map((n) => n.id));
+    const others = s.nodes
+      .filter((n) => !capIds.has(n.id))
       .map((n) => (n.selected ? { ...n, selected: false } : n));
     set({
       ...commitHistory(s._past, s.nodes, s.edges),
@@ -1184,11 +1278,33 @@ export const useSmartCanvasStore = create<SmartCanvasState>()((set, get) => ({
       const exists = s.edges.some((e) => e.source === source && e.target === target);
       const conn: Connection = { source, target, sourceHandle: 'out', targetHandle: 'in' };
       const edges = exists ? s.edges : addEdge({ ...conn, type: 'deletable' }, s.edges);
-      // 落位防重叠：连第二、三个节点时期望位置常被先连的节点占住，往下顺延到空位
       const moved = s.nodes.find((n) => n.id === movedId);
-      const free = moved
-        ? findFreePosition(newPos, nodeW(moved), nodeH(moved), s.nodes, movedId)
-        : newPos;
+      let free = newPos;
+      if (moved) {
+        // 槽位排布：被拖节点按「该侧已连邻居数」进 4 列网格槽（排满一行换行），
+        // 不再纯 y 顺延——那会让多次拖入在一列上无限堆高
+        const anchorId = movedId === source ? target : source;
+        const side: 'left' | 'right' = movedId === source ? 'left' : 'right';
+        const anchor = s.nodes.find((n) => n.id === anchorId);
+        if (anchor) {
+          const idx = s.edges.filter((e) =>
+            side === 'left'
+              ? e.target === anchorId && e.source !== movedId
+              : e.source === anchorId && e.target !== movedId
+          ).length;
+          const desired = sideSlotPosition(
+            absPosition(anchor, s.nodes),
+            nodeW(anchor),
+            side,
+            idx,
+            nodeW(moved),
+            nodeH(moved)
+          );
+          free = findFreePosition(desired, nodeW(moved), nodeH(moved), s.nodes, movedId);
+        } else {
+          free = findFreePosition(newPos, nodeW(moved), nodeH(moved), s.nodes, movedId);
+        }
+      }
       const nodes = s.nodes.map((n) => (n.id === movedId ? { ...n, position: free } : n));
       return { ...commitHistory(s._past, s.nodes, s.edges), edges, nodes };
     }),
@@ -1203,9 +1319,9 @@ export const useSmartCanvasStore = create<SmartCanvasState>()((set, get) => ({
       const size = DEFAULT_SIZE[kind];
       const w = size.width ?? 220;
       const h = size.height ?? 120;
-      const GAP = 64;
-      const desired =
-        side === 'left' ? { x: abs.x - w - GAP, y: abs.y } : { x: abs.x + aw + GAP, y: abs.y };
+      // 槽位排布（与 linkAndMove 同规则）：第 N 个邻居进第 N 个槽，一行 4 个排满换行
+      const idx = s.edges.filter((e) => (side === 'left' ? e.target === anchorId : e.source === anchorId)).length;
+      const desired = sideSlotPosition(abs, aw, side, idx, w, h);
       const pos = findFreePosition(desired, w, h, s.nodes);
       const node: Node = {
         id,
@@ -1328,29 +1444,38 @@ export const useSmartCanvasStore = create<SmartCanvasState>()((set, get) => ({
       };
     }),
 
-  altDragDuplicate: (id, originPos, copyPos) =>
+  altDragDuplicate: (entries) =>
     set((s) => {
-      const node = s.nodes.find((n) => n.id === id);
-      if (!node) return {};
-      const kids = node.type === 'group' ? s.nodes.filter((n) => n.parentId === id) : [];
-      const srcNodes = [node, ...kids];
+      // 收集要复制的源节点：每个被拖节点（分组连子节点一起）；Set 去重（分组与其子节点可能同时被选中）
+      const originById = new Map(entries.map((e) => [e.id, e.originPos]));
+      const seen = new Set<string>();
+      const srcNodes: Node[] = [];
+      for (const ent of entries) {
+        const node = s.nodes.find((n) => n.id === ent.id);
+        if (!node || seen.has(node.id)) continue;
+        seen.add(node.id);
+        srcNodes.push(node);
+        if (node.type === 'group') {
+          for (const k of s.nodes.filter((n) => n.parentId === node.id)) {
+            if (!seen.has(k.id)) {
+              seen.add(k.id);
+              srcNodes.push(k);
+            }
+          }
+        }
+      }
+      if (!srcNodes.length) return {};
       const idMap = new Map<string, string>();
       srcNodes.forEach((n) => idMap.set(n.id, rid()));
-      const idset = new Set(srcNodes.map((n) => n.id));
-      // 副本：顶层节点放 copyPos，子节点保持相对父坐标；只克隆「内部」连线（不连任何现有节点）
-      const made: Node[] = srcNodes.map((n, i) => {
+      // 副本留在「松手位置」（= 节点当前位置）并**成为新选区**（用户接下来操作的对象是副本）；
+      // 只克隆整组内部连线（含多选节点之间的连线），不连组外节点
+      const made: Node[] = srcNodes.map((n) => {
         const clone = structuredClone(n);
         const parentId = clone.parentId && idMap.has(clone.parentId) ? idMap.get(clone.parentId) : clone.parentId;
-        return {
-          ...clone,
-          id: idMap.get(n.id) as string,
-          parentId,
-          position: i === 0 ? copyPos : clone.position,
-          selected: false
-        };
+        return { ...clone, id: idMap.get(n.id) as string, parentId, selected: true };
       });
       const newEdges: Edge[] = s.edges
-        .filter((e) => idset.has(e.source) && idset.has(e.target))
+        .filter((e) => seen.has(e.source) && seen.has(e.target))
         .map((e) => ({
           ...structuredClone(e),
           id: rid(),
@@ -1360,8 +1485,12 @@ export const useSmartCanvasStore = create<SmartCanvasState>()((set, get) => ({
         }));
       const groups = made.filter((n) => n.type === 'group');
       const rest = made.filter((n) => n.type !== 'group');
-      // 原节点回到拖动起点（它的所有连线原样不动），把新副本「拉出来」放到 copyPos
-      const baseNodes = s.nodes.map((n) => (n.id === id ? { ...n, position: originPos } : n));
+      // 原节点各自回到拖动起点（连线原样不动）并取消选中——选中态移交给整套副本
+      const baseNodes = s.nodes.map((n) => {
+        const origin = originById.get(n.id);
+        if (origin) return { ...n, position: origin, selected: false };
+        return n.selected ? { ...n, selected: false } : n;
+      });
       return {
         ...commitHistory(s._past, s.nodes, s.edges),
         nodes: [...groups, ...baseNodes, ...rest],
@@ -1529,7 +1658,7 @@ export interface CreateMenuState {
   /** 若由「从某节点拖出」触发：锚点节点 id + 方向（down=建下游并连出 / up=建上游并连入） */
   anchorId?: string;
   dir?: 'up' | 'down';
-  /** dir='down' 时拖出的源输出口 id（多输出口节点如智能分镜 out / out-trans）；缺省 'out' */
+  /** dir='down' 时拖出的源输出口 id（预留多输出口节点；当前各节点均为默认口）；缺省 'out' */
   anchorHandle?: string;
   /** 打开时间戳：挡掉「开菜单的同一手势」尾随的合成 click 把菜单立刻关掉 */
   openedAt?: number;

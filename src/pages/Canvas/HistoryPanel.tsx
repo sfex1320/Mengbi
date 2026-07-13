@@ -1,5 +1,6 @@
 import { useSnapshotStore } from '@/store/snapshotStore';
 import { toast } from '@/store/toastStore';
+import { promptDialog } from '@/components/ConfirmDialog';
 
 /**
  * 历史 / 快照对话框（需求十三节）。
@@ -23,13 +24,14 @@ export function HistoryPanel({ onClose }: { onClose: () => void }): JSX.Element 
           <button
             type="button"
             className="mb-canvas-props-actionbtn is-accent"
-            onClick={() => {
-              const label = window.prompt('快照名称', `快照 ${snapshots.length + 1}`);
-              if (label && label.trim()) {
-                save(label.trim());
-                toast.success('已保存快照');
-              }
-            }}
+            onClick={() =>
+              void promptDialog({ message: '快照名称', initial: `快照 ${snapshots.length + 1}` }).then((label) => {
+                if (label && label.trim()) {
+                  save(label.trim());
+                  toast.success('已保存快照');
+                }
+              })
+            }
           >
             ＋ 保存当前快照
           </button>

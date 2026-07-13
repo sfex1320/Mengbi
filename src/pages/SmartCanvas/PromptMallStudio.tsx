@@ -13,6 +13,7 @@ import { PromptMallThumb, useMallThumbsStore } from './promptMall/mallThumbs';
 import { buildThumbGenPrompt } from '@/lib/promptMall/thumbGen';
 import type { PromptMallNodeData, PromptMallCartItem, PromptMallGroup, SmartNodeData } from '@shared/smartCanvas';
 import { areaMenu, copyText, makePromptNodeFrom, useBackdropClose } from './nodeArea';
+import { promptDialog } from '@/components/ConfirmDialog';
 import { toast } from '@/store/toastStore';
 
 /** 提示词商城工作台开关：哪个商城节点在编辑（null = 不显示）。 */
@@ -77,6 +78,8 @@ function shrinkToThumb(src: string): Promise<string> {
     img.src = src;
   });
 }
+// 输入弹窗：window.prompt 在 Electron 渲染进程必抛（历史坑），统一走应用内 promptDialog
+
 /** File → dataURI。 */
 function fileToDataUri(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -131,8 +134,9 @@ export function PromptMallStudio(): JSX.Element | null {
     if (nodeId) update(nodeId, p as Partial<SmartNodeData>);
   };
   const lang: PromptMallLang = d?.lang === 'en' ? 'en' : 'zh';
-  const cart = d?.cart ?? [];
-  const groups: PromptMallGroup[] = d?.groups?.length ? d.groups : [{ id: 'g1', name: '组 1' }];
+  // Array.isArray 兜底：cart/groups 来自持久化画布文档，损坏/旧版形状（非数组）会让下面的 map/filter 在渲染期抛错
+  const cart = Array.isArray(d?.cart) ? d.cart : [];
+  const groups: PromptMallGroup[] = Array.isArray(d?.groups) && d.groups.length ? d.groups : [{ id: 'g1', name: '组 1' }];
   const groupIds = useMemo(() => new Set(groups.map((g) => g.id)), [groups]);
   const activeGroup = d?.activeGroup && groupIds.has(d.activeGroup) ? d.activeGroup : groups[0].id;
   const exclusive = d?.exclusive !== false;
@@ -318,19 +322,21 @@ export function PromptMallStudio(): JSX.Element | null {
 
   // ── 分类管理（增 / 改 / 删；删=用户类移除、内置类隐藏）──
   function addCategory(): void {
-    const name = window.prompt('新建分类名称');
-    if (!name?.trim()) return;
-    const slug = useMallCustomizeStore.getState().addCategory(name);
-    if (slug) {
-      setCat(slug);
-      setSub('all');
-      toast.success('已新建分类', '可在「➕ 新增卡片」里把卡片归到它');
-    }
+    void promptDialog({ message: '新建分类名称' }).then((name) => {
+      if (!name?.trim()) return;
+      const slug = useMallCustomizeStore.getState().addCategory(name);
+      if (slug) {
+        setCat(slug);
+        setSub('all');
+        toast.success('已新建分类', '可在「➕ 新增卡片」里把卡片归到它');
+      }
+    });
   }
   function renameCategory(slug: string): void {
     const cur = categories.find((c) => c.slug === slug);
-    const name = window.prompt('重命名分类', cur?.zh ?? '');
-    if (name?.trim()) useMallCustomizeStore.getState().renameCategory(slug, name);
+    void promptDialog({ message: '重命名分类', initial: cur?.zh ?? '' }).then((name) => {
+      if (name?.trim()) useMallCustomizeStore.getState().renameCategory(slug, name);
+    });
   }
   function deleteCategory(slug: string): void {
     const isBuiltin = PROMPT_MALL_CATEGORIES.some((c) => c.slug === slug);
@@ -345,8 +351,9 @@ export function PromptMallStudio(): JSX.Element | null {
     toast.success(isBuiltin ? '已隐藏分类' : '已删除分类');
   }
   function addSubToActive(): void {
-    const name = window.prompt('给当前分类新增子类');
-    if (name?.trim()) useMallCustomizeStore.getState().addSub(cat, name);
+    void promptDialog({ message: '给当前分类新增子类' }).then((name) => {
+      if (name?.trim()) useMallCustomizeStore.getState().addSub(cat, name);
+    });
   }
 
   // ── 卡片管理（移分类 / 移子类 / 编辑 / 删除 / 多选批量）──
@@ -503,7 +510,8 @@ export function PromptMallStudio(): JSX.Element | null {
             if (sub !== 'all' && c.sub !== sub) return false;
             return true;
           }
-          return c.zh.toLowerCase().includes(q) || c.en.toLowerCase().includes(q) || c.genPrompt.toLowerCase().includes(q);
+          // (x || '') 兜底：这段过滤跑在渲染期，任何一张脏卡（字段缺失）抛错都会打崩整页
+          return (c.zh || '').toLowerCase().includes(q) || (c.en || '').toLowerCase().includes(q) || (c.genPrompt || '').toLowerCase().includes(q);
         }).slice(0, 400);
 
   const activeCat = categories.find((c) => c.slug === cat);

@@ -1,11 +1,13 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { create } from 'zustand';
 import { useSmartCanvasStore, useSmartPreviewStore } from '@/store/smartCanvasStore';
 import { useSettingsStore } from '@/store/settingsStore';
+import { toast } from '@/store/toastStore';
 import {
   computeUpstream,
   runSegmentDetect,
+  runSegmentRefine,
   runSegmentRegenAll,
   runSegmentRegenOne,
   runSegmentCompose,
@@ -33,6 +35,16 @@ export const useSegmentStudioStore = create<SegmentStudioState>((set) => ({
 
 const STATUS_TEXT: Record<string, string> = { idle: '待运行', running: '处理中…', success: '已完成', error: '失败' };
 const EL_STATUS: Record<string, string> = { idle: '待重绘', running: '重绘中…', done: '已重绘', error: '失败' };
+
+/** 统一风格一键预设：点击填入 stylePrompt（可继续手改）。文案给足材质/光照细节，保证各元素重绘不跑风格。 */
+const STYLE_PRESETS: Array<{ name: string; text: string }> = [
+  { name: '扁平插画', text: '扁平插画风格，简洁几何造型，纯色色块，无渐变少阴影，统一描边粗细' },
+  { name: '写实摄影', text: '写实摄影风格，自然光影，真实材质质感，细节丰富，统一色温' },
+  { name: '水彩', text: '水彩手绘风格，颜料自然晕染，柔和笔触，纸张纹理，清透色彩' },
+  { name: '3D 渲染', text: '3D 渲染风格，柔和棚光，圆润造型，细腻材质，统一透视' },
+  { name: '像素风', text: '像素艺术风格，复古 8-bit 像素颗粒，有限色板，硬边无抗锯齿' },
+  { name: '国风水墨', text: '中国水墨画风格，墨色浓淡晕染，留白构图，宣纸质感，淡雅设色' }
+];
 
 function mediaUrl(src: string): string {
   return src.startsWith('data:') ? src : localPathToImageUrl(src);
@@ -65,7 +77,15 @@ export function SegmentStudio(): JSX.Element | null {
   const genModels = useMemo(() => modelNames(configs, 'image'), [configs]);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // 清单 hover 的元素：画布对应框高亮（重叠遮挡时清单是兜底选择途径）
+  const [hoverId, setHoverId] = useState<string | null>(null);
+  const [styleBusy, setStyleBusy] = useState(false);
   const [measured, setMeasured] = useState<{ w: number; h: number } | null>(null);
+  // 画布点框 → 右侧清单联动滚动到该项
+  const listRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  useEffect(() => {
+    if (selectedId) listRefs.current[selectedId]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [selectedId]);
 
   // 量源图尺寸（识别前用于框的参照系；识别后以 d.imgW/H 为准）
   useEffect(() => {
@@ -146,6 +166,35 @@ export function SegmentStudio(): JSX.Element | null {
     setF({ inputImage: { url, name: file.name }, elements: [], composedSrc: undefined, imgW: undefined, imgH: undefined });
   }
 
+  /** 从原图反推统一风格：复用 api:lab:reverse 的 style 档（视觉模型），结果填进 stylePrompt。 */
+  async function reverseStyle(): Promise<void> {
+    if (!d || !nodeId) return;
+    if (!d.modelId) {
+      toast.error('未选视觉模型', '先在左侧选一个支持识图的对话模型');
+      return;
+    }
+    if (!src) {
+      toast.error('缺少源图', '连一个图片来源，或上传一张图');
+      return;
+    }
+    setStyleBusy(true);
+    try {
+      const r = await window.electronAPI.lab.reverse({ imagePaths: [src], modelId: d.modelId, resultType: 'style' });
+      if (!r.ok) {
+        toast.error('风格反推失败', r.error.message);
+        return;
+      }
+      const text = String((r.data as { result?: { text?: string } }).result?.text ?? '').trim();
+      if (!text) {
+        toast.error('风格反推没有返回内容', '可换一个视觉模型再试');
+        return;
+      }
+      setF({ stylePrompt: text });
+    } finally {
+      setStyleBusy(false);
+    }
+  }
+
   return createPortal(
     <div className="mb-modal-backdrop" {...backdrop}>
       <div className="mb-modal mb-sc-studio mb-sc-segstudio mb-card" onClick={(e) => e.stopPropagation()}>
@@ -168,14 +217,6 @@ export function SegmentStudio(): JSX.Element | null {
             <SearchableModelSelect options={visionModels} value={d.modelId ?? ''} onChange={(v) => setF({ modelId: v })} placeholder="选支持识图的对话模型" />
             <label className="mb-sc-flabel">生图模型（逐元素重绘）</label>
             <SearchableModelSelect options={genModels} value={d.genModelId ?? ''} onChange={(v) => setF({ genModelId: v })} placeholder="选绘画模型（空=默认首个）" />
-            <label className="mb-sc-flabel">统一风格（拼进每个元素的重绘提示词）</label>
-            <textarea
-              className="mb-sc-input"
-              rows={3}
-              value={d.stylePrompt ?? ''}
-              placeholder="如：扁平插画风、统一暖色调、相同光照（保证元素风格一致）"
-              onChange={(e) => setF({ stylePrompt: e.target.value })}
-            />
             <label className="mb-sc-flabel">源图</label>
             {up.images.length > 0 ? (
               <div className="mb-sc-fromup is-fed">由上游输入（{up.images.length} 张，用第 1 张）</div>
@@ -221,6 +262,7 @@ export function SegmentStudio(): JSX.Element | null {
                 boxes={overlay}
                 editable={!running}
                 selectedId={selectedId}
+                hoverId={hoverId}
                 onSelect={setSelectedId}
                 onChange={onBoxChange}
               />
@@ -230,6 +272,14 @@ export function SegmentStudio(): JSX.Element | null {
             <div className="mb-sc-seg-toolbar">
               <button className="mb-btn mb-btn-sm" disabled={running || !src || !d.modelId} onClick={() => void runSegmentDetect(nodeId)}>
                 {els.length ? '重新识别元素' : '识别元素'}
+              </button>
+              <button
+                className="mb-btn mb-btn-sm"
+                disabled={running || !els.length || !d.modelId}
+                title="把当前框列表回喂视觉模型：查漏补缺 + 修正边界（多一次视觉调用，换更高精度；已重绘的元素不丢）"
+                onClick={() => void runSegmentRefine(nodeId)}
+              >
+                ✨ 二次细化
               </button>
               <button className="mb-btn mb-btn-sm" disabled={running || !els.length} onClick={() => void runSegmentRegenAll(nodeId)}>
                 逐元素重绘
@@ -255,16 +305,58 @@ export function SegmentStudio(): JSX.Element | null {
             )}
           </div>
 
-          {/* ── 右：元素清单 ── */}
+          {/* ── 右：统一风格 + 元素清单 ── */}
           <div className="mb-sc-studio-right mb-sc-seg-list">
+            {/* 统一风格：runner 重绘时把它拼在每个元素提示词的最前面（runSegmentRegenOne/All），保证整体风格一致 */}
+            <div className="mb-sc-seg-stylebox">
+              <div className="mb-sc-seg-stylebox-head">
+                <span className="mb-sc-flabel">🎨 统一风格</span>
+                <button
+                  className="mb-btn mb-btn-xs"
+                  disabled={running || styleBusy || !src || !d.modelId}
+                  title="用视觉模型分析原图风格，结果填入下方（复用图像反推的 style 档）"
+                  onClick={() => void reverseStyle()}
+                >
+                  {styleBusy ? '反推中…' : '从原图反推'}
+                </button>
+              </div>
+              <textarea
+                className="mb-sc-input"
+                rows={3}
+                value={d.stylePrompt ?? ''}
+                placeholder="如：扁平插画风、统一暖色调、相同光照（保证元素风格一致）"
+                onChange={(e) => setF({ stylePrompt: e.target.value })}
+              />
+              <div className="mb-sc-seg-stylechips">
+                {STYLE_PRESETS.map((p) => (
+                  <button
+                    key={p.name}
+                    className={`mb-sc-seg-stylechip${(d.stylePrompt ?? '') === p.text ? ' is-on' : ''}`}
+                    title={p.text}
+                    onClick={() => setF({ stylePrompt: p.text })}
+                  >
+                    {p.name}
+                  </button>
+                ))}
+              </div>
+              <div className="mb-sc-note">拼进每块的重绘提示词开头，保证整体风格一致</div>
+            </div>
+
             <div className="mb-sc-studio-hint" style={{ marginBottom: 6 }}>
-              {els.length ? `${els.length} 个元素（点框选中 / 拖框调位 / 角点缩放）` : '点「识别元素」自动找出画面元素'}
+              {els.length
+                ? `${els.length} 个元素（点框选中，重叠处再点一次切下层 / 拖框调位 / 角点缩放）`
+                : '点「识别元素」自动找出画面元素'}
             </div>
             {els.map((e, i) => (
               <div
                 key={e.id}
+                ref={(el) => {
+                  listRefs.current[e.id] = el;
+                }}
                 className={`mb-sc-seg-item${e.id === selectedId ? ' is-sel' : ''}`}
                 onClick={() => setSelectedId(e.id)}
+                onMouseEnter={() => setHoverId(e.id)}
+                onMouseLeave={() => setHoverId((h) => (h === e.id ? null : h))}
               >
                 <div className="mb-sc-seg-item-head">
                   <span className="mb-sc-seg-idx">{i + 1}</span>

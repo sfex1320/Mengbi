@@ -13,6 +13,7 @@ import { buildGraphFromSpec, type AgentBuildSources } from '@/lib/agentBuilder';
 import { COMFY_NON_VALUE_KINDS, type AgentComfyTemplate } from '@/lib/agentBlueprint';
 import type { AgentComfyTemplateInfo } from '@/lib/agentCatalog';
 import { runAllNodes } from '@/lib/smartCanvasRunner';
+import { AgentSuggestions, runOptimizeSelection } from './AgentSuggestions';
 import { toast } from '@/store/toastStore';
 import type { InputControl } from '@shared/comfyui';
 import { AgentIcon } from './icons';
@@ -92,6 +93,10 @@ export function AgentPanel(): JSX.Element | null {
   const planId = useSettingsStore((s) => s.activePlanId);
   const selectedImageCount = useSmartCanvasStore((s) =>
     s.nodes.reduce((a, n) => a + (n.selected && n.type === 'image' && (n.data as { src?: string }).src ? 1 : 0), 0)
+  );
+  // 选中的非分组节点数：>0 时显示「优化选中」分区（分组容器本身没有可优化参数）
+  const selectedNodeCount = useSmartCanvasStore((s) =>
+    s.nodes.reduce((a, n) => a + (n.selected && n.type !== 'group' ? 1 : 0), 0)
   );
 
   const textModels = useMemo(() => listMappedModels(configs, planId, 'text'), [configs, planId]);
@@ -441,6 +446,15 @@ export function AgentPanel(): JSX.Element | null {
                 </div>
               )}
 
+              {selectedNodeCount > 0 && (
+                <div className="mb-sc-agsug-entry">
+                  <button className="mb-btn mb-btn-sm mb-btn-ghost" onClick={() => void runOptimizeSelection()}>
+                    🔍 优化选中的 {selectedNodeCount} 个节点
+                  </button>
+                  <div className="mb-sc-agent-hint">AI 审查选中流程：提示词改进 / 参数建议 / 结构提醒（免费，只分析不生成）。</div>
+                </div>
+              )}
+
               <div className="mb-sc-agent-modelinfo">
                 {planningModel ? (
                   <>
@@ -477,6 +491,9 @@ export function AgentPanel(): JSX.Element | null {
       >
         <AgentIcon size={24} />
       </button>
+
+      {/* 选区优化建议清单（两个入口共用；自身 portal 到 body，随工作区卸载自动收起） */}
+      <AgentSuggestions />
     </>,
     document.body
   );

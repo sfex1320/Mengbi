@@ -68,7 +68,7 @@ export function FolderInputNode({ id, data }: NodeProps): JSX.Element {
               title="点击放大播放（←→ 可翻看全部视频）"
               onClick={() => openVideoPreview(d.videoFiles ?? [])}
             >
-              🎬 {d.videoFiles.length} 个视频（可作下游 视频反推 / 缩放 / 插帧 来源）· 点击预览
+              🎬 {d.videoFiles.length} 个视频（可作下游 反推 / 缩放 / 插帧 来源）· 点击预览
             </div>
           )}
           {d.error && <div className="mb-sc-result-err">{d.error}</div>}

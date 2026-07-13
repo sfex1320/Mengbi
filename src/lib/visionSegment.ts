@@ -23,8 +23,22 @@ import {
 export const SEGMENT_DETECT_SYSTEM = `你是版面元素检测助手。给定一张图（海报/插画/设计稿），找出画面里**独立的视觉元素**（主体、人物、文字块、Logo、图标、商品、装饰物等），逐个给出名称、边界框和「用于重绘该元素的提示词」。
 严格只输出一个 JSON 数组，不要任何解释、不要 Markdown 代码围栏：
 [{"label":"元素名(中文)","box":[x,y,w,h],"prompt":"重绘该元素的中文提示词，含主体/材质/颜色/风格细节"}]
-坐标规则：x,y=元素左上角，w,h=宽高，全部用**归一化 0~1**（图像左上角为原点，向右/向下为正）。禁止用 0~1000、禁止用像素值。
-元素数量 3~20 个，覆盖画面主要元素，框尽量贴合元素本身、不要大幅重叠。`;
+坐标参照系：以**整张图**为参照，图像左上角为原点 (0,0)，向右为 x 正方向、向下为 y 正方向；x,y=元素左上角，w,h=宽高，全部用**归一化 0~1 小数**（如 0.1250）。禁止用 0~1000、禁止用像素值。
+框的精确度要求：
+- 框必须**紧贴元素的可见边缘**（外接矩形）：不留大边距，也不许切掉元素的任何一角
+- **不要漏掉小元素**：小图标、小字、角标、点缀装饰都要单独标出
+- 重叠/遮挡的元素**分别单独标注**（各给各的框，框之间允许重叠）
+- 文字逐块标出（标题/副标题/正文分开），Logo 图形与 Logo 文字分开
+元素数量 3~30 个，按「先大后小」排列，覆盖画面全部可见元素。`;
+
+/** 切分·二次细化：把已识别的框列表回喂模型查漏补缺 + 修正边界（要求回显 id，便于把结果合并回已重绘的元素）。 */
+export const SEGMENT_REFINE_SYSTEM = `你是版面元素检测的校对助手。给定一张图和「已识别的元素列表」（含 id / 名称 / 归一化边界框），逐项对照原图核查：
+1. **修正边界**：框没贴紧元素可见边缘的，按元素真实范围修正（外接矩形，不留大边距、不切角）
+2. **查漏补缺**：画面里有但列表漏掉的元素（尤其小图标、小字、角标、被遮挡的元素）补充进来
+3. **剔除误检**：列表里画面中并不存在的元素删掉
+严格只输出一个 JSON 数组（修正后的完整列表），不要解释、不要 Markdown 围栏：
+[{"id":"保留原有元素的 id；新增元素不填","label":"元素名(中文)","box":[x,y,w,h],"prompt":"重绘该元素的中文提示词"}]
+坐标参照系：以整张图为参照，左上角为原点 (0,0)；x,y=元素左上角，w,h=宽高，全部用**归一化 0~1 小数**。禁止 0~1000、禁止像素值。`;
 
 /** 对稿：逐元素检错（字体/元素/logo/形态）。 */
 export const PROOF_SYSTEM = `你是资深平面设计审稿助手。逐个检查这张海报/设计图里的每个元素，判断是否存在以下问题：
@@ -39,11 +53,13 @@ export const PROOF_SYSTEM = `你是资深平面设计审稿助手。逐个检查
 
 // ───────────────────────── 坐标归一化 ─────────────────────────
 
-/** 某一坐标轴的换算系数：把模型给的值乘上它得到源图像素。 */
-function axisFactor(maxv: number, dim: number): number {
-  if (maxv <= 1.5) return dim; // 归一化 0~1
-  if (maxv <= 1000 && dim > 1000) return dim / 1000; // 0~1000（Gemini 系）：仅当源图大于 1000 时才这么判，避免和像素混淆
-  return 1; // 像素
+/** 整框的两轴换算系数：把模型给的值乘上它得到源图像素。
+ *  坐标系解释（归一化 / 0~1000 / 像素）必须**整框统一判定**——按「长边是否 >1000」判 0~1000，再分别给两轴系数。
+ *  历史 bug：原先逐轴各自判定，宽图 3000×900 收到 0~1000 坐标时 x 轴按 0~1000 换算、y 轴却按像素解释 → 框整体错位。 */
+function rectFactors(maxv: number, imgW: number, imgH: number): { fx: number; fy: number } {
+  if (maxv <= 1.5) return { fx: imgW, fy: imgH }; // 归一化 0~1
+  if (maxv <= 1000 && Math.max(imgW, imgH) > 1000) return { fx: imgW / 1000, fy: imgH / 1000 }; // 0~1000（Gemini 系）：仅当源图长边大于 1000 时才这么判，避免和像素混淆
+  return { fx: 1, fy: 1 }; // 像素
 }
 
 function clampRect(r: ElementRect, imgW: number, imgH: number): ElementRect | null {
@@ -63,8 +79,7 @@ function numsToRect(nums: number[], imgW: number, imgH: number, corners: boolean
   const c = Math.abs(nums[2]);
   const d = Math.abs(nums[3]);
   const maxv = Math.max(a, b, c, d);
-  const fx = axisFactor(maxv, imgW);
-  const fy = axisFactor(maxv, imgH);
+  const { fx, fy } = rectFactors(maxv, imgW, imgH);
   let x = a * fx;
   let y = b * fy;
   let w = c * fx;
@@ -148,11 +163,17 @@ function nextId(prefix: string): string {
 /** 视觉模型原文 → 切分元素数组（含 label / box(源图像素) / prompt）。失败返回 []。 */
 export function parseSegElements(raw: string, imgW: number, imgH: number): SegElement[] {
   const out: SegElement[] = [];
+  const used = new Set<string>();
   for (const obj of parseArray(raw)) {
     const box = extractBox(obj, imgW, imgH);
     if (!box) continue;
+    // 「二次细化」会把带 id 的列表回喂模型：回显的 id 保留，才能把结果合并回已重绘/已手改的元素；
+    // 缺失或重复的 id 走自增，保证节点内唯一。
+    const echoed = str(obj.id);
+    const id = echoed && !used.has(echoed) ? echoed : nextId('seg');
+    used.add(id);
     out.push({
-      id: nextId('seg'),
+      id,
       label: str(obj.label) || str(obj.name) || str(obj.element) || `元素 ${out.length + 1}`,
       box,
       prompt: str(obj.prompt) || str(obj.description) || str(obj.caption) || '',
@@ -161,6 +182,46 @@ export function parseSegElements(raw: string, imgW: number, imgH: number): SegEl
     });
   }
   return out;
+}
+
+/** 识别用图可能被等比缩放后再发送（prepareDetectImage）：必须先按「发送尺寸」解析（这样像素坐标兜底也落在正确
+ *  的参照系里），再把框等比换算回源图像素。发送尺寸 == 源图尺寸时逐字节退化为 parseSegElements。 */
+export function parseSegElementsScaled(raw: string, sentW: number, sentH: number, origW: number, origH: number): SegElement[] {
+  const els = parseSegElements(raw, sentW, sentH);
+  if (sentW === origW && sentH === origH) return els;
+  const kx = origW / Math.max(1, sentW);
+  const ky = origH / Math.max(1, sentH);
+  return els.map((e) => {
+    const x = Math.max(0, Math.min(Math.round(e.box.x * kx), origW - 1));
+    const y = Math.max(0, Math.min(Math.round(e.box.y * ky), origH - 1));
+    const w = Math.max(1, Math.min(Math.round(e.box.w * kx), origW - x));
+    const h = Math.max(1, Math.min(Math.round(e.box.h * ky), origH - y));
+    return { ...e, box: { x, y, w, h } };
+  });
+}
+
+/** 二次细化合并：细化结果为准（顺序/边界/增删），但命中原 id 的元素保留其重绘产物（regenSrc/status/error），
+ *  且细化没给新 prompt 时沿用原提示词——已重绘、已手改的工作不因细化而丢失。 */
+export function mergeRefinedElements(prev: SegElement[], next: SegElement[]): SegElement[] {
+  const byId = new Map(prev.map((p) => [p.id, p]));
+  return next.map((n) => {
+    const p = byId.get(n.id);
+    if (!p) return n;
+    return { ...p, label: n.label || p.label, box: n.box, prompt: n.prompt?.trim() ? n.prompt : p.prompt };
+  });
+}
+
+/** 二次细化的用户指令：把当前元素列表（带 id + 归一化坐标）序列化回喂模型，供其查漏补缺/修正边界。 */
+export function segRefineInstruction(els: SegElement[], imgW: number, imgH: number): string {
+  const w = Math.max(1, imgW);
+  const h = Math.max(1, imgH);
+  const r4 = (v: number): number => Math.round(v * 10000) / 10000;
+  const list = els.map((e) => ({
+    id: e.id,
+    label: e.label,
+    box: [r4(e.box.x / w), r4(e.box.y / h), r4(e.box.w / w), r4(e.box.h / h)]
+  }));
+  return `已识别的元素列表（归一化 0~1 坐标 [x,y,w,h]，可能有漏检、边界不准或误检）：\n${JSON.stringify(list)}\n请对照原图逐项核查，输出修正后的完整元素列表（保留原有元素的 id，新增元素不填 id）。`;
 }
 
 // ───────────────────────── 对稿元素解析 ─────────────────────────

@@ -28,15 +28,41 @@ function isQuotaError(e: unknown): boolean {
 function sanitize(doc: SmartCanvasDoc): SmartCanvasDoc {
   return {
     ...doc,
+    // 旧智能分镜的「转场」输出口（out-trans）已于 2026-07-12 随双输出方案删除：
+    // 旧连线原位迁回默认口 out（新节点单输出=整段分镜脚本，连线不丢）。
+    connections: (doc.connections ?? []).map((c) =>
+      c.sourceHandle === 'out-trans' ? { ...c, sourceHandle: 'out' } : c
+    ),
     nodes: doc.nodes.map((n) => {
       const d = n.data as unknown as Record<string, unknown>;
+      // 旧智能分镜（N 条分镜 + 转场，2026-07-12 重做为「一整段时间轴分镜脚本」）→ 原位迁移：
+      // 既有分镜合成一段存进 resultText（不丢用户成果），旧字段全部剥掉。
+      if (n.type === 'storyboard' && (Array.isArray(d.shots) || 'shotCount' in d || 'constraints' in d)) {
+        const shots = Array.isArray(d.shots) ? (d.shots as unknown[]).filter((x): x is string => typeof x === 'string' && !!x.trim()) : [];
+        const migrated: Record<string, unknown> = {
+          ...d,
+          resultText: typeof d.resultText === 'string' && d.resultText.trim() ? d.resultText : shots.join('；'),
+          status: d.status === 'running' ? 'idle' : d.status
+        };
+        for (const k of ['shots', 'shotsMeta', 'transitions', 'constraints', 'style', 'analysis', 'analysisModelId', 'lastStage', 'story', 'shotMode', 'shotCount', 'transitionStyle', 'includeTimeInPrompt']) {
+          delete migrated[k];
+        }
+        return { ...n, data: migrated as unknown as SmartNodeData };
+      }
       // 旧「角色设计」节点（character，已于提示词商城上线时下线）→ 迁移成提示词节点，
       // 保留最后生成的角色资产 / 形式提示词 / 描述文本，不丢用户既有成果。
       if ((n.type as string) === 'character') {
         const text = String(d.charPrompt || d.sheetPrompt || d.desc || '').trim();
         return { ...n, type: 'prompt', data: { text } as unknown as SmartNodeData };
       }
-      if ((n.type === 'work' || n.type === 'llm' || n.type === 'comfy') && d.status === 'running') {
+      // 旧「视频反推」节点（video-reverse，2026-07-11 并入「反推」image-reverse）→ 原位换 type：
+      // 字段同名（modelId/reverseType/frameCount/resultText…）直接沿用；position/连线不动——
+      // 合并后 image-reverse 本就接受视频来源，旧连线（视频→反推）依旧合法。
+      if ((n.type as string) === 'video-reverse') {
+        return { ...n, type: 'image-reverse', data: { ...d, status: d.status === 'running' ? 'idle' : d.status } as unknown as SmartNodeData };
+      }
+      // 反推/分镜/角色卡 运行是渲染端同步 await（无 pending Map 可对账），关软件时的 running 一并归零防幽灵
+      if ((n.type === 'work' || n.type === 'llm' || n.type === 'comfy' || n.type === 'image-reverse' || n.type === 'storyboard' || n.type === 'character-card') && d.status === 'running') {
         return {
           ...n,
           data: { ...d, status: 'idle', taskId: undefined, runId: undefined } as unknown as SmartNodeData

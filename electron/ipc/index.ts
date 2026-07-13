@@ -21,6 +21,8 @@ import { registerComfyuiWorkflowHandlers } from './comfyuiWorkflow';
 import { registerComfyuiRunHandlers } from './comfyuiRun';
 import { registerComfyuiResultsHandlers } from './comfyuiResults';
 import { registerShortcutsHandlers } from './shortcuts';
+import { registerVaultHandlers } from './vault';
+import { registerMcpHandlers } from './mcp';
 
 export function registerAllIpcHandlers(): void {
   registerSettingsHandlers();
@@ -52,4 +54,8 @@ export function registerAllIpcHandlers(): void {
   registerComfyuiResultsHandlers();
   // 侧栏外部软件 / 文件夹快捷方式（api:shortcuts:*）
   registerShortcutsHandlers();
+  // Obsidian 资产库桥（api:vault:*）—— 导出/检索/读取本地 vault 里的 .md 笔记
+  registerVaultHandlers();
+  // MCP 服务器（api:mcp:*）—— 供 Hermes Studio 等智能体经 MCP 操作梦笔
+  registerMcpHandlers();
 }

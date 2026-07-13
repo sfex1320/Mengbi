@@ -12,10 +12,26 @@ function loadCards(): PromptMallCard[] {
     if (!raw) return [];
     const arr = JSON.parse(raw) as unknown;
     if (!Array.isArray(arr)) return [];
-    return arr.filter(
-      (c): c is PromptMallCard =>
-        !!c && typeof c === 'object' && typeof (c as PromptMallCard).id === 'string' && typeof (c as PromptMallCard).cat === 'string'
-    );
+    // 为什么不只查 id/cat：卡片墙搜索会对每张卡的 zh/en/genPrompt 调 .toLowerCase()（渲染期），
+    // 旧版本/手改过的 localStorage 条目若缺这些字段会直接抛 TypeError → 整页 ErrorBoundary。
+    // 这里把缺失/类型不对的文本字段归一成空串，形状不符的条目整条丢弃。
+    const out: PromptMallCard[] = [];
+    for (const c of arr) {
+      if (!c || typeof c !== 'object') continue;
+      const r = c as Record<string, unknown>;
+      if (typeof r.id !== 'string' || !r.id || typeof r.cat !== 'string') continue;
+      const card: PromptMallCard = {
+        id: r.id,
+        cat: r.cat,
+        sub: typeof r.sub === 'string' ? r.sub : '',
+        zh: typeof r.zh === 'string' ? r.zh : '',
+        en: typeof r.en === 'string' ? r.en : '',
+        genPrompt: typeof r.genPrompt === 'string' ? r.genPrompt : ''
+      };
+      if (typeof r.thumb === 'string' && r.thumb) card.thumb = r.thumb;
+      out.push(card);
+    }
+    return out;
   } catch {
     return [];
   }

@@ -14,10 +14,12 @@ import { SmartTextViewer } from './SmartTextViewer';
 import { GalleryPickerDialog, useGalleryPickerStore } from './GalleryPickerDialog';
 import { PromptPickerDialog, usePromptPickerStore } from './PromptPickerDialog';
 import { SmartGalleryPanel, useSmartGalleryPanelStore } from './SmartGalleryPanel';
+import { VaultPanel, useVaultPanelStore } from './VaultPanel';
+import { VaultExportDialog, useVaultExportStore } from './VaultExportDialog';
 import { AgentPanel, useAgentPanelStore } from './AgentPanel';
 import { ImageEditorModal, useImageEditorStore } from './ImageEditorModal';
 import { PromptMallStudio, usePromptMallStudioStore } from './PromptMallStudio';
-import { StoryboardStudio, useStoryboardStudioStore } from './StoryboardStudio';
+import { PromptListStudio, usePromptListStudioStore } from './PromptListStudio';
 import { VideoClipStudio, useVideoClipStudioStore } from './VideoClipStudio';
 import { SegmentStudio, useSegmentStudioStore } from './SegmentStudio';
 import { ProofStudio, useProofStudioStore } from './ProofStudio';
@@ -97,10 +99,12 @@ export default function SmartCanvasPage(): JSX.Element {
       usePromptPickerStore.getState().close();
       useGalleryPickerStore.getState().close();
       useSmartGalleryPanelStore.getState().close();
+      useVaultPanelStore.getState().close();
+      useVaultExportStore.getState().close();
       useAgentPanelStore.getState().close();
       useImageEditorStore.getState().close();
       usePromptMallStudioStore.getState().close();
-      useStoryboardStudioStore.getState().close();
+      usePromptListStudioStore.getState().close();
       useVideoClipStudioStore.getState().close();
       useSegmentStudioStore.getState().close();
       useProofStudioStore.getState().close();
@@ -135,15 +139,20 @@ export default function SmartCanvasPage(): JSX.Element {
       <SmartTextViewer />
       <GalleryPickerDialog />
       <PromptPickerDialog />
-      {/* 提示词商城 / 分镜 工作台弹窗（节点卡精简，进一步设置在弹窗里；portal 到 body） */}
+      {/* 提示词商城 工作台弹窗（节点卡精简，进一步设置在弹窗里；portal 到 body） */}
       <PromptMallStudio />
-      <StoryboardStudio />
+      {/* 提示词列表工作台（大窗完整编辑提示词节点的多条长提示词；portal 到 body） */}
+      <PromptListStudio />
       <VideoClipStudio />
       {/* 切分 / 对稿 工作台弹窗（视觉元素分析 + 框编辑；portal 到 body） */}
       <SegmentStudio />
       <ProofStudio />
       {/* 便携资产库（非模态中心悬浮窗）：portal 到 body，躲开路由级 transform */}
       <SmartGalleryPanel />
+      {/* Obsidian 库（非模态中心悬浮窗）：检索/预览笔记，插入画布作提示词节点 */}
+      <VaultPanel />
+      {/* 「存入 Obsidian 库」导出弹窗（节点右键唤起） */}
+      <VaultExportDialog />
       {/* AI 智能体（一句话 → 自动建图 / 生成）：portal 到 body */}
       <AgentPanel />
       {/* 图片节点就地编辑器（扩图 / 画笔 / 裁切 / 蒙版 / 调色）：portal 到 body */}

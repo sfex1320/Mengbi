@@ -78,8 +78,8 @@ export function AboutSection(): JSX.Element {
     <div className="mb-settings-section">
       <h3 className="mb-settings-section-title">关于 / 第三方许可证</h3>
 
-      {/* App 概览 */}
-      <div className="mb-about-app-card">
+      {/* App 概览（id 供设置搜索 / 分区快捷条定位） */}
+      <div id="about-app" className="mb-about-app-card">
         <div className="mb-about-app-name">
           梦笔（mengbi）<span className="mb-about-app-ver">v{appVersion}</span>
         </div>
@@ -97,7 +97,8 @@ export function AboutSection(): JSX.Element {
         <strong>实验性模型</strong>许可证不确定，请慎用。
       </div>
 
-      {/* 分类过滤 */}
+      {/* 分类过滤（外层 id 供设置搜索 / 分区快捷条定位） */}
+      <div id="about-license">
       <div className="mb-about-filter-row">
         {(['all', 'library', 'model', 'runtime'] as const).map((k) => (
           <button
@@ -142,6 +143,7 @@ export function AboutSection(): JSX.Element {
       <div className="mb-about-footer-note">
         共 <strong>{ENTRIES.length}</strong> 项第三方组件 / 模型在册。
         <CheckIcon size={11} /> 配置文件 / 数据库 / 模型权重 100% 本地存储；除非用户主动联网下载模型，否则不与任何外部服务器通信。
+      </div>
       </div>
     </div>
   );

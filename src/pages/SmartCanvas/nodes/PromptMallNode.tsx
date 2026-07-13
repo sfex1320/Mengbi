@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { NodeResizer, type NodeProps } from '@xyflow/react';
 import { useSmartCanvasStore, useSmartTextStore } from '@/store/smartCanvasStore';
 import { useSettingsStore } from '@/store/settingsStore';
@@ -10,7 +10,7 @@ import { useMallUserCardsStore } from '@/lib/promptMall/userCards';
 import { useMallThumbsStore } from '../promptMall/mallThumbs';
 import type { PromptMallNodeData, SmartNodeData } from '@shared/smartCanvas';
 import { NodeShell } from './NodeShell';
-import { areaMenu, copyText, makePromptNodeFrom, ToPromptButton, autoGrowNode, estimateTextHeight, getNodeWidth } from '../nodeArea';
+import { areaMenu, copyText, makePromptNodeFrom, ToPromptButton, useFitNodeToContent } from '../nodeArea';
 import { toast } from '@/store/toastStore';
 
 const STATUS_TEXT: Record<string, string> = { idle: '待运行', running: '运行中…', success: '已完成', error: '失败' };
@@ -50,7 +50,8 @@ export function PromptMallNode({ id, data }: NodeProps): JSX.Element {
   const setF = (p: Partial<PromptMallNodeData>): void => update(id, p as Partial<SmartNodeData>);
   const up = useMemo(() => computeUpstream(nodes, edges, id), [nodes, edges, id]);
   const running = d.status === 'running';
-  const cart = d.cart ?? [];
+  // Array.isArray 兜底：cart 来自持久化画布文档，损坏形状（非数组）会让 slice/map 在渲染期抛错
+  const cart = Array.isArray(d.cart) ? d.cart : [];
   const upPrompts = up.prompts.length;
 
   // 开发模式：找直接下游的 ComfyUI 节点 + 生成状态
@@ -63,12 +64,9 @@ export function PromptMallNode({ id, data }: NodeProps): JSX.Element {
   const [overwrite, setOverwrite] = useState(false);
   const stopGen = useRef(false);
 
-  useEffect(() => {
-    const w = getNodeWidth(id);
-    let need = d.devMode ? 360 : 286;
-    if (!d.devMode && d.assembled?.trim()) need += Math.min(150, estimateTextHeight(d.assembled, w - 40)) + 28;
-    autoGrowNode(id, need, 900);
-  }, [id, d.assembled, d.devMode]);
+  // 节点高度贴合真实内容（fitwrap 实测，双向：开发模式/合成结果/购物车 chips 变化都自动跟随；手动 > 自适应）
+  const fitRef = useRef<HTMLDivElement>(null);
+  useFitNodeToContent(id, fitRef, 52, 900);
 
   async function devGenerate(): Promise<void> {
     if (!comfyNodeId) {
@@ -119,6 +117,7 @@ export function PromptMallNode({ id, data }: NodeProps): JSX.Element {
           </span>
         }
       >
+        <div className="mb-sc-fitwrap nowheel" ref={fitRef}>
         <div className="mb-sc-revctl nodrag">
           {/* 中/英输出 + 优化开关 + 开发模式 */}
           <div className="mb-sc-mall-row">
@@ -234,6 +233,7 @@ export function PromptMallNode({ id, data }: NodeProps): JSX.Element {
             <ToPromptButton onClick={() => makePromptNodeFrom(id, d.assembled ?? '')} title="把合成提示词导入下游提示词节点" />
           </>
         )}
+        </div>
       </NodeShell>
     </>
   );

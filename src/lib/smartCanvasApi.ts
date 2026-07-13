@@ -25,7 +25,7 @@ export function serialize(nodes: Node[], edges: Edge[], viewport: Viewport): Sma
       id: e.id,
       source: e.source,
       target: e.target,
-      // 多输出口（智能分镜 out-trans）必须随文档保留，否则重开画布后转场口连线退化成分镜口
+      // 非默认输出口随文档保留（当前节点均为单输出口 out；历史 out-trans 由 sanitize 迁回 out）
       ...(e.sourceHandle && e.sourceHandle !== 'out' ? { sourceHandle: e.sourceHandle } : {})
     })),
     viewport: { x: viewport.x, y: viewport.y, scale: viewport.zoom },

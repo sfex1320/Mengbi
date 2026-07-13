@@ -28,12 +28,12 @@ const TYPE_LABEL: Record<string, string> = {
   text: '文字',
   compare: '对比',
   video: '视频',
-  'image-reverse': '图像反推',
+  'image-reverse': '反推',
   'video-source': '视频上传',
-  'video-reverse': '视频反推',
   'frame-interp': '插帧',
   'video-clip': '视频剪辑',
   storyboard: '智能分镜',
+  'character-card': '角色卡',
   'prompt-mall': '提示词商城',
   loop: '循环',
   upscale: '保真放大',
@@ -57,6 +57,13 @@ export function nodeSearchText(n: Node): string {
   } else if (t === 'group') extra = (n.data as unknown as GroupNodeData).title ?? '';
   else if (t === 'image') extra = (n.data as unknown as ImageNodeData).name ?? '';
   else if (t === 'comfy') extra = (n.data as unknown as ComfyNodeData).templateName ?? '';
+  else if (t === 'storyboard') {
+    const d = n.data as unknown as { input?: string; resultText?: string };
+    extra = `${d.input ?? ''} ${d.resultText ?? ''}`;
+  } else if (t === 'character-card') {
+    const d = n.data as unknown as { desc?: string; resultText?: string };
+    extra = `${d.desc ?? ''} ${d.resultText ?? ''}`;
+  }
   return `${label} ${extra}`.toLowerCase();
 }
 

@@ -156,8 +156,10 @@ const GLYPHS: Record<string, JSX.Element> = {
 
 /** 简单字符串 hash（同一卡片稳定的色相微调，使同类卡像「一家人」而非完全相同）。 */
 function hashHue(id: string): number {
+  // (id || '') 兜底：购物车条目来自持久化文档，脏数据 cardId 可能缺失——这里在渲染期跑，绝不能抛
+  const s = id || '';
   let h = 0;
-  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
   return (Math.abs(h) % 40) - 20; // -20..+19 度
 }
 

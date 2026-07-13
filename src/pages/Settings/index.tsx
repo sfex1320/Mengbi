@@ -33,6 +33,13 @@ import {
   type VoicePhrase
 } from '@/lib/voiceNotify';
 import { detectModelCapabilities, summarizeCapabilities } from '@/lib/modelCapabilities';
+import {
+  CURSOR_STYLES,
+  CURSOR_OFF,
+  CURSOR_SIZE_MIN,
+  CURSOR_SIZE_MAX,
+  CURSOR_SIZE_DEFAULT
+} from '@/lib/cursorStyles';
 import { protocolToOfficialKind } from '@/lib/relayProtocol';
 import { ConfigAgentPanel } from './ConfigAgentPanel';
 import { listMappedModels } from '@/lib/modelMapping';
@@ -59,6 +66,7 @@ import {
   type Palette
 } from '@shared/theme';
 import type { ApiConfig, ApiConfigInput, ImageKind, OfficialKind, VideoKind } from '@shared/domain';
+import type { McpStatus } from '@shared/ipc';
 import { suggestVideoKind } from '@shared/domain';
 import { detectProtocolFromUrl } from '@shared/protocolDetect';
 import { parseSdkSnippet } from '@/lib/sdkSnippetParser';
@@ -75,7 +83,220 @@ import {
   type FilenamePartConfig,
   type DatetimeFormat
 } from '@shared/filenameTemplate';
+import {
+  SiPlans,
+  SiSpark,
+  SiPalette,
+  SiDatabase,
+  SiWrench,
+  SiInfo,
+  SiSearch,
+  SiMonitor,
+  SiGauge,
+  SiCursorGlow,
+  SiFolderLine,
+  SiImages,
+  SiArchive,
+  SiGlobe,
+  SiChip,
+  SiRobot,
+  SiUpscale,
+  SiBox,
+  SiKey,
+  SiVideo
+} from './settingsIcons';
 import './Settings.css';
+
+// ─────────────────────────────────────────────────────
+// 设置分区静态索引：tab 快捷条 + 全局设置搜索共用同一张表（避免漂移）。
+// 每个 SettingsSection 的 id 必须与这里一致；新增分区时同步登记。
+// ─────────────────────────────────────────────────────
+
+const SETTINGS_TAB_LABELS: Record<SettingsTab, string> = {
+  plans: '模型方案',
+  intelligent: '智能化方案',
+  appearance: '外观',
+  storage: '存储与系统',
+  tools: '工具箱',
+  about: '关于 / 许可证'
+};
+
+interface SettingsSectionMeta {
+  tab: SettingsTab;
+  id: string;
+  title: string;
+  desc?: string;
+  /** 搜索关键词：把分区里的关键概念列进来（中英都可，匹配时不区分大小写） */
+  keywords: string[];
+}
+
+const SETTINGS_INDEX: SettingsSectionMeta[] = [
+  // ── 模型方案 ──
+  {
+    tab: 'plans',
+    id: 'plans-manage',
+    title: '方案管理',
+    desc: '创建 / 切换方案，右键方案设置图标',
+    keywords: ['方案', '创建方案', '切换方案', '方案图标', 'plan', '新方案']
+  },
+  {
+    tab: 'plans',
+    id: 'plans-providers',
+    title: '中转站与模型',
+    desc: 'API 地址 / Key / 模型映射，Key 自动加密落库',
+    keywords: [
+      'API Key', '密钥', 'key', '中转站', '官方直连', '第三方', '本地模型', '模型映射',
+      '协议', '对话模型', '绘画模型', '视频模型', '地址', 'base url', '测试连接',
+      '请求体覆盖', '自定义请求头', 'Kimi', 'DeepSeek', 'OpenAI', 'Claude', 'Ollama', 'gguf'
+    ]
+  },
+  {
+    tab: 'plans',
+    id: 'plans-video-advanced',
+    title: '视频供应商微调',
+    desc: '高级（可选）：端点 / 能力 / 限制 / 费用阈值',
+    keywords: ['视频供应商', 'Seedance', '端点', '费用', '上传端点', '轮询', '超时', '任务历史', 'kling', 'sora']
+  },
+  // ── 智能化方案 ──
+  {
+    tab: 'intelligent',
+    id: 'intel-agent',
+    title: '智能体',
+    desc: '智能画布智能体的自动生成行为与模型指派',
+    keywords: ['智能体', 'agent', '自动生成', '模型指派', '翻译', '快捷翻译', '文本模型']
+  },
+  {
+    tab: 'intelligent',
+    id: 'intel-system',
+    title: '系统与体验',
+    desc: '硬件加速、任务完成语音播报',
+    keywords: ['GPU', '硬件加速', '语音', '播报', '话术', '试听', '花屏', '重启生效']
+  },
+  {
+    tab: 'intelligent',
+    id: 'intel-search',
+    title: '联网搜索',
+    desc: '对话联网后端：模型原生 / 各类代搜',
+    keywords: ['联网', '搜索', '搜索后端', 'DuckDuckGo', 'Tavily', '博查', '智谱', 'Jina', 'Serper', 'SearXNG', 'web search']
+  },
+  {
+    tab: 'intelligent',
+    id: 'intel-mcp',
+    title: 'MCP 服务器（智能体接入）',
+    desc: '让 Hermes Studio 等智能体经 MCP 操作梦笔',
+    keywords: ['MCP', 'Hermes', '智能体接入', 'agent', '服务器', '端口', 'token', '令牌', 'sse', 'streamable']
+  },
+  // ── 外观 ──
+  {
+    tab: 'appearance',
+    id: 'appear-theme',
+    title: '主题外观',
+    desc: '10 材质氛围 × 10 主题配色',
+    keywords: ['主题', '氛围', '配色', '材质', '深色', '颜色', '外观']
+  },
+  {
+    tab: 'appearance',
+    id: 'appear-zoom',
+    title: '显示与缩放',
+    desc: '整窗界面缩放（webFrame）',
+    keywords: ['缩放', '界面缩放', '显示', '放大', '缩小', 'zoom', 'Ctrl']
+  },
+  {
+    tab: 'appearance',
+    id: 'appear-perf',
+    title: '性能模式',
+    desc: '动效开销控制，立即生效',
+    keywords: ['性能', '低配', '动效', '掉帧', '流星', '光晕', 'GPU 占用']
+  },
+  {
+    tab: 'appearance',
+    id: 'appear-canvas',
+    title: '智能画布与光标',
+    desc: '连线流动色 / 鼠标光晕 / 自定义光标',
+    keywords: [
+      '连线', '流动色', '光晕', '鼠标', '画布', '强调色',
+      '光标', '指针', 'cursor', '鼠标指针', '光标样式', '光标大小', '自定义光标'
+    ]
+  },
+  // ── 存储与系统 ──
+  {
+    tab: 'storage',
+    id: 'store-location',
+    title: '存储位置',
+    desc: '图片落盘目录与文件命名规则',
+    keywords: ['存储', '路径', '落盘', '文件名', '命名', '模板', '目录', '图片存储']
+  },
+  {
+    tab: 'storage',
+    id: 'store-gallery',
+    title: '资产库',
+    desc: '资产库（图库）的加载与性能',
+    keywords: ['资产库', '图库', '预加载', '内存', '瞬开']
+  },
+  {
+    tab: 'storage',
+    id: 'store-obsidian',
+    title: 'Obsidian 资产库',
+    desc: '连接本地 Obsidian 库：画布一键存入 / 调用笔记',
+    keywords: ['Obsidian', '资产库', '笔记', 'vault', '库路径', '归档', '角色设定', '剧本', 'markdown', 'wikilink']
+  },
+  {
+    tab: 'storage',
+    id: 'store-backup',
+    title: '配置备份',
+    desc: '导出 / 导入全部方案与设置（加密）',
+    keywords: ['备份', '导出', '导入', '加密', '配置文件夹', '图片导出', '图片导入', '节点模板', '恢复', '迁移']
+  },
+  // ── 工具箱 ──
+  {
+    tab: 'tools',
+    id: 'tools-output',
+    title: '输出与保存',
+    desc: '工具箱产出目录与自动保存',
+    keywords: ['工具箱', '保存路径', '自动保存', '输出目录']
+  },
+  {
+    tab: 'tools',
+    id: 'tools-realesrgan',
+    title: 'Real-ESRGAN 放大引擎',
+    desc: 'ncnn Vulkan 本地引擎与已装模型',
+    keywords: ['放大', 'Real-ESRGAN', 'ncnn', 'Vulkan', '引擎', '超分', '卸载', '放大模型']
+  },
+  {
+    tab: 'tools',
+    id: 'tools-onnx',
+    title: 'ONNX 放大模型',
+    desc: 'onnxruntime-node 主进程，无 Python 依赖',
+    keywords: ['ONNX', 'onnxruntime', '放大模型']
+  },
+  // ── 关于 ──
+  {
+    tab: 'about',
+    id: 'about-app',
+    title: '关于梦笔',
+    desc: '版本 / 构建标识',
+    keywords: ['版本', '构建', '关于', 'version']
+  },
+  {
+    tab: 'about',
+    id: 'about-license',
+    title: '第三方许可证',
+    desc: '第三方组件与模型的来源 + 许可证',
+    keywords: ['许可证', '第三方', '开源', '合规', 'license']
+  }
+];
+
+/** 平滑滚动到某分区并短暂高亮（1.5s）。元素不存在时安静跳过。 */
+function scrollToSection(id: string): void {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  el.classList.remove('mb-settings-flash');
+  // 强制 reflow 以便重复点击也能重启高亮动画
+  void el.offsetWidth;
+  el.classList.add('mb-settings-flash');
+  window.setTimeout(() => el.classList.remove('mb-settings-flash'), 1600);
+}
 
 // 对话协议（按「绝大多数选第一个」排序，名字尽量直白）。值不变（向后兼容已存配置），仅重命名/收拢展示。
 const OFFICIAL_KINDS: Array<{ value: OfficialKind; label: string; hint: string }> = [
@@ -292,6 +513,17 @@ export default function SettingsPage(): JSX.Element {
   const tab = ui.settingsTab;
   const setTab = (t: SettingsTab): void => ui.setSettingsTab(t);
 
+  /** 搜索命中 / 快捷条点击：必要时先切 tab，再滚动到分区并高亮。 */
+  function gotoSection(meta: SettingsSectionMeta): void {
+    if (tab !== meta.tab) {
+      setTab(meta.tab);
+      // 等目标 tab 挂载后再滚动（内容为同步渲染，一拍延迟足够）
+      window.setTimeout(() => scrollToSection(meta.id), 120);
+    } else {
+      scrollToSection(meta.id);
+    }
+  }
+
   return (
     <motion.div
       initial={{ opacity: 0 }}
@@ -301,28 +533,38 @@ export default function SettingsPage(): JSX.Element {
     >
       <aside className="mb-settings-sidebar mb-card mb-marquee-glow">
         <h2 className="mb-settings-title">设置</h2>
-        <SidebarItem label="模型方案" active={tab === 'plans'} onClick={() => setTab('plans')} />
         <SidebarItem
+          icon={<SiPlans size={17} />}
+          label="模型方案"
+          active={tab === 'plans'}
+          onClick={() => setTab('plans')}
+        />
+        <SidebarItem
+          icon={<SiSpark size={17} />}
           label="智能化方案"
           active={tab === 'intelligent'}
           onClick={() => setTab('intelligent')}
         />
         <SidebarItem
+          icon={<SiPalette size={17} />}
           label="外观"
           active={tab === 'appearance'}
           onClick={() => setTab('appearance')}
         />
         <SidebarItem
+          icon={<SiDatabase size={17} />}
           label="存储与系统"
           active={tab === 'storage'}
           onClick={() => setTab('storage')}
         />
         <SidebarItem
+          icon={<SiWrench size={17} />}
           label="工具箱"
           active={tab === 'tools'}
           onClick={() => setTab('tools')}
         />
         <SidebarItem
+          icon={<SiInfo size={17} />}
           label="关于 / 许可证"
           active={tab === 'about'}
           onClick={() => setTab('about')}
@@ -330,6 +572,10 @@ export default function SettingsPage(): JSX.Element {
       </aside>
 
       <section className="mb-settings-content mb-card mb-marquee-glow">
+        <div className="mb-settings-pane mb-settings-toparea">
+          <SettingsSearch onNavigate={gotoSection} />
+          <SectionQuickBar tab={tab} />
+        </div>
         {tab === 'plans' && <PlansTab />}
         {tab === 'intelligent' && <IntelligentTab />}
         {tab === 'appearance' && <AppearanceTab />}
@@ -342,10 +588,12 @@ export default function SettingsPage(): JSX.Element {
 }
 
 function SidebarItem({
+  icon,
   label,
   active,
   onClick
 }: {
+  icon?: JSX.Element;
   label: string;
   active: boolean;
   onClick: () => void;
@@ -355,8 +603,88 @@ function SidebarItem({
       onClick={onClick}
       className={`mb-settings-side-item ${active ? 'is-active' : ''}`}
     >
+      {icon && <span className="mb-settings-side-ico">{icon}</span>}
       <span>{label}</span>
     </button>
+  );
+}
+
+/**
+ * 全局设置搜索：输入即从 SETTINGS_INDEX 过滤（标题 / 说明 / 关键词 / 所属 tab），
+ * 点击命中 → 切 tab + 滚动到分区 + 高亮。索引与分区共用同一常量表，避免漂移。
+ */
+function SettingsSearch({ onNavigate }: { onNavigate: (meta: SettingsSectionMeta) => void }): JSX.Element {
+  const [q, setQ] = useState('');
+  const results = useMemo(() => {
+    const t = q.trim().toLowerCase();
+    if (!t) return [];
+    return SETTINGS_INDEX.filter(
+      (m) =>
+        m.title.toLowerCase().includes(t) ||
+        (m.desc ?? '').toLowerCase().includes(t) ||
+        SETTINGS_TAB_LABELS[m.tab].toLowerCase().includes(t) ||
+        m.keywords.some((k) => k.toLowerCase().includes(t))
+    );
+  }, [q]);
+
+  function pick(meta: SettingsSectionMeta): void {
+    onNavigate(meta);
+    setQ('');
+  }
+
+  return (
+    <div className="mb-settings-search">
+      <span className="mb-settings-search-icon">
+        <SiSearch size={15} />
+      </span>
+      <input
+        className="mb-settings-search-input"
+        placeholder="搜索设置（如 API Key / 缩放 / 语音 / GPU / 备份…）"
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') setQ('');
+          if (e.key === 'Enter' && results.length > 0) pick(results[0]);
+        }}
+      />
+      {q.trim() !== '' && (
+        <div className="mb-settings-search-pop mb-card">
+          {results.length === 0 ? (
+            <div className="mb-settings-search-empty">没有匹配的设置项——换个关键词试试（如 Key / 缩放 / 备份）</div>
+          ) : (
+            results.map((m) => (
+              <button key={m.id} type="button" className="mb-settings-search-hit" onClick={() => pick(m)}>
+                <span className="mb-settings-search-hit-title">{m.title}</span>
+                {m.desc && <span className="mb-settings-search-hit-desc">{m.desc}</span>}
+                <span className="mb-settings-search-hit-tab">{SETTINGS_TAB_LABELS[m.tab]}</span>
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 区域快捷条：列出当前 tab 的全部分区 chips，点击平滑滚动到对应卡片并高亮。 */
+function SectionQuickBar({ tab }: { tab: SettingsTab }): JSX.Element | null {
+  const sections = SETTINGS_INDEX.filter((s) => s.tab === tab);
+  if (sections.length < 2) return null;
+  return (
+    <nav className="mb-settings-quickbar" aria-label="本页分区">
+      <span className="mb-settings-quickbar-label">分区</span>
+      {sections.map((s) => (
+        <button
+          key={s.id}
+          type="button"
+          className="mb-settings-quickchip"
+          title={s.desc}
+          onClick={() => scrollToSection(s.id)}
+        >
+          {s.title}
+        </button>
+      ))}
+    </nav>
   );
 }
 
@@ -551,77 +879,114 @@ function PlansTab(): JSX.Element {
         </div>
       </header>
 
-      <div className="mb-settings-create-row">
-        <div className="mb-settings-create-input">
-          <input
-            className="mb-input"
-            placeholder="新方案名称"
-            value={planNameDraft}
-            onChange={(e) => setPlanNameDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') createPlan();
-            }}
-          />
-          <button className="mb-btn mb-btn-primary" disabled={busy} onClick={createPlan}>
-            <PlusIcon size={16} /> 创建方案
-          </button>
-        </div>
-        {plans.length > 0 && (
-          <div className="mb-settings-plan-list">
-            {plans.map((p, idx) => (
-              <motion.button
-                key={p.id}
-                onClick={() => setActivePlanId(p.id)}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  openContextMenu({
-                    x: e.clientX,
-                    y: e.clientY,
-                    items: [
-                      { label: '设置方案图标…', onClick: () => setIconEditing({ planId: p.id, name: p.name }) },
-                      ...(planIcons[String(p.id)]
-                        ? [{ label: '恢复自动图标（首字）', onClick: () => void savePlanIcon(p.id, '') }]
-                        : [])
-                    ]
-                  });
+      <div className="mb-settings-grid">
+        <SettingsSection
+          id="plans-manage"
+          icon={<SiPlans size={15} />}
+          title="方案管理"
+          desc="创建 / 切换方案，右键方案可设置图标"
+          wide
+        >
+          <div className="mb-settings-create-row">
+            <div className="mb-settings-create-input">
+              <input
+                className="mb-input"
+                placeholder="新方案名称"
+                value={planNameDraft}
+                onChange={(e) => setPlanNameDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') createPlan();
                 }}
-                className={`mb-plan-pill ${activePlanId === p.id ? 'is-active' : ''}`}
-                title={`${p.name} · 右键设置图标`}
-                initial={{ opacity: 0, scale: 0.92 }}
-                animate={{ opacity: 1, scale: 1 }}
-                transition={{ delay: idx * 0.04, type: 'spring', stiffness: 380 }}
-                whileHover={{ scale: 1.04 }}
-                whileTap={{ scale: 0.96 }}
-              >
-                <PlanIconBadge planId={p.id} name={p.name} icons={planIcons} />
-                {p.name}
-              </motion.button>
-            ))}
+              />
+              <button className="mb-btn mb-btn-primary" disabled={busy} onClick={createPlan}>
+                <PlusIcon size={16} /> 创建方案
+              </button>
+            </div>
+            {plans.length > 0 && (
+              <div className="mb-settings-plan-list">
+                {plans.map((p, idx) => (
+                  <motion.button
+                    key={p.id}
+                    onClick={() => setActivePlanId(p.id)}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      openContextMenu({
+                        x: e.clientX,
+                        y: e.clientY,
+                        items: [
+                          { label: '设置方案图标…', onClick: () => setIconEditing({ planId: p.id, name: p.name }) },
+                          ...(planIcons[String(p.id)]
+                            ? [{ label: '恢复自动图标（首字）', onClick: () => void savePlanIcon(p.id, '') }]
+                            : [])
+                        ]
+                      });
+                    }}
+                    className={`mb-plan-pill ${activePlanId === p.id ? 'is-active' : ''}`}
+                    title={`${p.name} · 右键设置图标`}
+                    initial={{ opacity: 0, scale: 0.92 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    transition={{ delay: idx * 0.04, type: 'spring', stiffness: 380 }}
+                    whileHover={{ scale: 1.04 }}
+                    whileTap={{ scale: 0.96 }}
+                  >
+                    <PlanIconBadge planId={p.id} name={p.name} icons={planIcons} />
+                    {p.name}
+                  </motion.button>
+                ))}
+              </div>
+            )}
           </div>
+        </SettingsSection>
+
+        {plans.length === 0 ? (
+          <SettingsSection
+            id="plans-providers"
+            icon={<SiKey size={15} />}
+            title="中转站与模型"
+            desc="API 地址 / Key / 模型映射，Key 自动加密落库"
+            wide
+          >
+            <EmptyState
+              icon={<ZapIcon size={28} />}
+              title="还没有任何方案"
+              desc="先创建一个方案，再往里面添加对话或绘画模型。"
+            />
+          </SettingsSection>
+        ) : (
+          activePlanId !== null && (
+            <>
+              <SettingsSection
+                id="plans-providers"
+                icon={<SiKey size={15} />}
+                title="中转站与模型"
+                desc="API 地址 / Key / 模型映射，Key 自动加密落库"
+                wide
+              >
+                <ConfigList
+                  key={activePlanId}
+                  planId={activePlanId}
+                  configs={activeConfigs}
+                  onEditProvider={openProviderEditor}
+                  onEdit={openEdit}
+                  onDuplicateConfig={duplicateConfig}
+                  onDeleteConfig={deleteConfig}
+                  onDeleteProvider={deleteProvider}
+                  onDeletePlan={() => deletePlan(activePlanId)}
+                />
+              </SettingsSection>
+              <SettingsSection
+                id="plans-video-advanced"
+                icon={<SiVideo size={15} />}
+                title="视频供应商微调"
+                desc="高级（可选）：端点 / 能力 / 限制 / 费用阈值，常规使用无需配置"
+                wide
+              >
+                <VideoProvidersCenter />
+              </SettingsSection>
+            </>
+          )
         )}
       </div>
-
-      {plans.length === 0 ? (
-        <EmptyState
-          icon={<ZapIcon size={28} />}
-          title="还没有任何方案"
-          desc="先创建一个方案，再往里面添加对话或绘画模型。"
-        />
-      ) : (
-        activePlanId !== null && (
-          <ConfigList
-            key={activePlanId}
-            planId={activePlanId}
-            configs={activeConfigs}
-            onEditProvider={openProviderEditor}
-            onEdit={openEdit}
-            onDuplicateConfig={duplicateConfig}
-            onDeleteConfig={deleteConfig}
-            onDeleteProvider={deleteProvider}
-            onDeletePlan={() => deletePlan(activePlanId)}
-          />
-        )
-      )}
 
       <Modal
         open={editingDraft !== null}
@@ -910,7 +1275,6 @@ function ConfigList({
           );
         })
       )}
-      <VideoProvidersCenter />
     </div>
   );
 }
@@ -3059,21 +3423,35 @@ function Field({
   );
 }
 
-/** 设置分区卡片：标题 + 说明 + 内容，给各设置页清晰的区域划分。 */
+/**
+ * 设置分区卡片：图标 + 标题 + 说明 + 内容，给各设置页清晰的区域划分。
+ * - id：与 SETTINGS_INDEX 登记一致，供快捷条 / 搜索 scrollIntoView 定位
+ * - icon：标题左侧小线条图标（settingsIcons.tsx）
+ * - wide：内容天然很宽的分区占满整行（grid-column: 1/-1）
+ */
 function SettingsSection({
+  id,
+  icon,
   title,
   desc,
+  wide,
   children
 }: {
+  id?: string;
+  icon?: JSX.Element;
   title: string;
   desc?: string;
+  wide?: boolean;
   children: React.ReactNode;
 }): JSX.Element {
   return (
-    <section className="mb-settings-card mb-card">
+    <section id={id} className={`mb-settings-card mb-card ${wide ? 'is-wide' : ''}`}>
       <div className="mb-settings-card-head">
-        <span className="mb-settings-card-title">{title}</span>
-        {desc && <span className="mb-settings-card-desc">{desc}</span>}
+        {icon && <span className="mb-settings-card-icon">{icon}</span>}
+        <div className="mb-settings-card-titles">
+          <span className="mb-settings-card-title">{title}</span>
+          {desc && <span className="mb-settings-card-desc">{desc}</span>}
+        </div>
       </div>
       <div className="mb-settings-card-body">{children}</div>
     </section>
@@ -3494,10 +3872,17 @@ function Toggle({
 // ─────────────────────────────────────────────────────
 
 function AppearanceTab(): JSX.Element {
-  const { atmosphere, palette, setAtmosphere, setPalette, flowColor, setFlowColor, appZoom, setAppZoom, perfMode, setPerfMode } =
-    useThemeStore();
+  const {
+    atmosphere, palette, setAtmosphere, setPalette, flowColor, setFlowColor, appZoom, setAppZoom,
+    perfMode, setPerfMode, cursorStyle, setCursorStyle, cursorSize, setCursorSize
+  } = useThemeStore();
   const haloStyle = useCursorHaloStore((s) => s.style);
   const setHaloStyle = useCursorHaloStore((s) => s.setStyle);
+  // 光标样式预览图（固定 26px 预览，与实际光标 SVG 同源；只算一次）
+  const cursorPreviews = useMemo(
+    () => CURSOR_STYLES.map((c) => ({ id: c.id, arrow: c.arrow(26).uri, pointer: c.pointer(26).uri })),
+    []
+  );
 
   return (
     <div className="mb-settings-pane">
@@ -3510,7 +3895,14 @@ function AppearanceTab(): JSX.Element {
         </div>
       </header>
 
-      <SettingsSection title="主题外观" desc="10 材质氛围 × 10 主题配色，共 100 组合">
+      <div className="mb-settings-grid">
+      <SettingsSection
+        id="appear-theme"
+        icon={<SiPalette size={15} />}
+        title="主题外观"
+        desc="10 材质氛围 × 10 主题配色，共 100 组合"
+        wide
+      >
       <Field label="材质氛围">
         <div className="mb-appearance-atmospheres">
           {ATMOSPHERES.map((a, i) => (
@@ -3561,7 +3953,12 @@ function AppearanceTab(): JSX.Element {
 
       </SettingsSection>
 
-      <SettingsSection title="显示与缩放" desc="整窗界面缩放（webFrame）">
+      <SettingsSection
+        id="appear-zoom"
+        icon={<SiMonitor size={15} />}
+        title="显示与缩放"
+        desc="整窗界面缩放（webFrame）"
+      >
       <Field label="界面缩放">
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           <button
@@ -3609,7 +4006,12 @@ function AppearanceTab(): JSX.Element {
 
       </SettingsSection>
 
-      <SettingsSection title="性能模式" desc="动效开销控制，立即生效">
+      <SettingsSection
+        id="appear-perf"
+        icon={<SiGauge size={15} />}
+        title="性能模式"
+        desc="动效开销控制，立即生效"
+      >
       <Field label="性能模式">
         <div className="mb-appearance-halos">
           <motion.button
@@ -3643,7 +4045,13 @@ function AppearanceTab(): JSX.Element {
 
       </SettingsSection>
 
-      <SettingsSection title="智能画布与光标" desc="连线流动色 / 鼠标光晕">
+      <SettingsSection
+        id="appear-canvas"
+        icon={<SiCursorGlow size={15} />}
+        title="智能画布与光标"
+        desc="连线流动色 / 鼠标光晕 / 自定义光标"
+        wide
+      >
       <Field label="智能画布连线流动色">
         <div className="mb-appearance-flow">
           <input
@@ -3691,7 +4099,89 @@ function AppearanceTab(): JSX.Element {
           想完全关闭选「关闭」即可。
         </div>
       </Field>
+
+      <Field label="鼠标光标样式">
+        <div className="mb-appearance-halos">
+          <motion.button
+            type="button"
+            onClick={() => {
+              setCursorStyle(CURSOR_OFF);
+              toast.info('已恢复系统光标', '自定义光标已关闭');
+            }}
+            className={`mb-appearance-halo ${cursorStyle === CURSOR_OFF ? 'is-active' : ''}`}
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
+          >
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6, height: 28, fontSize: 18 }}>🖱️</span>
+            <span className="mb-appearance-halo-label">系统默认（关闭）</span>
+            <span className="mb-appearance-halo-desc">使用操作系统自带的鼠标指针</span>
+          </motion.button>
+          {CURSOR_STYLES.map((c, i) => {
+            const pv = cursorPreviews.find((x) => x.id === c.id);
+            return (
+              <motion.button
+                key={c.id}
+                type="button"
+                onClick={() => {
+                  setCursorStyle(c.id);
+                  toast.info('已切换光标', c.label);
+                }}
+                className={`mb-appearance-halo ${cursorStyle === c.id ? 'is-active' : ''}`}
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: i * 0.02 }}
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+              >
+                <span style={{ display: 'flex', alignItems: 'center', gap: 8, height: 28 }}>
+                  {pv ? (
+                    <>
+                      <img src={pv.arrow} width={26} height={26} alt="" draggable={false} />
+                      <img src={pv.pointer} width={26} height={26} alt="" draggable={false} />
+                    </>
+                  ) : null}
+                </span>
+                <span className="mb-appearance-halo-label">{c.label}</span>
+                <span className="mb-appearance-halo-desc">{c.desc}</span>
+              </motion.button>
+            );
+          })}
+        </div>
+        <div className="mb-field-hint">
+          原生 CSS 光标，零延迟跟手，仅在本应用窗口内生效；左图为箭头、右图为点击（手型）指针。
+          文本输入框保持系统 I 形光标，画布抓手 / 缩放等功能光标不受影响。
+        </div>
+      </Field>
+
+      <Field label="光标大小">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <input
+            type="range"
+            min={CURSOR_SIZE_MIN}
+            max={CURSOR_SIZE_MAX}
+            step={1}
+            value={cursorSize}
+            onChange={(e) => setCursorSize(Number(e.target.value))}
+            disabled={cursorStyle === CURSOR_OFF}
+            style={{ flex: 1, minWidth: 160, maxWidth: 260 }}
+            title="自定义光标大小（箭头与手型一起缩放）"
+          />
+          <span style={{ fontWeight: 700, minWidth: 48, textAlign: 'center' }}>{cursorSize}px</span>
+          <button
+            type="button"
+            className={`mb-btn mb-btn-sm ${cursorSize === CURSOR_SIZE_DEFAULT ? 'is-active' : 'mb-btn-ghost'}`}
+            onClick={() => setCursorSize(CURSOR_SIZE_DEFAULT)}
+            disabled={cursorStyle === CURSOR_OFF}
+          >
+            复位
+          </button>
+        </div>
+        <span className="mb-appearance-flow-hint">
+          {CURSOR_SIZE_MIN}–{CURSOR_SIZE_MAX}px，箭头与手型指针一起缩放，实时生效；选「系统默认（关闭）」时此项无效。
+        </span>
+      </Field>
       </SettingsSection>
+      </div>
     </div>
   );
 }
@@ -3845,7 +4335,13 @@ function ToolsTab(): JSX.Element {
         </div>
       </header>
 
-      <SettingsSection title="输出与保存" desc="工具箱产出目录与自动保存">
+      <div className="mb-settings-grid">
+      <SettingsSection
+        id="tools-output"
+        icon={<SiFolderLine size={15} />}
+        title="输出与保存"
+        desc="工具箱产出目录与自动保存"
+      >
       <Field label="工具箱保存路径">
         <div className="mb-storage-path-row">
           <div
@@ -3881,7 +4377,13 @@ function ToolsTab(): JSX.Element {
 
       </SettingsSection>
 
-      <SettingsSection title="Real-ESRGAN 放大引擎" desc="ncnn Vulkan 本地引擎与已装模型">
+      <SettingsSection
+        id="tools-realesrgan"
+        icon={<SiUpscale size={15} />}
+        title="Real-ESRGAN 放大引擎"
+        desc="ncnn Vulkan 本地引擎与已装模型"
+        wide
+      >
       <Field label="Real-ESRGAN ncnn 引擎">
         {engineStatus ? (
           <div className="mb-field-hint" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -4010,14 +4512,212 @@ function ToolsTab(): JSX.Element {
 
       </SettingsSection>
 
-      <SettingsSection title="ONNX 放大模型" desc="onnxruntime-node 主进程，无 Python 依赖">
+      <SettingsSection
+        id="tools-onnx"
+        icon={<SiBox size={15} />}
+        title="ONNX 放大模型"
+        desc="onnxruntime-node 主进程，无 Python 依赖"
+        wide
+      >
       <Field label="ONNX 放大模型(走 onnxruntime-node 主进程,无 Python 依赖)">
         <OnnxModelsField />
       </Field>
       </SettingsSection>
+      </div>
 
       {/* AI 矢量化(StarVector / 实验精修)已于 2026-05-28 整体砍除；HYPIR AI 修复 + ai-platform 底座已于 2026-06-18 整体砍除 */}
     </div>
+  );
+}
+
+/** Obsidian 资产库：选库文件夹（本地 vault 目录）。画布「存入 Obsidian / Obsidian 库」与 MCP vault_* 工具共用。 */
+function ObsidianVaultField(): JSX.Element {
+  const [status, setStatus] = useState<{ vaultPath: string; exists: boolean } | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    window.electronAPI.vault
+      .status()
+      .then((r) => {
+        if (r.ok) setStatus(r.data);
+      })
+      .catch(() => undefined);
+  }, []);
+
+  async function applyPath(vaultPath: string): Promise<void> {
+    setBusy(true);
+    const r = await window.electronAPI.vault.setConfig({ vaultPath });
+    setBusy(false);
+    if (r.ok) {
+      setStatus(r.data);
+      toast.success(vaultPath ? 'Obsidian 库已连接' : '已清除库路径', vaultPath || undefined);
+    } else {
+      toast.error('设置失败', `${r.error.message}${r.error.hint ? `——${r.error.hint}` : ''}`);
+    }
+  }
+
+  async function pick(): Promise<void> {
+    const r = await window.electronAPI.storage.selectFolder();
+    if (!r.ok) {
+      toast.error('打开对话框失败', r.error.message);
+      return;
+    }
+    if (!r.data) return;
+    await applyPath(r.data.path);
+  }
+
+  const pathText = status?.vaultPath || '（未设置）';
+  const stateText = !status?.vaultPath
+    ? '未连接：选择你的 Obsidian 库（vault）文件夹后，画布节点可一键存入 / 调用库内笔记'
+    : status.exists
+      ? '已连接：智能画布右上角「Obsidian」可检索笔记；节点右键「存入 Obsidian 库」可归档角色设定 / 剧本'
+      : '路径不可访问：确认盘符已挂载（如 S: 盘）后重新选择';
+
+  return (
+    <>
+      <Field label="Obsidian 库文件夹（vault 根目录）">
+        <div className="mb-storage-path-row">
+          <div className="mb-input" style={{ flex: 1, display: 'flex', alignItems: 'center' }}>
+            <FolderIcon size={16} />
+            <span style={{ marginLeft: 10, color: 'var(--mb-text-secondary)' }}>{pathText}</span>
+          </div>
+          <button className="mb-btn mb-btn-secondary" onClick={() => void pick()} disabled={busy}>
+            选择文件夹
+          </button>
+          {status?.vaultPath ? (
+            <button className="mb-btn mb-btn-ghost" onClick={() => void applyPath('')} disabled={busy}>
+              清除
+            </button>
+          ) : null}
+        </div>
+      </Field>
+      <p className="mb-settings-hint">{stateText}</p>
+    </>
+  );
+}
+
+/** MCP 服务器：开关 + 端口 + 可选 token + 两种接入地址（Hermes Studio 等智能体客户端用）。 */
+function McpServerField(): JSX.Element {
+  const [st, setSt] = useState<McpStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [portDraft, setPortDraft] = useState('');
+  const [tokenDraft, setTokenDraft] = useState('');
+
+  useEffect(() => {
+    window.electronAPI.mcp
+      .status()
+      .then((r) => {
+        if (r.ok) {
+          setSt(r.data);
+          setPortDraft(String(r.data.port));
+        }
+      })
+      .catch(() => undefined);
+  }, []);
+
+  async function save(input: { enabled?: boolean; port?: number; token?: string }): Promise<void> {
+    setBusy(true);
+    const r = await window.electronAPI.mcp.setConfig(input);
+    setBusy(false);
+    if (r.ok) {
+      setSt(r.data);
+      setPortDraft(String(r.data.port));
+    } else {
+      toast.error('MCP 配置失败', `${r.error.message}${r.error.hint ? `——${r.error.hint}` : ''}`);
+      const again = await window.electronAPI.mcp.status();
+      if (again.ok) {
+        setSt(again.data);
+        setPortDraft(String(again.data.port));
+      }
+    }
+  }
+
+  // 端口输入遵守数字输入框规范（铁律 19）：编辑期自由输入，失焦 / 回车才 clamp 提交
+  function commitPort(): void {
+    const n = Number(portDraft);
+    const port = Number.isInteger(n) ? Math.min(Math.max(n, 1024), 65535) : (st?.port ?? 7642);
+    setPortDraft(String(port));
+    if (st && port !== st.port) void save({ port });
+  }
+
+  async function copy(text: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success('已复制', text);
+    } catch {
+      toast.error('复制失败');
+    }
+  }
+
+  return (
+    <>
+      <Field label="MCP 服务器（默认关闭）">
+        <div className="mb-switch-row">
+          <SwitchControl
+            checked={st?.enabled ?? false}
+            disabled={busy || !st}
+            onChange={(v) => void save({ enabled: v })}
+          />
+          <span className="mb-settings-hint" style={{ margin: 0 }}>
+            {st?.running ? `运行中 · 127.0.0.1:${st.port} · ${st.toolCount} 个工具` : '未运行'}
+          </span>
+        </div>
+      </Field>
+      <Field label="端口">
+        <input
+          className="mb-input"
+          style={{ width: 120 }}
+          value={portDraft}
+          disabled={busy || !st}
+          onFocus={(e) => e.currentTarget.select()}
+          onChange={(e) => setPortDraft(e.target.value)}
+          onBlur={commitPort}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+          }}
+        />
+      </Field>
+      <Field label="访问令牌（可选，留空 = 本机免鉴权）">
+        <input
+          className="mb-input"
+          type="password"
+          placeholder={st?.hasToken ? '已设置（输入新值覆盖，清空则移除）' : '留空 = 不需要 Authorization 头'}
+          value={tokenDraft}
+          disabled={busy || !st}
+          onChange={(e) => setTokenDraft(e.target.value)}
+          onBlur={() => {
+            void save({ token: tokenDraft });
+            setTokenDraft('');
+          }}
+        />
+      </Field>
+      {st?.enabled ? (
+        <>
+          <Field label="接入地址（在 Hermes Studio 的 MCP 管理里添加其一）">
+            <div className="mb-storage-path-row">
+              <div className="mb-input" style={{ flex: 1 }}>
+                <span style={{ color: 'var(--mb-text-secondary)' }}>{st.urls.streamableHttp}</span>
+              </div>
+              <button className="mb-btn mb-btn-secondary" onClick={() => void copy(st.urls.streamableHttp)}>
+                复制
+              </button>
+            </div>
+          </Field>
+          <div className="mb-storage-path-row">
+            <div className="mb-input" style={{ flex: 1 }}>
+              <span style={{ color: 'var(--mb-text-secondary)' }}>{st.urls.sse}（旧版 SSE 传输，客户端不支持上面那条时用）</span>
+            </div>
+            <button className="mb-btn mb-btn-secondary" onClick={() => void copy(st.urls.sse)}>
+              复制
+            </button>
+          </div>
+        </>
+      ) : null}
+      <p className="mb-settings-hint">
+        开启后，Hermes Studio 等支持 MCP 的智能体可远程操作梦笔：读写智能画布（建节点 / 连线 / 运行 / 取结果）、
+        检索资产库、读写 Obsidian 库。仅监听本机 127.0.0.1，不对外网开放。
+      </p>
+    </>
   );
 }
 
@@ -4060,7 +4760,14 @@ function StorageTab(): JSX.Element {
         </div>
       </header>
 
-      <SettingsSection title="存储位置" desc="图片落盘目录与文件命名规则">
+      <div className="mb-settings-grid">
+      <SettingsSection
+        id="store-location"
+        icon={<SiFolderLine size={15} />}
+        title="存储位置"
+        desc="图片落盘目录与文件命名规则"
+        wide
+      >
         <Field label="图片存储路径">
           <div className="mb-storage-path-row">
             <div className="mb-input" style={{ flex: 1, display: 'flex', alignItems: 'center' }}>
@@ -4079,13 +4786,33 @@ function StorageTab(): JSX.Element {
         <FilenameTemplateField />
       </SettingsSection>
 
-      <SettingsSection title="资产库" desc="资产库（图库）的加载与性能">
+      <SettingsSection
+        id="store-gallery"
+        icon={<SiImages size={15} />}
+        title="资产库"
+        desc="资产库（图库）的加载与性能"
+      >
         <GalleryPrefsField />
       </SettingsSection>
 
-      <SettingsSection title="配置备份" desc="导出 / 导入全部方案与设置（加密）">
+      <SettingsSection
+        id="store-obsidian"
+        icon={<SiDatabase size={15} />}
+        title="Obsidian 资产库"
+        desc="连接本地 Obsidian 库：画布一键存入 / 调用笔记"
+      >
+        <ObsidianVaultField />
+      </SettingsSection>
+
+      <SettingsSection
+        id="store-backup"
+        icon={<SiArchive size={15} />}
+        title="配置备份"
+        desc="导出 / 导入全部方案与设置（加密）"
+      >
         <ConfigIOSection />
       </SettingsSection>
+      </div>
     </div>
   );
 }
@@ -4105,19 +4832,45 @@ function IntelligentTab(): JSX.Element {
         </div>
       </header>
 
-      <SettingsSection title="智能体" desc="智能画布「🤖 智能体」的自动生成行为与模型指派">
+      <div className="mb-settings-grid">
+      <SettingsSection
+        id="intel-agent"
+        icon={<SiRobot size={15} />}
+        title="智能体"
+        desc="智能画布「🤖 智能体」的自动生成行为与模型指派"
+      >
         <AgentAutoRunField />
         <AgentModelsField />
       </SettingsSection>
 
-      <SettingsSection title="系统与体验" desc="硬件加速、任务完成语音播报">
+      <SettingsSection
+        id="intel-system"
+        icon={<SiChip size={15} />}
+        title="系统与体验"
+        desc="硬件加速、任务完成语音播报"
+      >
         <GpuAccelField />
         <VoiceNotifyField />
       </SettingsSection>
 
-      <SettingsSection title="联网搜索" desc="对话联网后端：模型原生 / 各类代搜">
+      <SettingsSection
+        id="intel-search"
+        icon={<SiGlobe size={15} />}
+        title="联网搜索"
+        desc="对话联网后端：模型原生 / 各类代搜"
+      >
         <SearchBackendField />
       </SettingsSection>
+
+      <SettingsSection
+        id="intel-mcp"
+        icon={<SiBox size={15} />}
+        title="MCP 服务器（智能体接入）"
+        desc="让 Hermes Studio 等智能体经 MCP 操作梦笔"
+      >
+        <McpServerField />
+      </SettingsSection>
+      </div>
     </div>
   );
 }

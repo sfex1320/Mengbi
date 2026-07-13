@@ -16,9 +16,11 @@ import {
 } from './Icon';
 import logoUrl from '@/assets/mengbi-logo.png';
 import { useShortcutsStore, type Shortcut, type ShortcutGroup } from '@/store/shortcutsStore';
+import { promptDialog } from '@/components/ConfirmDialog';
 import { openContextMenu } from './ContextMenu';
 import { toast } from '@/store/toastStore';
 import { electronFilePath } from '@/lib/mediaFile';
+import { pathsAllFromGalleryDrag } from '@/lib/galleryNativeDrag';
 import { toDataUri, sendToShortcut } from '@/lib/mediaActions';
 import './Sidebar.css';
 
@@ -288,14 +290,15 @@ export function Sidebar(): JSX.Element {
     }
   }
 
-  /** 添加网址链接快捷方式（点击 → 系统浏览器打开）。 */
-  function addUrl(initial?: string): void {
-    const raw = window.prompt('输入网址（http(s)://…）', initial ?? '');
+  /** 添加网址链接快捷方式（点击 → 系统浏览器打开）。
+   *  用 promptDialog 而非 window.prompt——后者在 Electron 渲染进程必抛，点了没反应。 */
+  async function addUrl(initial?: string): Promise<void> {
+    const raw = await promptDialog({ message: '输入网址（http(s)://…）', initial: initial ?? '' });
     if (!raw || !raw.trim()) return;
     let u = raw.trim();
     if (!/^https?:\/\//i.test(u)) u = `https://${u}`;
     const def = u.replace(/^https?:\/\//, '').replace(/\/.*$/, '').slice(0, 20);
-    const name = window.prompt('名称（可空）', def) || def || u;
+    const name = (await promptDialog({ message: '名称（可空）', initial: def })) || def || u;
     addShortcut({ kind: 'url', label: name, path: u });
   }
 
@@ -331,7 +334,7 @@ export function Sidebar(): JSX.Element {
       items: [
         { label: '📁 添加文件夹快捷方式', onClick: () => void addFolder() },
         { label: '🖥 添加软件快捷方式', onClick: () => void addApp() },
-        { label: '🔗 添加网址链接', onClick: () => addUrl() }
+        { label: '🔗 添加网址链接', onClick: () => void addUrl() }
       ]
     });
   }
@@ -344,10 +347,10 @@ export function Sidebar(): JSX.Element {
       items: [
         {
           label: '重命名分组',
-          onClick: () => {
-            const name = window.prompt('分组名称', g.name);
-            if (name && name.trim()) renameGroup(g.id, name.trim());
-          }
+          onClick: () =>
+            void promptDialog({ message: '分组名称', initial: g.name }).then((name) => {
+              if (name && name.trim()) renameGroup(g.id, name.trim());
+            })
         },
         { separator: true },
         { label: '解散分组（成员回到外层）', variant: 'danger', onClick: () => ungroup(g.id) }
@@ -366,10 +369,10 @@ export function Sidebar(): JSX.Element {
         ...(s.iconDataUri ? [{ label: '恢复默认图标', onClick: () => void resetIcon(s) }] : []),
         {
           label: '重命名',
-          onClick: () => {
-            const name = window.prompt('快捷方式名称', s.label);
-            if (name && name.trim()) renameShortcut(s.id, name.trim());
-          }
+          onClick: () =>
+            void promptDialog({ message: '快捷方式名称', initial: s.label }).then((name) => {
+              if (name && name.trim()) renameShortcut(s.id, name.trim());
+            })
         },
         { separator: true },
         { label: '移除', variant: 'danger', onClick: () => removeShortcut(s.id) }
@@ -442,6 +445,9 @@ export function Sidebar(): JSX.Element {
             .map((f) => electronFilePath(f))
             .filter((p): p is string => !!p);
           if (paths.length) {
+            // 资产库卡片原生拖出（OS 拖拽只带 Files）误落到侧栏空白：静默忽略，
+            // 不弹「未添加」提示（那是给拖文件夹/软件进来的人看的）
+            if (pathsAllFromGalleryDrag(paths)) return;
             void addDroppedPaths(paths);
             return;
           }
@@ -493,7 +499,15 @@ export function Sidebar(): JSX.Element {
                 const filePaths = Array.from(e.dataTransfer.files)
                   .map((f) => electronFilePath(f))
                   .filter((p): p is string => !!p);
-                if (filePaths.length) void onNavDropSrcs(item.to, filePaths);
+                if (filePaths.length) {
+                  // 资产库卡片改 OS 原生拖出后，拖回「资产库」按钮也会带 Files——
+                  // 本就在库里，跳过导入防重复收录（与旧 sc-node 载荷的跳过语义一致）
+                  if (item.to === '/manager' && pathsAllFromGalleryDrag(filePaths)) {
+                    toast.info('这些图已在资产库里');
+                    return;
+                  }
+                  void onNavDropSrcs(item.to, filePaths);
+                }
               }}
             >
               <motion.span

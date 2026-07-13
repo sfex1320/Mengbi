@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { useCanvasStore, makeLayerFromImage } from '@/store/canvasStore';
 import { makeTextLayer, makeShapeLayer } from './types';
 import { toast } from '@/store/toastStore';
+import { promptDialog } from '@/components/ConfirmDialog';
 import { ExportDialog } from './ExportDialog';
 import { NewCanvasDialog } from './NewCanvasDialog';
 import { PhotoshopBar } from './PhotoshopBar';
@@ -52,14 +53,16 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
   const selected = project.layers.find((l) => l.id === project.selectedId) ?? null;
 
   function addTextLayer(): void {
-    const text = window.prompt('输入文本内容', '文字') ?? '';
-    if (!text.trim()) return;
-    const layer = makeTextLayer({
-      text: text.trim(),
-      x: project.width / 2 - 100,
-      y: project.height / 2 - 16
+    // window.prompt 在 Electron 渲染进程必抛（点了没反应），改用应用内输入弹窗
+    void promptDialog({ message: '输入文本内容', initial: '文字' }).then((text) => {
+      if (!text || !text.trim()) return;
+      const layer = makeTextLayer({
+        text: text.trim(),
+        x: project.width / 2 - 100,
+        y: project.height / 2 - 16
+      });
+      addLayer(layer);
     });
-    addLayer(layer);
   }
 
   function addShapeLayer(kind: 'rect' | 'ellipse'): void {

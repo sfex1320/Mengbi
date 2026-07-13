@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { NodeResizer, type NodeProps } from '@xyflow/react';
 import { useSmartCanvasStore, useSmartPreviewStore, useSmartResultStore, useSmartTextStore } from '@/store/smartCanvasStore';
-import { computeUpstream, retryPromptIndex, retryComfyItem } from '@/lib/smartCanvasRunner';
+import { computeUpstream, retryPromptIndex, retryComfyItem, rewriteAndRetryPrompt } from '@/lib/smartCanvasRunner';
 import { localPathToImageUrl } from '@/lib/imageUrl';
 import { groupResults, type BatchDisplay } from '@/lib/resultGroups';
 import { providerLabel, type ResultNodeData, type WorkResult } from '@shared/smartCanvas';
@@ -21,6 +21,12 @@ function mediaUrl(src: string): string {
 /** 文本拖出：拖到画布空白落成提示词节点（文本没有 OS 文件形态，保留画布内载荷）。 */
 function dragText(e: React.DragEvent, text: string): void {
   e.dataTransfer.setData('application/mengbi-sc-node', JSON.stringify({ kind: 'prompt', text }));
+  e.dataTransfer.effectAllowed = 'copy';
+}
+
+/** 合集卡拖出：拖到画布空白自动生成「图片列表」节点（九宫格），批次内全部图按序摆入。 */
+function dragBatchAsList(e: React.DragEvent, srcs: string[]): void {
+  e.dataTransfer.setData('application/mengbi-sc-node', JSON.stringify({ kind: 'image-list', srcs, name: '合集图片' }));
   e.dataTransfer.effectAllowed = 'copy';
 }
 
@@ -50,8 +56,11 @@ function resultPreviewItems(rs: WorkResult[]): PreviewItem[] {
 function BatchPopup({ batch, onClose }: { batch: BatchDisplay; onClose: () => void }): JSX.Element {
   const openPreview = useSmartPreviewStore((s) => s.open);
   const openText = useSmartTextStore((s) => s.open);
+  const nodes = useSmartCanvasStore((s) => s.nodes);
   const backdrop = useBackdropClose(onClose);
   const allItems = resultPreviewItems(batch.items);
+  // 「✨ 改词重跑」进行中的条目下标（弹窗流程 + LLM 调用期间转圈防重复点击；一次只允许一条在改）
+  const [rewriting, setRewriting] = useState<number | null>(null);
 
   // Esc 关闭（与全局 Lightbox 同习惯；Lightbox 打开时它在更上层先吃掉 Esc）
   useEffect(() => {
@@ -105,6 +114,26 @@ function BatchPopup({ batch, onClose }: { batch: BatchDisplay; onClose: () => vo
                       重试此条
                     </button>
                   )}
+                  {/* 结果驱动迭代：仅生图(work)来源的条目——ComfyUI 的 controlValues 结构复杂，本轮不做改词 */}
+                  {r.sourceNodeId != null &&
+                    r.shotIndex != null &&
+                    nodes.find((n) => n.id === r.sourceNodeId)?.type === 'work' && (
+                      <button
+                        className="mb-btn mb-btn-sm mb-btn-ghost"
+                        disabled={rewriting != null}
+                        title="说说哪里不满意 → AI 修改这条提示词 → 你确认后只重跑这一条（重跑会产生生成费用）"
+                        onClick={() => {
+                          if (rewriting != null) return;
+                          setRewriting(ri);
+                          // 弹窗流程 + LLM 调用 + 确认 + 重跑 都在 runner（rewriteAndRetryPrompt）；这里只管按钮态
+                          rewriteAndRetryPrompt(r.sourceNodeId as string, r.shotIndex as number)
+                            .catch(() => undefined)
+                            .finally(() => setRewriting(null));
+                        }}
+                      >
+                        {rewriting === ri ? '✨ 改词中…' : '✨ 改词重跑'}
+                      </button>
+                    )}
                 </div>
                 {r.prompt && (
                   <div
@@ -193,14 +222,27 @@ export function ResultNode({ id, data }: NodeProps): JSX.Element {
   const showImgPreview = up.images.length > 0 && images.length === 0;
   const hasPreview = up.prompts.length > 0 || showImgPreview || up.sizes.length > 0;
 
-  // 自适应增高：按展示单元数（合集占一格）撑高（只增不减，封顶；卡片固定尺寸，列数按节点宽度算）。
+  // 自适应扩展（2026-07-11 改横向+纵向双向智能）：展示单元多时不再只往下无限拉长——
+  // 列数按 √n 提到 2~6 列（卡片固定 100px 不放大，铁律 18），节点先变宽再按行数增高；
+  // 宽度只增不减（防抖动），手动调过尺寸（manualSize）时横纵都让位。
   useEffect(() => {
+    const units = groups.length;
+    const cols = Math.max(2, Math.min(6, Math.ceil(Math.sqrt(Math.max(1, units)))));
+    const st = useSmartCanvasStore.getState();
+    const n = st.nodes.find((x) => x.id === id);
+    const manual = !!(n?.data as { manualSize?: boolean } | undefined)?.manualSize;
+    if (!manual && units > 4) {
+      // 100px 卡 + 4px gap + 内边距余量；auto-fill 按实际宽度排列，略宽无妨
+      const wNeed = 36 + cols * 100 + (cols - 1) * 4;
+      const curW = typeof n?.width === 'number' ? n.width : n?.measured?.width ?? 0;
+      if (wNeed > curW + 6) st.setNodeSize(id, { width: wNeed });
+    }
     let need = 120;
     if (hasPreview) need += 86;
-    if (groups.length) need += Math.ceil(groups.length / 2) * 110 + 30;
+    if (units) need += Math.ceil(units / cols) * 110 + 30;
     if (texts.length) need += Math.min(220, 30 + texts.length * 26);
     if (videos.length) need += videos.length * 124;
-    autoGrowNode(id, need, 900);
+    autoGrowNode(id, need, 1400);
   }, [id, hasPreview, groups.length, texts.length, videos.length]);
 
   /** 单张结果图的右键菜单（直接使用，无需绕资产库）。 */
@@ -361,14 +403,17 @@ export function ResultNode({ id, data }: NodeProps): JSX.Element {
                       />
                     );
                   }
-                  // 合集卡：封面叠片 + 张数/成败角标，点开看批次详情
+                  // 合集卡：封面叠片 + 张数/成败角标，点开看批次详情；整卡可拖出到画布 → 自动生成图片列表节点
                   const coverT = g.cover ? thumbPair(g.cover) : null;
+                  const batchSrcs = g.items.flatMap((r) => r.images ?? []);
                   return (
                     <button
                       key={`g-${gi}`}
                       type="button"
                       className={`mb-sc-rstack ${g.failCount ? 'has-fail' : ''}`}
-                      title={`合集：${g.count} 张${g.failCount ? ` · ${g.failCount} 条失败（点开可单条重试）` : ''} · 点击查看批次详情`}
+                      title={`合集：${g.count} 张${g.failCount ? ` · ${g.failCount} 条失败（点开可单条重试）` : ''} · 点击查看批次详情 · 拖到画布空白=生成图片列表节点`}
+                      draggable={batchSrcs.length > 0}
+                      onDragStart={(e) => dragBatchAsList(e, batchSrcs)}
                       onClick={() => setOpenBatch(gi)}
                     >
                       {coverT ? (

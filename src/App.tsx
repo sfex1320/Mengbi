@@ -41,6 +41,9 @@ const ROUTE_LABEL: Record<string, string> = {
   '/settings': '设置'
 };
 
+// 页面记忆：记住上次停留的功能页，下次启动直接回到那里（与窗口尺寸记忆同思路，存 localStorage）
+const LAST_ROUTE_KEY = 'mengbi.lastRoute.v1';
+
 export default function App(): JSX.Element {
   return (
     <HashRouter>
@@ -58,6 +61,31 @@ function Shell(): JSX.Element {
     applyThemeToDocument();
     load().catch((e) => console.error('settings load failed', e));
   }, [load]);
+
+  // 启动时恢复上次停留的页面（只跑一次；必须声明在下方"记录"effect 之前——
+  // 二者同在首帧执行，先读到旧值再让记录 effect 覆盖，顺序反了会把存档冲成默认页）。
+  // 白名单校验：只认 ROUTE_LABEL 里的路由，防旧版/脏值把用户带进不存在的页面。
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(LAST_ROUTE_KEY);
+      if (saved && saved !== location.pathname && ROUTE_LABEL[saved]) {
+        navigate(saved, { replace: true });
+      }
+    } catch {
+      // localStorage 不可用（隐私模式/配额）→ 从默认页开始即可
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 每次切换功能页即记录（含 /settings；非白名单路径不写，保持存档干净）
+  useEffect(() => {
+    if (!ROUTE_LABEL[location.pathname]) return;
+    try {
+      localStorage.setItem(LAST_ROUTE_KEY, location.pathname);
+    } catch {
+      // 写入失败不影响使用，下次启动落默认页
+    }
+  }, [location.pathname]);
 
   // 订阅主进程推送的通知中心条目，写入 notificationStore。
   // 顺手做任务完成语音播报（voiceNotify 按白名单/开关/话术表自行过滤）+ 任务栏图标闪烁提醒。
@@ -86,6 +114,21 @@ function Shell(): JSX.Element {
     void import('@/lib/smartCanvasRunner').then((m) => {
       if (disposed) return;
       off = m.registerSmartRunnerListeners();
+    });
+    return () => {
+      disposed = true;
+      off?.();
+    };
+  }, []);
+
+  // MCP 画布桥（Hermes 等智能体经 mcp:tool-request 操作画布）同样 App 级注册（铁律 17）：
+  // 动态 import 与 runner 共享 chunk；MCP 服务器默认关闭，注册本身零开销。
+  useEffect(() => {
+    let off: (() => void) | undefined;
+    let disposed = false;
+    void import('@/lib/mcpCanvasBridge').then((m) => {
+      if (disposed) return;
+      off = m.registerMcpBridge();
     });
     return () => {
       disposed = true;

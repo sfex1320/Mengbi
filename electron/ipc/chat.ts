@@ -626,6 +626,8 @@ async function handleSendEphemeral(
     messages: Array<{ role: 'user' | 'assistant'; content: string }>;
     attachedImages?: string[];
     forceWebSearch?: boolean;
+    /** 可选 system 注入（智能画布 LLM 节点「输出用途/本次意图」）；与代搜注入合并 */
+    systemPrompt?: string;
   },
   messageId: string,
   sender: WebContents
@@ -684,6 +686,10 @@ async function handleSendEphemeral(
       /* 代搜失败：静默，继续不带检索结果发送 */
     }
   }
+  // 调用方 system 注入（智能画布 LLM 节点「输出用途/本次意图」）：放在代搜结果之前——
+  // 目标导向优先于检索材料；二者都空时保持 null（与旧行为逐字节一致）。
+  const callerSystem = input.systemPrompt?.trim() ?? '';
+  if (callerSystem) injectedSystem = injectedSystem ? `${callerSystem}\n\n${injectedSystem}` : callerSystem;
 
   try {
     if (isMockMode() || !cfg) {

@@ -3,6 +3,7 @@ import { CATALOG, ALL_AGENT_KINDS, isNodeKind, consumeKinds, produceKinds, build
 
 describe('agentCatalog 完整性', () => {
   it('覆盖全部 29 类节点', () => {
+    // 2026-07-11「视频反推」并入「反推」29→28；2026-07-12 新增「角色卡」（character-card）28→29
     expect(ALL_AGENT_KINDS).toHaveLength(29);
     expect(isNodeKind('work')).toBe(true);
     expect(isNodeKind('nonsense')).toBe(false);
@@ -38,12 +39,41 @@ describe('连线推导（与 canvasConnectRules 单一真相一致）', () => {
   it('work 能接收 prompt', () => {
     expect(consumeKinds('work')).toContain('prompt');
   });
-  it('image 能输出到 work / 图像反推 / 对比，但不能到 prompt', () => {
+  it('image 能输出到 work / 反推 / 对比，但不能到 prompt', () => {
     const p = produceKinds('image');
     expect(p).toContain('work');
     expect(p).toContain('image-reverse');
     expect(p).toContain('compare');
     expect(p).not.toContain('prompt');
+  });
+  it('反推同时接受 图片 / 视频 / 文本（角色反推的角色素材）来源', () => {
+    const c = consumeKinds('image-reverse');
+    expect(c).toContain('image');
+    expect(c).toContain('video-source');
+    expect(c).toContain('video');
+    expect(c).toContain('frame-interp');
+    expect(c).toContain('prompt');
+    expect(c).toContain('llm');
+  });
+  it('智能分镜（重做后）只接文本来源、不接图片；输出可到视频节点', () => {
+    const c = consumeKinds('storyboard');
+    expect(c).toContain('prompt');
+    expect(c).toContain('llm');
+    expect(c).toContain('image-reverse');
+    expect(c).toContain('character-card');
+    expect(c).not.toContain('image');
+    expect(c).not.toContain('work');
+    expect(produceKinds('storyboard')).toContain('video');
+  });
+  it('角色卡接受 图片（人物照片）+ 文本（简单描述）来源；输出可到生图/分镜', () => {
+    const c = consumeKinds('character-card');
+    expect(c).toContain('image');
+    expect(c).toContain('prompt');
+    expect(c).toContain('image-reverse');
+    expect(c).not.toContain('video-source');
+    const p = produceKinds('character-card');
+    expect(p).toContain('work');
+    expect(p).toContain('storyboard');
   });
   it('result 节点可接收 work 的输出', () => {
     expect(consumeKinds('result')).toContain('work');

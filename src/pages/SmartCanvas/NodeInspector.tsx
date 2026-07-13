@@ -12,7 +12,9 @@ import { detectFamily } from '@shared/imageModelFamilies';
 import type { WorkflowTemplateSummary, InputControl } from '@shared/comfyui';
 import { renderComfyControl, COMFY_IMAGE_KINDS } from './comfyControl';
 import { comfyModeUnavailableReason, COMFY_TEXT_KINDS } from '@/lib/comfyDispatch';
-import { SegmentedControl, ClampNumberInput, SearchableModelSelect } from './nodePanel/consoleControls';
+import { SegmentedControl, ClampNumberInput, ModelDropdownButton, type ModelGridItem } from './nodePanel/consoleControls';
+import { IconChoiceGrid } from './nodeControls';
+import { optionIcon } from './optionIcons';
 import {
   WORK_TYPE_LABELS,
   RUN_MODE_LABELS,
@@ -21,7 +23,11 @@ import {
   REAL_WORK_TYPES,
   RUN_STATUS_LABELS,
   LLM_OP_LABELS,
+  LLM_OP_SUBS,
   LLM_IMAGE_OPS,
+  LLM_PURPOSE_LABELS,
+  LLM_PURPOSE_OPS,
+  type LlmPurpose,
   type RunStatus,
   type WorkType,
   type RunMode,
@@ -77,12 +83,12 @@ export const NODE_TYPE_LABELS: Record<SmartNodeKind, string> = {
   palette: '配色工具',
   compare: '对比',
   video: '视频',
-  'image-reverse': '图像反推',
+  'image-reverse': '反推',
   'video-source': '视频上传',
-  'video-reverse': '视频反推',
   'frame-interp': '插帧',
   'video-clip': '视频剪辑',
   storyboard: '智能分镜',
+  'character-card': '角色卡',
   'prompt-mall': '提示词商城',
   loop: '循环',
   upscale: '保真放大',
@@ -317,6 +323,8 @@ const WORK_TYPES = Object.keys(WORK_TYPE_LABELS) as WorkType[];
 const RUN_MODES = Object.keys(RUN_MODE_LABELS) as RunMode[];
 const PROVIDERS = Object.keys(PROVIDER_LABELS) as WorkProvider[];
 const LLM_OPS = Object.keys(LLM_OP_LABELS) as LlmOp[];
+/** 用途 chips 顺序：具体用途在前，「自由」（不注入）收尾。 */
+const LLM_PURPOSES: LlmPurpose[] = ['image', 'video', 'character', 'scene', 'free'];
 /** 需要上游底图、可用「绘画强度」的 img2img 类工作 */
 const IMG2IMG = new Set<WorkType>(['image-edit', 'style-transfer', 'outpainting']);
 
@@ -799,26 +807,58 @@ export function NodeInspector({ float = false }: { float?: boolean } = {}): JSX.
           const d = sel.data as unknown as LlmNodeData;
           const setF = (patch: Partial<LlmNodeData>): void => update(sel.id, patch as Partial<SmartNodeData>);
           const isImageOp = LLM_IMAGE_OPS.has(d.op);
+          // 与生图节点同款「中转站 / 模型」按钮式下拉（只列可用项；不可用原因由下方 diagnose 行给出）
+          const llmModelItems: ModelGridItem[] = textModels
+            .filter((m) => m.usable)
+            .map((m) => ({ name: m.name, provider: m.providerName, ref: m.ref }));
           return (
             <div className="mb-sc-form">
-              <Field label="操作">
-                <select className="mb-select" value={d.op} onChange={(e) => setF({ op: e.target.value as LlmOp })}>
-                  {LLM_OPS.map((o) => (
-                    <option key={o} value={o}>
-                      {LLM_OP_LABELS[o]}
-                    </option>
-                  ))}
-                </select>
+              <Field label="操作" wide>
+                <IconChoiceGrid
+                  value={d.op}
+                  options={LLM_OPS.map((o) => ({
+                    value: o,
+                    label: LLM_OP_LABELS[o],
+                    icon: optionIcon('llmOp', o, 17),
+                    sub: LLM_OP_SUBS[o],
+                    title: `${LLM_OP_LABELS[o]} —— ${LLM_OP_SUBS[o]}`
+                  }))}
+                  onChange={(v) => setF({ op: v })}
+                />
               </Field>
 
-              <Field label={`对话模型${isImageOp ? '（需 vision）' : ''}`}>
-                <SearchableModelSelect
+              <Field label={`对话模型${isImageOp ? '（需 vision）' : ''}`} wide>
+                <ModelDropdownButton
                   value={d.modelId}
-                  options={textModels.map((m) => ({ value: m.ref, label: m.usable ? m.label : `${m.label}（实际ID未填）` }))}
-                  placeholder="（选择模型）"
+                  options={llmModelItems}
+                  placeholder={isImageOp ? '选择视觉对话模型' : '选择对话模型'}
+                  emptyHint="当前方案没有对话模型，去设置页配置"
                   onChange={(v) => setF({ modelId: v })}
                 />
               </Field>
+
+              {LLM_PURPOSE_OPS.has(d.op) && (
+                <Field label="输出用途 / 本次意图（注入系统提示词，让模型知道优化给谁用）" wide>
+                  <SegmentedControl
+                    size="sm"
+                    value={(d.purpose ?? 'free') as LlmPurpose}
+                    options={LLM_PURPOSES.map((p) => ({
+                      value: p,
+                      label: LLM_PURPOSE_LABELS[p],
+                      icon: optionIcon('llmPurpose', p, 13),
+                      title: p === 'free' ? '自由：不注入用途导向（旧行为）' : `输出面向：${LLM_PURPOSE_LABELS[p]}`
+                    }))}
+                    onChange={(v) => setF({ purpose: v })}
+                  />
+                  <input
+                    className="mb-input"
+                    value={d.intent ?? ''}
+                    {...editProps}
+                    placeholder="要用来做什么？例：电商主图、突出金属质感、白底"
+                    onChange={(e) => setF({ intent: e.target.value })}
+                  />
+                </Field>
+              )}
 
               {isImageOp ? (
                 <Field label="反推类型">

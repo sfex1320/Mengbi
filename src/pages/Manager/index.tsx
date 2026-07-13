@@ -22,6 +22,11 @@ import {
   CopyIconShape
 } from '@/components/Icon';
 import { localPathToImageUrl } from '@/lib/imageUrl';
+import {
+  beginGalleryNativeDrag,
+  isGalleryNativeDragActive,
+  readGalleryNativeDragIds
+} from '@/lib/galleryNativeDrag';
 import { buildShortcutSendMenuItems } from '@/lib/mediaActions';
 import { autoTag } from '@/lib/autoTag';
 import { fileKindOf, FILE_KIND_BADGE, GALLERY_IMPORT_EXTENSIONS } from '@/lib/mediaFile';
@@ -889,6 +894,15 @@ export default function ManagerPage(): JSX.Element {
     }
     return c;
   }, [images]);
+
+  // OS 原生拖出：批量选择时拖任一选中卡 = 带走整批。ids 与 file_path 必须在
+  // dragstart 的同步路径里就绪（startDrag 是 fire-and-forget，不能中途异步查），
+  // 所以提前算好、两处 ImageCard 调用点共享。
+  const selectedIdList = useMemo(() => Array.from(selectedIds), [selectedIds]);
+  const selectedDragPaths = useMemo(() => {
+    const byId = new Map(images.map((im) => [im.id, im.file_path]));
+    return selectedIdList.map((id) => byId.get(id)).filter((p): p is string => !!p);
+  }, [selectedIdList, images]);
 
   /** 打开统一预览：当前筛选列表全集 + 起始 index（获得 ←→ 切换 + 右键菜单）。
    *  PSD / PDF / Office 等不可像素预览的收录文件 → 直接用系统默认程序打开。 */
@@ -1928,7 +1942,8 @@ export default function ManagerPage(): JSX.Element {
                       onDelete={() => softDeleteImage(im.id)}
                       onContextMenu={(e) => showImageMenu(e, im)}
                       onDropOnCard={(ids) => void dropCardsOnCard(ids, im)}
-                      dragGroupIds={selectMode && selectedIds.has(im.id) ? Array.from(selectedIds) : undefined}
+                      dragGroupIds={selectMode && selectedIds.has(im.id) ? selectedIdList : undefined}
+                      dragGroupPaths={selectMode && selectedIds.has(im.id) ? selectedDragPaths : undefined}
                     />
                   ))
                 ) : (
@@ -1947,7 +1962,8 @@ export default function ManagerPage(): JSX.Element {
                         onDelete={() => softDeleteImage(im.id)}
                         onContextMenu={(e) => showImageMenu(e, im)}
                         onDropOnCard={(ids) => void dropCardsOnCard(ids, im)}
-                        dragGroupIds={selectMode && selectedIds.has(im.id) ? Array.from(selectedIds) : undefined}
+                        dragGroupIds={selectMode && selectedIds.has(im.id) ? selectedIdList : undefined}
+                        dragGroupPaths={selectMode && selectedIds.has(im.id) ? selectedDragPaths : undefined}
                       />
                     ))}
                   </AnimatePresence>
@@ -2107,7 +2123,8 @@ function ImageCard({
   onDelete,
   onContextMenu,
   onDropOnCard,
-  dragGroupIds
+  dragGroupIds,
+  dragGroupPaths
 }: {
   img: ImageRow;
   index: number;
@@ -2123,6 +2140,8 @@ function ImageCard({
   onDropOnCard?: (draggedIds: number[]) => void;
   /** 批量选择时本卡若被选中：拖动它=带走整批选中（用于批量成组） */
   dragGroupIds?: number[];
+  /** 与 dragGroupIds 对应的文件路径（OS 原生拖出用；顺序无关，只要同一批） */
+  dragGroupPaths?: string[];
 }): JSX.Element {
   // 资产库卡间拖拽成组：被拖到本卡上时高亮（仅识别内部「gallery-id」载荷，不影响拖出到外部/画布）
   const [dragOver, setDragOver] = useState(false);
@@ -2161,11 +2180,7 @@ function ImageCard({
       onContextMenu={onContextMenu}
       onClick={selectMode ? onToggleSelect : undefined}
       onDragOver={(e) => {
-        if (
-          onDropOnCard &&
-          (e.dataTransfer.types.includes('application/mengbi-gallery-id') ||
-            e.dataTransfer.types.includes('application/mengbi-gallery-ids'))
-        ) {
+        if (onDropOnCard && isGalleryDragEvent(e)) {
           e.preventDefault();
           setDragOver(true);
         }
@@ -2179,6 +2194,9 @@ function ImageCard({
           e.preventDefault();
           e.stopPropagation();
           onDropOnCard(ids);
+        } else if (isGalleryNativeDragActive()) {
+          // 原生拖出对账失败（混入外部文件）：也压掉默认行为，防 Chromium 导航到 file://
+          e.preventDefault();
         }
       }}
     >
@@ -2194,19 +2212,20 @@ function ImageCard({
         className="mb-gallery-thumb"
         draggable
         onDragStart={(e) => {
-          // 应用内统一拖拽载荷（JSON，无编码歧义）：智能画布 / 侧栏快捷方式 / 主功能按钮 都认它。
-          // src 用绝对路径（零拷贝直送快捷方式；智能画布图片节点会自动解析为 mengbi-image:// 显示）。
-          e.dataTransfer.effectAllowed = 'copy';
-          e.dataTransfer.setData(
-            'application/mengbi-sc-node',
-            JSON.stringify({ kind: 'image', src: img.file_path, name: (img.prompt_positive ?? '').slice(0, 20) || '图片' })
-          );
-          // 内部「成组」拖拽载荷：拖到另一张卡 / 文件夹卡 / 出组卡上时识别（不影响拖出到外部/画布）
-          e.dataTransfer.setData('application/mengbi-gallery-id', String(img.id));
-          // 批量选择时拖动选中卡 → 带走整批（落到文件夹/卡上=批量成组）
-          if (dragGroupIds && dragGroupIds.length > 1) {
-            e.dataTransfer.setData('application/mengbi-gallery-ids', JSON.stringify(dragGroupIds));
-          }
+          // OS 原生拖出：拖到资源管理器 / PS 等外部软件直接得到原文件。
+          // 必须 preventDefault 后在同步路径里调 webContents.startDrag（经 preload
+          // fire-and-forget IPC，与智能画布 nodeArea.dragOutNative 同款），此后本次拖拽
+          // 的 HTML5 自定义 MIME 全部失效（对本窗口就是「外部文件拖入」，types 只有
+          // 'Files'）——内部「拖卡成组 / 进文件夹 / 出组 / 侧栏投送」改走 galleryNativeDrag
+          // 模块级登记（drop 目标读不到 MIME 时回退读它，并按落下文件路径对账）。
+          // 批量选择时拖动选中卡 → 整批一起拖走（startDrag files 数组 = 多文件）。
+          const batch = !!(dragGroupIds && dragGroupIds.length > 1);
+          const ids = batch && dragGroupIds ? dragGroupIds : [img.id];
+          const paths =
+            batch && dragGroupPaths && dragGroupPaths.length ? dragGroupPaths : [img.file_path];
+          e.preventDefault();
+          beginGalleryNativeDrag(ids, paths);
+          window.electronAPI.drag.startFromPaths(paths);
         }}
         onClick={(e) => {
           if (selectMode) {
@@ -2281,6 +2300,19 @@ function ImageCard({
 // ─────────────────────────────────────────────────────
 // 资产库文件夹卡（首页）/ 出组卡（文件夹内第一张）
 // ─────────────────────────────────────────────────────
+/**
+ * dragover 判定「是否资产库内部拖拽」：卡片改 OS 原生拖出后，本窗口看到的
+ * types 只有 'Files'（自定义 MIME 全部失效），所以用模块级登记兜底判定。
+ * HTML5 MIME 分支保留兼容（万一 startDrag 没起来、浏览器继续走 HTML5 拖拽）。
+ */
+function isGalleryDragEvent(e: React.DragEvent): boolean {
+  return (
+    e.dataTransfer.types.includes('application/mengbi-gallery-id') ||
+    e.dataTransfer.types.includes('application/mengbi-gallery-ids') ||
+    (isGalleryNativeDragActive() && e.dataTransfer.types.includes('Files'))
+  );
+}
+
 /** 读取内部「成组」拖拽载荷里的 image id 列表（单张或批量选中；无效返回 []）。 */
 function readGalleryDragIds(e: React.DragEvent): number[] {
   const multi = e.dataTransfer.getData('application/mengbi-gallery-ids');
@@ -2293,7 +2325,11 @@ function readGalleryDragIds(e: React.DragEvent): number[] {
     }
   }
   const id = Number(e.dataTransfer.getData('application/mengbi-gallery-id'));
-  return Number.isFinite(id) && id > 0 ? [id] : [];
+  if (Number.isFinite(id) && id > 0) return [id];
+  // 原生拖出回退：dragstart 已 preventDefault → 自定义 MIME 读不到，改读模块级登记；
+  // 传入落下的 files 做路径对账（登记残留时外部真文件拖入 → 返回 null → 不当内部拖拽）
+  const native = readGalleryNativeDragIds(e.dataTransfer.files);
+  return native ?? [];
 }
 
 function FolderCard({
@@ -2316,10 +2352,7 @@ function FolderCard({
       onContextMenu={onContextMenu}
       title={`${group.name} · ${group.count} 项（单击打开，把图片拖到此处归入）`}
       onDragOver={(e) => {
-        if (
-          e.dataTransfer.types.includes('application/mengbi-gallery-id') ||
-          e.dataTransfer.types.includes('application/mengbi-gallery-ids')
-        ) {
+        if (isGalleryDragEvent(e)) {
           e.preventDefault();
           setOver(true);
         }
@@ -2331,6 +2364,9 @@ function FolderCard({
         if (ids.length) {
           e.preventDefault();
           onDropImages(ids);
+        } else if (isGalleryNativeDragActive()) {
+          // 原生拖出对账失败（混入外部文件）：压掉默认行为，防 Chromium 导航到 file://
+          e.preventDefault();
         }
       }}
     >
@@ -2364,10 +2400,7 @@ function ExitGroupCard({
       onClick={onClick}
       title="返回首页 · 把卡片拖到此处可移出本文件夹"
       onDragOver={(e) => {
-        if (
-          e.dataTransfer.types.includes('application/mengbi-gallery-id') ||
-          e.dataTransfer.types.includes('application/mengbi-gallery-ids')
-        ) {
+        if (isGalleryDragEvent(e)) {
           e.preventDefault();
           setOver(true);
         }
@@ -2379,6 +2412,9 @@ function ExitGroupCard({
         if (ids.length) {
           e.preventDefault();
           onDropImages(ids);
+        } else if (isGalleryNativeDragActive()) {
+          // 原生拖出对账失败（混入外部文件）：压掉默认行为，防 Chromium 导航到 file://
+          e.preventDefault();
         }
       }}
     >

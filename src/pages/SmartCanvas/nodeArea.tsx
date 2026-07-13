@@ -189,8 +189,11 @@ export function getNodeWidth(id: string): number {
  * `ref` 指向一个「自然高度」的内容包裹层（建议 flex:0 0 auto）——其 scrollHeight 即所需内容高。
  * 适合预览区会随图片比例/节点宽度变化的节点（视角/光源）：拖宽→预览变高→节点跟随长高/收矮。
  * 无循环风险：设节点框高不改变包裹层的自然高度（包裹层不被拉伸）。
+ * maxH 封顶：超出时节点不再长高，包裹层用 `.mb-sc-fitwrap`（max-height:100% + overflow:auto）内部滚动。
+ * 这是所有「表单/配置类节点」的标准自适应姿势——**绝不要再用 autoGrowNode(id, 拍脑袋常数)**：
+ * 估算高度与真实内容脱节是「节点内容互相叠压/显示不全」的历史根因（2026-07-11 分镜节点事故）。
  */
-export function useFitNodeToContent(id: string, ref: RefObject<HTMLElement>, chrome = 52): void {
+export function useFitNodeToContent(id: string, ref: RefObject<HTMLElement>, chrome = 52, maxH = 1600): void {
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -199,7 +202,7 @@ export function useFitNodeToContent(id: string, ref: RefObject<HTMLElement>, chr
       const n = st.nodes.find((x) => x.id === id);
       if (!n) return;
       if ((n.data as { manualSize?: boolean } | undefined)?.manualSize) return; // 手动 > 自适应
-      const need = Math.ceil(el.scrollHeight) + chrome;
+      const need = Math.min(maxH, Math.ceil(el.scrollHeight) + chrome);
       const cur = typeof n.height === 'number' ? n.height : n.measured?.height ?? 0;
       if (Math.abs(need - cur) > 6) st.setNodeSize(id, { height: need });
     };
@@ -207,7 +210,7 @@ export function useFitNodeToContent(id: string, ref: RefObject<HTMLElement>, chr
     const ro = new ResizeObserver(apply);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [id, ref, chrome]);
+  }, [id, ref, chrome, maxH]);
 }
 
 /**

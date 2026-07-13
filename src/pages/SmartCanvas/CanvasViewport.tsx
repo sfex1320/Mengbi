@@ -39,9 +39,10 @@ import { confirmDialog } from '@/components/ConfirmDialog';
 import { openContextMenu, type ContextMenuEntry } from '@/components/ContextMenu';
 import { buildShortcutSendMenuItems } from '@/lib/mediaActions';
 import { makePromptNodeFrom, imageSaveAs, imageToGallery, openVideoPreview, copyText, copyImage } from './nodeArea';
+import { useVaultExportStore, suggestedVaultTitle } from './VaultExportDialog';
 import { useGalleryPickerStore } from './GalleryPickerDialog';
+import { runOptimizeSelection } from './AgentSuggestions';
 import { usePromptMallStudioStore } from './PromptMallStudio';
-import { useStoryboardStudioStore } from './StoryboardStudio';
 import { useSegmentStudioStore } from './SegmentStudio';
 import { useProofStudioStore } from './ProofStudio';
 import type {
@@ -75,12 +76,12 @@ import { CompareNode } from './nodes/CompareNode';
 import { VideoNode } from './nodes/VideoNode';
 import { ImageReverseNode } from './nodes/ImageReverseNode';
 import { VideoSourceNode } from './nodes/VideoSourceNode';
-import { VideoReverseNode } from './nodes/VideoReverseNode';
 import { FrameInterpNode } from './nodes/FrameInterpNode';
 import { VideoClipNode } from './nodes/VideoClipNode';
 import { UpscaleNode } from './nodes/UpscaleNode';
 import { VectorizeNode } from './nodes/VectorizeNode';
 import { StoryboardNode } from './nodes/StoryboardNode';
+import { CharacterCardNode } from './nodes/CharacterCardNode';
 import { PromptMallNode } from './nodes/PromptMallNode';
 import { LoopNode } from './nodes/LoopNode';
 import { FolderInputNode, FolderOutputNode } from './nodes/FolderNodes';
@@ -115,10 +116,10 @@ const nodeTypes: NodeTypes = {
   video: memo(VideoNode),
   'image-reverse': memo(ImageReverseNode),
   'video-source': memo(VideoSourceNode),
-  'video-reverse': memo(VideoReverseNode),
   'frame-interp': memo(FrameInterpNode),
   'video-clip': memo(VideoClipNode),
   storyboard: memo(StoryboardNode),
+  'character-card': memo(CharacterCardNode),
   'prompt-mall': memo(PromptMallNode),
   loop: memo(LoopNode),
   upscale: memo(UpscaleNode),
@@ -196,10 +197,9 @@ function textOutputOf(cur: Node): string {
       const acc = useSmartResultStore.getState().accum[cur.id] ?? [];
       return acc.flatMap((r) => r.texts ?? []).join('\n').trim();
     }
-    case 'storyboard': {
-      const shots = (cur.data as unknown as { shots?: string[] }).shots ?? [];
-      return shots.map((s, i) => `【分镜 ${i + 1}】${s}`).join('\n\n').trim();
-    }
+    case 'storyboard':
+    case 'character-card':
+      return ((cur.data as unknown as { resultText?: string }).resultText ?? '').trim();
     case 'proof':
       return ((cur.data as unknown as ProofNodeData).reportText ?? '').trim();
     default:
@@ -214,10 +214,10 @@ const RUN_TYPES = new Set([
   'llm',
   'video',
   'storyboard',
+  'character-card',
   'frame-interp',
   'video-clip',
   'image-reverse',
-  'video-reverse',
   'prompt-mall',
   'segment',
   'proof'
@@ -230,12 +230,9 @@ function nodeTypeActions(cur: Node): ContextMenuEntry[] {
   if (RUN_TYPES.has(cur.type ?? '')) {
     items.push({ label: '运行此节点', onClick: () => void runWithUpstream(id) });
   }
-  // 提示词商城 / 分镜：进一步设置都在工作台弹窗里（卡片只留摘要）
+  // 提示词商城：进一步设置都在工作台弹窗里（卡片只留摘要）
   if (cur.type === 'prompt-mall') {
     items.push({ label: '打开提示词商城', onClick: () => usePromptMallStudioStore.getState().open(id) });
-  }
-  if (cur.type === 'storyboard') {
-    items.push({ label: '打开分镜工作台', onClick: () => useStoryboardStudioStore.getState().open(id) });
   }
   if (cur.type === 'segment') {
     items.push({ label: '打开切分工作台', onClick: () => useSegmentStudioStore.getState().open(id) });
@@ -271,6 +268,10 @@ function nodeTypeActions(cur: Node): ContextMenuEntry[] {
     items.push({ label: '放大查看文本', onClick: () => useSmartTextStore.getState().open(txt, '节点文本') });
     items.push({ label: '复制文本', onClick: () => void copyText(txt) });
     items.push({ label: '用文本建提示词节点', onClick: () => makePromptNodeFrom(id, txt) });
+    items.push({
+      label: '存入 Obsidian 库',
+      onClick: () => useVaultExportStore.getState().openWith({ title: suggestedVaultTitle(cur), content: txt })
+    });
     items.push(...buildShortcutSendMenuItems({ kind: 'text', text: txt }));
   }
   return items;
@@ -356,6 +357,10 @@ export function CanvasViewport(): JSX.Element {
   const [dropHint, setDropHint] = useState<
     { x: number; y: number; w: number; h: number; half: 'up' | 'down'; valid: boolean } | null
   >(null);
+  // 「分组」武装态的框选矩形（flow 坐标；null = 未在框选）
+  const [groupMarquee, setGroupMarquee] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  // Alt 拖动复制中的预览框（flow 坐标；被拖整组的外接框 = 副本将落下的位置）
+  const [altGhost, setAltGhost] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   // 连线结束（落空白）会合成一次 pane click，会误关刚弹出的菜单；用时间戳挡掉
   const lastConnectEndRef = useRef(0);
 
@@ -378,15 +383,32 @@ export function CanvasViewport(): JSX.Element {
     });
   }, [rawEdges, nodes, showArrows, statusColorEdges]);
 
-  // 画布筛选：搜索关键词非空时，不匹配的节点变暗（加 mb-sc-dim class）
+  // 画布筛选（搜索不匹配 → mb-sc-dim 变暗）+ 跳过态（Alt+点击 → mb-sc-skipped 灰显）。
+  // 类名没变的节点原样返回（保持对象引用，不触发 React Flow 无谓重渲染）。
   const displayNodes = useMemo(() => {
     const q = dimFilter.trim().toLowerCase();
-    if (!q) return nodes;
     return nodes.map((n) => {
-      const cls = nodeSearchText(n).includes(q) ? undefined : 'mb-sc-dim';
+      const parts: string[] = [];
+      if ((n.data as { skipped?: boolean } | undefined)?.skipped) parts.push('mb-sc-skipped');
+      if (q && !nodeSearchText(n).includes(q)) parts.push('mb-sc-dim');
+      const cls = parts.length ? parts.join(' ') : undefined;
       return n.className === cls ? n : { ...n, className: cls };
     });
   }, [nodes, dimFilter]);
+
+  // Alt+点击节点 = 切换「跳过」：灰显 + 运行全部/链式补跑/循环驱动绕过（已有输出仍喂下游）。
+  // 点在交互控件或九宫格格子上不劫持（格子的 Alt+点击 = 跳过单张图，语义不同）。
+  const onNodeClick = useCallback((e: React.MouseEvent, node: Node) => {
+    if (!e.altKey) return;
+    if (node.type === 'group') return; // 分组容器不参与单节点跳过
+    const t = e.target as HTMLElement;
+    if (t.closest('button, input, textarea, select, video, a, [contenteditable="true"], .mb-sc-img9-cell')) return;
+    const st = useSmartCanvasStore.getState();
+    const cur = !!(st.nodes.find((x) => x.id === node.id)?.data as { skipped?: boolean } | undefined)?.skipped;
+    st.updateNodeData(node.id, { skipped: !cur });
+    if (cur) toast.success('已恢复参与运行', '节点重新加入 运行全部/链式补跑');
+    else toast.success('已跳过此节点', '运行全部/链式补跑/循环会绕过它；Alt+点击恢复');
+  }, []);
 
   // 拖动中：计算对齐参考线（与其它顶层节点的 左/中/右 · 上/中/下 对齐）。
   // rAF 节流：拖动事件每帧可触发多次，对齐/落点提示每帧最多算一次（大画布拖动不掉帧）。
@@ -407,8 +429,35 @@ export function CanvasViewport(): JSX.Element {
   );
   const processNodeDrag = useCallback(
     (_e: unknown, node: Node) => {
-      // 拖到另一个节点上 → 在目标节点上显示「上游 / 下游」分区高亮（鼠标落点左半=上游、右半=下游）
-      if (node.type !== 'group' && !node.parentId) {
+      // Alt 拖动复制中：画「整组外接框」虚线预览（副本将落下的位置），并抑制「上/下游落点」高亮
+      // （复制不参与拖到节点上自动连线；对齐参考线继续算，方便对齐落位）
+      if (altDupRef.current) {
+        const st = useSmartCanvasStore.getState();
+        let minX = Infinity;
+        let minY = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
+        for (const ent of altDupRef.current.entries) {
+          const n = st.nodes.find((x) => x.id === ent.id);
+          if (!n) continue;
+          const abs = absPosition(n, st.nodes);
+          const w = n.measured?.width ?? (typeof n.width === 'number' ? n.width : 220);
+          const h = n.measured?.height ?? (typeof n.height === 'number' ? n.height : 120);
+          minX = Math.min(minX, abs.x);
+          minY = Math.min(minY, abs.y);
+          maxX = Math.max(maxX, abs.x + w);
+          maxY = Math.max(maxY, abs.y + h);
+        }
+        if (Number.isFinite(minX)) {
+          const PAD = 10;
+          setAltGhost((prev) => {
+            const next = { x: minX - PAD, y: minY - PAD, w: maxX - minX + PAD * 2, h: maxY - minY + PAD * 2 };
+            return prev && prev.x === next.x && prev.y === next.y && prev.w === next.w && prev.h === next.h ? prev : next;
+          });
+        }
+        setDropHint((prev) => (prev ? null : prev));
+      } else if (node.type !== 'group' && !node.parentId) {
+        // 拖到另一个节点上 → 在目标节点上显示「上游 / 下游」分区高亮（鼠标落点左半=上游、右半=下游）
         const st = useSmartCanvasStore.getState();
         const cur = st.nodes.find((n) => n.id === node.id);
         if (cur) {
@@ -480,16 +529,17 @@ export function CanvasViewport(): JSX.Element {
       }
       setGuides({});
       setDropHint(null);
+      setAltGhost(null);
       const st = useSmartCanvasStore.getState();
       const cur = st.nodes.find((n) => n.id === node.id);
       if (!cur) return;
 
-      // Alt 拖动复制：原节点回到起点（连线不动），把新副本「拉出来」放到松手处。
-      // 复制操作不参与「落到节点上自动连线」和「落进分组归组」——避免给副本接上不想要的连线。
+      // Alt 拖动复制：被拖的整组节点（单个或多选整套工作流）各自回到起点（连线不动），
+      // 整套副本「拉出来」留在松手处。复制操作不参与「落到节点上自动连线」和「落进分组归组」。
       const altDup = altDupRef.current;
       altDupRef.current = null;
-      if (altDup && altDup.id === node.id) {
-        st.altDragDuplicate(node.id, altDup.pos, { x: cur.position.x, y: cur.position.y });
+      if (altDup && altDup.entries.some((x) => x.id === node.id)) {
+        st.altDragDuplicate(altDup.entries.map((x) => ({ id: x.id, originPos: x.pos })));
         return;
       }
 
@@ -595,14 +645,70 @@ export function CanvasViewport(): JSX.Element {
   // 监听：武装态下点到节点即 stopPropagation 掐掉内层 onClick + onNodeClick，再自行建邻居连线。
   // 见下方 useEffect（onArmedNodeClickCapture）。
 
-  // 按住 Alt 拖动节点 = 复制：只在「拖动开始」记下意图 + 起点，真正复制留到「拖动结束」做
-  // （历史 bug：在 dragStart 当场克隆会中途改 nodes 数组 → React Flow 拖动态错乱 + 连线乱跳）。
+  // 按住 Alt 拖动节点 = 复制：只在「拖动开始」记下意图 + **整组被拖节点**的起点（多选整套工作流一起复制），
+  // 真正复制留到「拖动结束」做（历史 bug：在 dragStart 当场克隆会中途改 nodes 数组 → React Flow 拖动态错乱）。
   // 同时给根容器挂 is-node-dragging：拖动期间 CSS 降级（停阴影/过渡/连线动画），防节点多时的果冻感。
-  const altDupRef = useRef<{ id: string; pos: { x: number; y: number } } | null>(null);
-  const onNodeDragStart = useCallback((event: React.MouseEvent, node: Node) => {
+  const altDupRef = useRef<{ entries: Array<{ id: string; pos: { x: number; y: number } }> } | null>(null);
+  const onNodeDragStart = useCallback((event: React.MouseEvent, node: Node, dragged: Node[]) => {
     document.querySelector('.mb-sc-root')?.classList.add('is-node-dragging');
-    altDupRef.current = event.altKey ? { id: node.id, pos: { x: node.position.x, y: node.position.y } } : null;
+    // React Flow v12 第三参 = 本次被拖的全部节点（多选拖动时是整个选区）；兜底只含被拖节点自身
+    const list = dragged?.length ? dragged : [node];
+    altDupRef.current = event.altKey
+      ? { entries: list.map((n) => ({ id: n.id, pos: { x: n.position.x, y: n.position.y } })) }
+      : null;
   }, []);
+
+  // 「分组」武装态：在画布空白按下并拖动 = 框选建组（分组大小=框选区域、框中节点自动归入网格排布）；
+  // 点一下不动 = 保持旧行为放置空分组。document 捕获阶段拦下 pane 上的 pointerdown，
+  // 抢在 React Flow 之前 stopPropagation —— 否则 pane 拖动会触发画布平移、框根本画不出来。
+  useEffect(() => {
+    if (pendingKind !== 'group') return;
+    const onDown = (e: PointerEvent): void => {
+      if (e.button !== 0) return;
+      const t = e.target as HTMLElement | null;
+      // 只接管画布空白：xyflow v12 里 pane **包含**节点/连线容器，closest 会误命中——
+      // 空白区按下的真实 target 就是 pane 元素本身，故用「直接命中」判定；
+      // 点在节点/连线上仍走既有「武装点节点左右半区快速建组 / 点连线插入」逻辑
+      if (!t || !t.classList.contains('react-flow__pane')) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const start = screenToFlowPosition({ x: e.clientX, y: e.clientY });
+      const startScreen = { x: e.clientX, y: e.clientY };
+      let moved = false;
+      const onMove = (me: PointerEvent): void => {
+        if (Math.abs(me.clientX - startScreen.x) + Math.abs(me.clientY - startScreen.y) > 6) moved = true;
+        const cur = screenToFlowPosition({ x: me.clientX, y: me.clientY });
+        setGroupMarquee({
+          x: Math.min(start.x, cur.x),
+          y: Math.min(start.y, cur.y),
+          w: Math.abs(cur.x - start.x),
+          h: Math.abs(cur.y - start.y)
+        });
+      };
+      const onUp = (ue: PointerEvent): void => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        setGroupMarquee(null);
+        const store = useSmartCanvasStore.getState();
+        if (!moved) {
+          store.addNode('group', start); // 单击不拖 = 放空分组（旧行为）
+        } else {
+          const end = screenToFlowPosition({ x: ue.clientX, y: ue.clientY });
+          store.createGroupFromRect({
+            x: Math.min(start.x, end.x),
+            y: Math.min(start.y, end.y),
+            w: Math.abs(end.x - start.x),
+            h: Math.abs(end.y - start.y)
+          });
+        }
+        useSmartCanvasUiStore.getState().setPendingKind(null);
+      };
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+    };
+    document.addEventListener('pointerdown', onDown, true);
+    return () => document.removeEventListener('pointerdown', onDown, true);
+  }, [pendingKind, screenToFlowPosition]);
 
   // 工具栏「武装」后点画布 → 在点击处落位；否则取消选择 + 关菜单。
   const onPaneClick = useCallback(
@@ -611,6 +717,8 @@ export function CanvasViewport(): JSX.Element {
       if (Date.now() - lastConnectEndRef.current < 350) return;
       const ui = useSmartCanvasUiStore.getState();
       if (ui.pendingKind) {
+        // 分组武装由框选逻辑（pointerdown 捕获）全权接管——这里若再落位会双建
+        if (ui.pendingKind === 'group') return;
         const p = screenToFlowPosition({ x: event.clientX, y: event.clientY });
         addNode(ui.pendingKind, p);
         ui.setPendingKind(null);
@@ -631,11 +739,17 @@ export function CanvasViewport(): JSX.Element {
       const scRaw = event.dataTransfer.getData('application/mengbi-sc-node');
       if (scRaw) {
         try {
-          const payload = JSON.parse(scRaw) as { kind?: string; src?: string; text?: string; name?: string };
+          const payload = JSON.parse(scRaw) as { kind?: string; src?: string; text?: string; name?: string; srcs?: string[] };
           const store = useSmartCanvasStore.getState();
           if (payload.kind === 'image' && payload.src) {
             const id = store.addNode('image', pos);
             store.updateNodeData(id, { src: payload.src, name: payload.name ?? '结果图' });
+          } else if (payload.kind === 'image-list' && Array.isArray(payload.srcs) && payload.srcs.length) {
+            // 结果节点「合集卡」拖出 → 自动生成图片列表节点（九宫格），批次内全部图按序摆入
+            const srcs = payload.srcs.filter((s): s is string => typeof s === 'string' && !!s);
+            const id = store.addNode('image', pos);
+            store.updateNodeData(id, { listMode: true, srcs, name: payload.name ?? '合集图片' });
+            toast.success(`已生成图片列表（${srcs.length} 张）`, '合集卡拖出 → 九宫格列表节点，可直接喂下游');
           } else if (payload.kind === 'prompt' && payload.text) {
             const id = store.addNode('prompt', pos);
             store.updateNodeData(id, { text: payload.text });
@@ -753,6 +867,14 @@ export function CanvasViewport(): JSX.Element {
       x: clientX,
       y: clientY,
       items: [
+        {
+          // AI 审查选中的这段流程（提示词改进 / 参数建议 / 结构提醒）；免费，只分析不生成
+          label: '🤖 AI 优化这段流程',
+          onClick: () => {
+            void runOptimizeSelection();
+          }
+        },
+        { separator: true },
         {
           label: `群组所选 (${groupable.length})`,
           onClick: () => {
@@ -1017,6 +1139,31 @@ export function CanvasViewport(): JSX.Element {
     return () => window.removeEventListener('keydown', onKey);
   }, [selectAll, deselectAll, fitView, arrangeGrid, arrangeByType, reset]);
 
+  // 空格 = 临时抓手（纯平移）：按住期间给根容器挂 is-space-pan——CSS 让节点/连线不吃指针，
+  // 指针落到节点上也直接穿透到 pane → 只平移画布，不选中/不拖动节点（松开即恢复）。
+  // 输入框里打空格不劫持；窗口失焦 / 卸载兜底摘除类名防「卡在抓手态」。
+  useEffect(() => {
+    const cls = 'is-space-pan';
+    const clear = (): void => document.querySelector('.mb-sc-root')?.classList.remove(cls);
+    const down = (e: KeyboardEvent): void => {
+      if (e.code !== 'Space' || e.repeat || inEditable()) return;
+      e.preventDefault(); // 防聚焦按钮被空格触发 / 页面滚动
+      document.querySelector('.mb-sc-root')?.classList.add(cls);
+    };
+    const up = (e: KeyboardEvent): void => {
+      if (e.code === 'Space') clear();
+    };
+    window.addEventListener('keydown', down);
+    window.addEventListener('keyup', up);
+    window.addEventListener('blur', clear);
+    return () => {
+      window.removeEventListener('keydown', down);
+      window.removeEventListener('keyup', up);
+      window.removeEventListener('blur', clear);
+      clear();
+    };
+  }, []);
+
   // 视图中心提供器：让 store（addNode 默认落位 / 粘贴）和弹层能取到「当前视图正中心」flow 坐标
   useEffect(() => {
     registerViewCenterProvider(() => {
@@ -1154,6 +1301,7 @@ export function CanvasViewport(): JSX.Element {
         onConnect={onConnect}
         onConnectEnd={onConnectEnd}
         onEdgeClick={onEdgeClick}
+        onNodeClick={onNodeClick}
         onNodeDragStart={onNodeDragStart}
         onNodeDrag={onNodeDrag}
         onNodeDragStop={onNodeDragStop}
@@ -1209,6 +1357,28 @@ export function CanvasViewport(): JSX.Element {
                 style={{ position: 'absolute', top: guides.y, left: -100000, width: 200000 }}
               />
             )}
+          </ViewportPortal>
+        )}
+        {groupMarquee && (
+          <ViewportPortal>
+            <div
+              className="mb-sc-group-marquee"
+              style={{
+                position: 'absolute',
+                left: groupMarquee.x,
+                top: groupMarquee.y,
+                width: groupMarquee.w,
+                height: groupMarquee.h
+              }}
+            />
+          </ViewportPortal>
+        )}
+        {altGhost && (
+          <ViewportPortal>
+            <div
+              className="mb-sc-altdup-ghost"
+              style={{ position: 'absolute', left: altGhost.x, top: altGhost.y, width: altGhost.w, height: altGhost.h }}
+            />
           </ViewportPortal>
         )}
         {dropHint && (

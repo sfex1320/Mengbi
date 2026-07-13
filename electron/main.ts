@@ -13,6 +13,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { logger } from './services/logger';
 import { initDb, closeDb } from './services/db';
+import { ensureDesktopShortcutOnce } from './services/desktopShortcut';
 import { registerAllIpcHandlers } from './ipc';
 
 // 让 mengbi-image:// 拥有标准协议特性（支持 fetch、CORS、CSP 等）
@@ -641,6 +642,11 @@ app.whenReady().then(async () => {
   // —— 非阻塞后台任务（不挡窗口显示）——
   // 上一轮异常退出留下的临时引用图：超过 24h 的清掉
   cleanupTempRefs().catch((e) => logger.warn('cleanupTempRefs failed', e));
+  // 打包版首启自动建桌面快捷方式（仅 win32 + isPackaged；标记文件保证只处理一次，
+  // 用户手动删掉快捷方式后不会被反复重建）。放在窗口之后异步跑，绝不阻塞启动
+  ensureDesktopShortcutOnce().catch((e) =>
+    logger.warn('ensureDesktopShortcutOnce failed', e instanceof Error ? e.message : String(e))
+  );
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

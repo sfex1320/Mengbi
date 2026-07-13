@@ -86,6 +86,47 @@ const GalleryUpdateSchema = z.object({
   patch: z.record(z.string(), z.unknown())
 });
 
+// ─────────────────────────────────────────────────────
+// 分组（文件夹）创建时间：分组没有独立表（只是 images.group_name 列），
+// 「文件夹诞生时刻」记在 settings k/v 的 JSON 映射里（零迁移）。
+// set-group 归入新组名时记 now；list-groups 按它倒序（最新建的排最前）。
+// ─────────────────────────────────────────────────────
+const GROUP_CREATED_KEY = 'gallery_group_created_json';
+
+/** 读分组创建时间映射 { [groupName]: ISO }；坏 JSON / 缺行容错为空表（排序回退 MIN(created_at) 自愈）。 */
+function readGroupCreatedMap(): Record<string, string> {
+  try {
+    const row = getDb()
+      .prepare(`SELECT value FROM settings WHERE key = ?`)
+      .get(GROUP_CREATED_KEY) as { value: string | null } | undefined;
+    if (!row?.value) return {};
+    const v = JSON.parse(row.value) as unknown;
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      const out: Record<string, string> = {};
+      for (const [name, t] of Object.entries(v as Record<string, unknown>)) {
+        if (typeof t === 'string' && t) out[name] = t;
+      }
+      return out;
+    }
+  } catch {
+    /* 容错为空表 */
+  }
+  return {};
+}
+
+function writeGroupCreatedMap(map: Record<string, string>): void {
+  try {
+    getDb()
+      .prepare(
+        `INSERT INTO settings(key, value) VALUES(?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+      )
+      .run(GROUP_CREATED_KEY, JSON.stringify(map));
+  } catch {
+    /* 写失败只影响文件夹排序，不连坐归组主流程 */
+  }
+}
+
 const AlbumUpsertSchema = z.object({
   id: z.number().int().optional(),
   name: z.string().min(1),
@@ -254,23 +295,43 @@ export function registerGalleryHandlers(): void {
     return ok(rows);
   });
 
-  // 资产库「分组（文件夹）」：列出所有 distinct group_name + 计数（作首页的文件夹卡）。
+  // 资产库「分组（文件夹）」：列出所有 distinct group_name + 计数（作首页的文件夹卡），
+  // 按「文件夹创建时间」倒序（最新建的排最前）。
   register('api:gallery:list-groups', null, async () => {
     const rows = getDb()
       .prepare(
-        `SELECT group_name AS name, COUNT(*) AS count, MAX(id) AS lastId
+        `SELECT group_name AS name, COUNT(*) AS count, MAX(id) AS lastId, MIN(created_at) AS earliest
          FROM images WHERE deleted_at IS NULL AND group_name IS NOT NULL
-         GROUP BY group_name ORDER BY name`
+         GROUP BY group_name`
       )
-      .all() as Array<{ name: string; count: number; lastId: number }>;
+      .all() as Array<{ name: string; count: number; lastId: number; earliest: string | null }>;
+    // 创建时间映射里没有的老组（映射键上线前建的）：回退用组内最早一张图的 created_at，
+    // 并顺手写回映射自愈——下次不再回退，排序稳定。
+    const createdMap = readGroupCreatedMap();
+    let mapDirty = false;
+    for (const r of rows) {
+      if (!createdMap[r.name]) {
+        createdMap[r.name] = r.earliest || new Date().toISOString();
+        mapDirty = true;
+      }
+    }
+    if (mapDirty) writeGroupCreatedMap(createdMap);
     // 附一张封面（组内最新一张的缩略图/原图）便于「文件夹卡」叠片预览
     const db = getDb();
-    const out = rows.map((r) => {
-      const cover = db.prepare(`SELECT thumbnail_path, file_path FROM images WHERE id = ?`).get(r.lastId) as
-        | { thumbnail_path: string | null; file_path: string }
-        | undefined;
-      return { name: r.name, count: r.count, cover: cover?.thumbnail_path || cover?.file_path || null };
-    });
+    const out = rows
+      .map((r) => {
+        const cover = db.prepare(`SELECT thumbnail_path, file_path FROM images WHERE id = ?`).get(r.lastId) as
+          | { thumbnail_path: string | null; file_path: string }
+          | undefined;
+        return {
+          name: r.name,
+          count: r.count,
+          cover: cover?.thumbnail_path || cover?.file_path || null,
+          createdAt: createdMap[r.name]
+        };
+      })
+      // ISO 8601 字符串按字典序即时间序；同刻并列按名称稳定次序
+      .sort((a, b) => (a.createdAt === b.createdAt ? a.name.localeCompare(b.name) : b.createdAt.localeCompare(a.createdAt)));
     return ok(out);
   });
 
@@ -280,6 +341,15 @@ export function registerGalleryHandlers(): void {
   register('api:gallery:set-group', SetGroupSchema, async (input) => {
     const db = getDb();
     const root = getStorageRoot();
+    // 新文件夹诞生时刻：目标组名首次出现在映射里时记 now（供 list-groups 按创建时间倒序）。
+    // 组被清空/解散不删记录——残留无害，且同名复建时保留最初时刻也说得通。
+    if (input.group) {
+      const createdMap = readGroupCreatedMap();
+      if (!createdMap[input.group]) {
+        createdMap[input.group] = new Date().toISOString();
+        writeGroupCreatedMap(createdMap);
+      }
+    }
     const safe = input.group ? input.group.replace(/[\\/:*?"<>|]/g, '_').trim().slice(0, 80) : null;
     const targetDir = safe ? path.join(root, 'groups', safe) : path.join(root, 'ungrouped');
     try {
