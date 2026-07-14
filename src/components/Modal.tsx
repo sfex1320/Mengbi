@@ -1,5 +1,6 @@
 import { motion, AnimatePresence } from 'framer-motion';
 import { useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { XIcon } from './Icon';
 import './Modal.css';
 
@@ -38,7 +39,9 @@ export function Modal({
     return () => window.removeEventListener('keydown', onKey);
   }, [open, dismissOnEsc, onClose]);
 
-  return (
+  // 铁律 27：portal 到 body——Modal 常被渲染在带 transform 的祖先里（framer 路由过渡等），
+  // fixed 会退化成相对该祖先定位 → 遮罩只盖住一截、下方内容露出还能滚动/点击（设置页三合一弹窗实测踩坑）。
+  return createPortal(
     <AnimatePresence>
       {open && (
         <motion.div
@@ -72,6 +75,7 @@ export function Modal({
           </motion.div>
         </motion.div>
       )}
-    </AnimatePresence>
+    </AnimatePresence>,
+    document.body
   );
 }
