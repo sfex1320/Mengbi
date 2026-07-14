@@ -20,3 +20,6 @@ app/
 # 本地草稿 / 工作笔记（按需手动取消忽略再单独提交）
 playground.js
 memory/
+
+# Claude Code 定时任务运行时锁文件（会话态，非项目内容）
+.claude/scheduled_tasks.lock

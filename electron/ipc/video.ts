@@ -9,7 +9,7 @@ import { register, ok, err, appendNotification, parseModelRef } from './helpers'
 import { VideoGenerateSchema, VideoCancelSchema, VideoScaleSchema, VideoSaveThumbSchema, VideoUploadAssetSchema, VideoEditSchema } from './schemas';
 import { getDb } from '../services/db';
 import { decryptString } from '../services/safeStorage';
-import { chromiumFetch } from '../services/httpClient';
+import { chromiumFetch, ChromiumNetError, isTransientNetError } from '../services/httpClient';
 import { applyHeaderOverrides } from './headerOverrides';
 import { thumbPathFor } from '../services/thumbnail';
 import { insertProducedMedia, broadcastGalleryChanged } from '../services/producedMedia';
@@ -165,7 +165,8 @@ export function registerVideoHandlers(): void {
           cfg.header_overrides_json,
           { key: cfg.apiKey, model: cfg.actualModelId }
         ),
-        body: form
+        body: form,
+        retry: { attempts: 2, maxElapsedMs: 30_000, tag: 'video:asset-upload' }
       });
       const text = await res.text();
       if (!res.ok) {
@@ -865,7 +866,20 @@ async function runAdapterTask(
   await acquireSlot(kind, provider.maxConcurrentTasks, signal);
   try {
     progress(6, '提交中', 'submitted');
-    const created = await adapter.createTask(req);
+    // 提交遇网络瞬断（30s 内快速失败）自动重试——提交只拿任务 id，重发安全；
+    // 跑久了才断的不重发（上游可能已收到），照实抛错
+    let created!: Awaited<ReturnType<typeof adapter.createTask>>;
+    for (let i = 0; ; i++) {
+      try {
+        created = await adapter.createTask(req);
+        break;
+      } catch (e) {
+        const fastFail = e instanceof ChromiumNetError && e.elapsedMs <= 30_000;
+        if (i >= 2 || signal.aborted || !isTransientNetError(e) || !fastFail) throw e;
+        logger.warn(`[video] createTask 网络瞬断，自动重试 #${i + 1}: ${(e as Error).message}`);
+        await sleep(1500 * (i + 1), signal);
+      }
+    }
     let st = created.status;
     const start = Date.now();
     // timeout>0 = 用户显式设的上限；0/缺省 = 不限时（默认）——只要上游说进行中就一直等
@@ -905,7 +919,8 @@ async function runAdapterTask(
     const videoUrl = st.videoUrl;
     if (!videoUrl) throw new Error('完成但未取到视频地址');
     progress(95, '下载中', 'processing');
-    const vr = await chromiumFetch(videoUrl, { method: 'GET', signal });
+    // 大文件下载遇网络瞬断自动重下（GET 幂等）
+    const vr = await chromiumFetch(videoUrl, { method: 'GET', signal, retry: { attempts: 3, tag: 'video:adapter-download' } });
     if (!vr.ok) throw new Error(`下载视频失败 HTTP ${vr.status}`);
     return { bytes: Buffer.from(await vr.arrayBuffer()), lastFrameUrl: st.lastFrameUrl, remoteUrl: videoUrl };
   } finally {
@@ -990,11 +1005,13 @@ async function runKlingOrUnified(
   }
   body = applyOverrides(body, cfg.body_overrides_json);
 
+  // 提交是轻量 POST（真正生成在上游异步跑）：网络瞬断快速失败重发安全
   const subRes = await chromiumFetch(submitUrl, {
     method: 'POST',
     headers: authHeaders(cfg.apiKey, cfg.header_overrides_json, cfg.actualModelId),
     body: JSON.stringify(body),
-    signal
+    signal,
+    retry: { attempts: 2, maxElapsedMs: 30_000, tag: 'video:submit' }
   });
   const subText = await subRes.text();
   if (!subRes.ok) throw new Error(`提交失败 HTTP ${subRes.status}：${subText.slice(0, 300)}`);
@@ -1012,8 +1029,22 @@ async function runKlingOrUnified(
     if (signal.aborted) throw new Error('已取消');
     await sleep(POLL_INTERVAL_MS, signal);
     if (signal.aborted) throw new Error('已取消');
-    const pr = await chromiumFetch(pollUrl, { method: 'GET', headers: authHeaders(cfg.apiKey, cfg.header_overrides_json, cfg.actualModelId), signal });
-    const txt = await pr.text();
+    // 网络级异常（连接被掐/DNS 抖动）与 HTTP 5xx 同样纳入连续失败容忍——
+    // 弱网下轮询必然偶发被掐，一击致命会把上游还在跑的任务误判成失败
+    let pr: Awaited<ReturnType<typeof chromiumFetch>>;
+    let txt: string;
+    try {
+      pr = await chromiumFetch(pollUrl, { method: 'GET', headers: authHeaders(cfg.apiKey, cfg.header_overrides_json, cfg.actualModelId), signal });
+      txt = await pr.text();
+    } catch (e) {
+      if (signal.aborted) throw new Error('已取消');
+      pollErrors++;
+      logger.warn(`[video] poll network error (#${pollErrors}): ${(e as Error).message}`);
+      if (pollErrors >= MAX_CONSECUTIVE_POLL_ERRORS) {
+        throw new Error(`状态查询连续失败 ${pollErrors} 次——网络长断或任务已丢：${(e as Error).message}`);
+      }
+      continue;
+    }
     if (!pr.ok) {
       // 个别站点轮询偶发 5xx，容忍继续；但连续失败太久（任务可能已丢/网络长断）就放弃
       pollErrors++;
@@ -1031,8 +1062,8 @@ async function runKlingOrUnified(
     if (st.state === 'done') {
       const videoUrl = extractVideoUrl(j);
       if (!videoUrl) throw new Error('完成但未取到视频地址');
-      // 公网 mp4 URL，下载不带鉴权头（避免个别 CDN 拒绝）
-      const vr = await chromiumFetch(videoUrl, { method: 'GET', signal });
+      // 公网 mp4 URL，下载不带鉴权头（避免个别 CDN 拒绝）；大文件下载遇瞬断自动重下
+      const vr = await chromiumFetch(videoUrl, { method: 'GET', signal, retry: { attempts: 3, tag: 'video:download' } });
       if (!vr.ok) throw new Error(`下载视频失败 HTTP ${vr.status}`);
       return Buffer.from(await vr.arrayBuffer());
     }
@@ -1059,11 +1090,13 @@ async function runSora(
   };
   body = applyOverrides(body, cfg.body_overrides_json);
 
+  // 提交是轻量 POST（真正生成在上游异步跑）：网络瞬断快速失败重发安全
   const subRes = await chromiumFetch(`${apiBase}/videos`, {
     method: 'POST',
     headers: authHeaders(cfg.apiKey, cfg.header_overrides_json, cfg.actualModelId),
     body: JSON.stringify(body),
-    signal
+    signal,
+    retry: { attempts: 2, maxElapsedMs: 30_000, tag: 'video:sora-submit' }
   });
   const subText = await subRes.text();
   if (!subRes.ok) throw new Error(`提交失败 HTTP ${subRes.status}：${subText.slice(0, 300)}`);
@@ -1078,12 +1111,25 @@ async function runSora(
     if (signal.aborted) throw new Error('已取消');
     await sleep(POLL_INTERVAL_MS, signal);
     if (signal.aborted) throw new Error('已取消');
-    const pr = await chromiumFetch(`${apiBase}/videos/${id}`, {
-      method: 'GET',
-      headers: authHeaders(cfg.apiKey, cfg.header_overrides_json, cfg.actualModelId),
-      signal
-    });
-    const txt = await pr.text();
+    // 网络级异常与 HTTP 5xx 同样纳入连续失败容忍（弱网轮询被掐不能一击致命）
+    let pr: Awaited<ReturnType<typeof chromiumFetch>>;
+    let txt: string;
+    try {
+      pr = await chromiumFetch(`${apiBase}/videos/${id}`, {
+        method: 'GET',
+        headers: authHeaders(cfg.apiKey, cfg.header_overrides_json, cfg.actualModelId),
+        signal
+      });
+      txt = await pr.text();
+    } catch (e) {
+      if (signal.aborted) throw new Error('已取消');
+      pollErrors++;
+      logger.warn(`[video] sora poll network error (#${pollErrors}): ${(e as Error).message}`);
+      if (pollErrors >= MAX_CONSECUTIVE_POLL_ERRORS) {
+        throw new Error(`状态查询连续失败 ${pollErrors} 次——网络长断或任务已丢：${(e as Error).message}`);
+      }
+      continue;
+    }
     if (!pr.ok) {
       pollErrors++;
       logger.warn(`[video] sora poll HTTP ${pr.status} (#${pollErrors}): ${txt.slice(0, 200)}`);
@@ -1102,7 +1148,8 @@ async function runSora(
       const cr = await chromiumFetch(`${apiBase}/videos/${id}/content?variant=video`, {
         method: 'GET',
         headers: authHeaders(cfg.apiKey, cfg.header_overrides_json, cfg.actualModelId),
-        signal
+        signal,
+        retry: { attempts: 3, tag: 'video:sora-download' }
       });
       if (!cr.ok) throw new Error(`下载视频失败 HTTP ${cr.status}`);
       return Buffer.from(await cr.arrayBuffer());

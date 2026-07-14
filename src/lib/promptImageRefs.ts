@@ -3,13 +3,17 @@
  *
  * 语义（2026-07-12）：生图节点接了多张参考图时，提示词里可用 `@图N` 引用第 N 张
  * （N = 下游生图节点收到的参考图序号，1 起，与「图序铁律」的提交顺序一致）。
- * `@` 是 UI 层的可视标记（提示词节点在 @ 上方悬浮小图作视觉连接）；
+ * `@` 是 UI 层的可视标记（提示词节点在标记占位上盖红框缩略图芯片作视觉连接）；
  * **发给模型前一律剥掉 @**（stripImageRefs：`@图1` → `图1`）——沿用中转站/模型已验证的
  * 「图1/图2」文字引用惯例，@ 不进请求体。
+ *
+ * 2026-07-14：插入标记时会在 `@图N` 后自动带一个全角空格（U+3000）作缩略图芯片的行内占位
+ * （芯片盖在「标记 + 占位空格」自己的 footprint 上，不再遮住后续文字）。
+ * 该占位空格视作标记的一部分（token 的 end 含它），发给模型前归一成普通空格。
  */
 
-/** 匹配一处图片引用标记：@图N（N ≥ 1 的整数）。 */
-export const IMAGE_REF_RE = /@图(\d+)/g;
+/** 匹配一处图片引用标记：@图N（N ≥ 1 的整数），后随的全角占位空格算进标记。 */
+export const IMAGE_REF_RE = /@图(\d+)　?/g;
 
 export interface ImageRefToken {
   /** 引用的参考图序号（1 起） */
@@ -35,8 +39,10 @@ export function parseImageRefs(text: string): ImageRefToken[] {
   return out;
 }
 
-/** 发给模型前剥掉 @ 标记：`@图1` → `图1`（其余文本原样）。 */
+/** 发给模型前剥掉 @ 标记：`@图1` → `图1`；标记自带的全角占位空格归一成普通空格（其余文本原样）。 */
 export function stripImageRefs(text: string): string {
   if (!text) return text;
-  return text.replace(new RegExp(IMAGE_REF_RE.source, 'g'), '图$1');
+  return text.replace(new RegExp(IMAGE_REF_RE.source, 'g'), (m, n: string) =>
+    m.endsWith('　') ? `图${n} ` : `图${n}`
+  );
 }

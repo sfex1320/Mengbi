@@ -55,7 +55,7 @@ export function ArrangePanel({ onClose }: { onClose: () => void }): JSX.Element 
 
       <button
         className="mb-btn mb-btn-sm mb-btn-primary mb-sc-arrange-smart"
-        title={`智能排布 ${kb('arrange-smart')}`}
+        title={`智能排布 ${kb('arrange-smart')}（框选若干节点后右键「智能排布所选」可只排一块区域）`}
         onClick={() => arrangeSmart(gap)}
       >
         <RunAllIcon size={13} />

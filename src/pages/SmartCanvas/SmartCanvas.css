@@ -8513,47 +8513,48 @@ html[data-idle='true'] .mb-sc-video-prog-track i.is-indeterminate {
   overflow: visible;
   z-index: 3;
 }
-/* @图N 行内缩略图（2026-07-14）：跟在「图N」文字后面同一行（不再悬浮遮上一行），
-   底部叠一个深色编号标注（图N）标明引用的是哪张 */
-.mb-sc-atref-inline {
+/* @图N 占位芯片（2026-07-14 定稿）：红框芯片精确盖在标记自身的行内 footprint 上
+   （插入标记时自带一个全角占位空格）——像正常文字一样占位，不遮上一行也不遮后续文字。
+   缩略图**铺满整个芯片**（照片不透明 = 彻底盖住底下的 @图N 原文，防「重影」——
+   --mb-bg-card 各主题都是半透明 rgba，靠它垫底会透字），编号叠在图上作角标。 */
+.mb-sc-atref-chip {
   position: absolute;
-  display: inline-flex;
-  flex-direction: column;
-  align-items: center;
+  box-sizing: border-box;
+  overflow: hidden;
   pointer-events: none;
+  border: 1.5px solid var(--mb-danger, #ef4444);
+  border-radius: 6px;
+  background: var(--mb-bg-base); /* 不透明底（is-miss 时可见；有图时被图铺满） */
   line-height: 0;
 }
-.mb-sc-atref-inline img {
-  width: 22px;
-  height: 22px;
+.mb-sc-atref-chip img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   object-fit: cover;
-  border-radius: 5px;
-  border: 1.5px solid var(--mb-accent);
-  background: var(--mb-bg-card);
-  box-shadow: var(--mb-shadow-card);
   display: block;
 }
-.mb-sc-atref-inline-no {
-  margin-top: -6px;
+.mb-sc-atref-chip-no {
+  position: absolute;
+  left: 1px;
+  bottom: 1px;
   font-size: 9px;
   line-height: 1;
-  padding: 2px 4px;
-  border-radius: 4px;
+  padding: 1px 3px;
+  border-radius: 3px;
+  white-space: nowrap;
   background: var(--mb-badge-dark-bg);
   color: var(--mb-badge-dark-text);
-  white-space: nowrap;
 }
-.mb-sc-atref-inline-q {
+.mb-sc-atref-chip-q {
+  position: absolute;
+  inset: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 5px;
-  border: 1.5px solid var(--mb-danger, #ef4444);
-  background: var(--mb-bg-card);
   color: var(--mb-danger, #ef4444);
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1;
 }
 .mb-sc-atref-picker {

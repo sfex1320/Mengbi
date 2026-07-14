@@ -60,12 +60,13 @@ export function PromptNode({ id, data }: NodeProps): JSX.Element {
   const atTarget = (item: number): { ta: HTMLTextAreaElement | null; cur: string } =>
     item < 0 ? { ta: taRef.current, cur: d.text ?? '' } : { ta: itemRefs.current[item] ?? null, cur: items[item] ?? '' };
 
-  /** 在 caret 处插入 @图N（caret 前一个字符恰是刚输入的 @ 时只补「图N」）。 */
+  /** 在 caret 处插入 @图N（caret 前一个字符恰是刚输入的 @ 时只补「图N」）。
+   *  末尾自带一个全角空格 = 缩略图芯片的行内占位（芯片盖在标记自己的 footprint 上，不遮后续文字）。 */
   function insertAtRef(item: number, index: number): void {
     const { ta, cur } = atTarget(item);
     const caret = ta ? ta.selectionStart ?? cur.length : cur.length;
     const hasAt = caret > 0 && cur[caret - 1] === '@';
-    const ins = hasAt ? `图${index}` : `@图${index}`;
+    const ins = hasAt ? `图${index}　` : `@图${index}　`;
     const next = cur.slice(0, caret) + ins + cur.slice(caret);
     if (item < 0) update(id, { text: next });
     else setItem(item, next);
@@ -179,7 +180,7 @@ export function PromptNode({ id, data }: NodeProps): JSX.Element {
                   areaMenu(e, menu);
                 }}
               />
-              {/* @ 标记上方的悬浮小图（视觉连接：@图N ↔ 第 N 张参考图）；以 .mb-sc-area 为定位参照，不包 wrapper 不动原布局 */}
+              {/* @ 标记的占位芯片（红框缩略图盖在 @图N 自己的占位上，不遮其它文字）；以 .mb-sc-area 为定位参照，不包 wrapper 不动原布局 */}
               <AtRefOverlay ta={taRef.current} text={d.text ?? ''} images={refImages} />
               {atOpen === -1 && (
                 <AtRefPicker ta={taRef.current} images={refImages} onPick={(n) => insertAtRef(-1, n)} onClose={() => setAtOpen(null)} />

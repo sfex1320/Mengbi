@@ -730,6 +730,8 @@ async function postOpenAIImageSync(
   // chromiumFetch（基于 net.request）—— 图像生成上游单次请求常 60–300s，
   // Node 自带 fetch / net.fetch 都会被中间代理掐断成 "fetch failed"，
   // 走 Chromium URLLoader 才稳。
+  // retry：只在「快速失败」（20s 内连接被掐/网络抖动）时自动重发——上游大概率还没开工，
+  // 不会重复扣费；跑了很久才断的不重发（上游可能已出图，重发=双倍扣费），照旧走错误文案引导。
   const res = await chromiumFetch(url, {
     method: 'POST',
     headers: applyHeaderOverrides(
@@ -738,7 +740,8 @@ async function postOpenAIImageSync(
       { key: apiKey, model: opts.cfg.actualModelId }
     ),
     body: JSON.stringify(body),
-    signal: opts.signal
+    signal: opts.signal,
+    retry: { attempts: 2, maxElapsedMs: 20_000, tag: 'image:openai-sync' }
   });
 
   if (!res.ok) {
@@ -888,7 +891,10 @@ async function runOpenAIImageStreaming(
       ),
       body: JSON.stringify(body),
       signal: opts.signal,
-      onChunk
+      onChunk,
+      // 弱网容错：连一个 chunk 都没收到就被掐（20s 内）→ 上游没开工，安全重发；
+      // 已经在收流的中断不重放（下方 connError 分支已有「用已收到的图兜底」逻辑）
+      retry: { attempts: 2, maxElapsedMs: 20_000, tag: 'image:openai-stream' }
     });
   } catch (e) {
     connError = e;
@@ -1174,7 +1180,9 @@ async function runOpenAIResponsesImage(opts: OpenAIResponsesOpts): Promise<strin
       ),
       body: JSON.stringify(body),
       signal: opts.signal,
-      onChunk
+      onChunk,
+      // 同 runOpenAIImageStreaming：零 chunk 快速失败才重发，已收流的中断走下方兜底
+      retry: { attempts: 2, maxElapsedMs: 20_000, tag: 'image:responses-stream' }
     });
   } catch (e) {
     connError = e;
@@ -1394,7 +1402,11 @@ async function runOpenAIImageEdit(opts: OpenAIEditOpts): Promise<string[]> {
         buf = Buffer.from(m[2], 'base64');
         filename = `ref.${mime.split('/')[1] ?? 'png'}`;
       } else if (ref.startsWith('http://') || ref.startsWith('https://')) {
-        const dl = await chromiumFetch(ref, { method: 'GET', signal: opts.signal });
+        const dl = await chromiumFetch(ref, {
+          method: 'GET',
+          signal: opts.signal,
+          retry: { attempts: 2, tag: 'image:edits-ref-download' }
+        });
         if (!dl.ok) throw new Error(`HTTP ${dl.status}`);
         buf = Buffer.from(await dl.arrayBuffer());
         const urlExt = path.extname(new URL(ref).pathname).toLowerCase();
@@ -1451,11 +1463,13 @@ async function runOpenAIImageEdit(opts: OpenAIEditOpts): Promise<string[]> {
   });
 
   // chromiumFetch：长响应（gpt-image-2 4K edits 经常 >100s）必须走 Chromium 栈
+  // retry：快速失败（20s 内被掐）才重发，防上游已开工的重复扣费
   const res = await chromiumFetch(url, {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}` },
     body: form,
-    signal: opts.signal
+    signal: opts.signal,
+    retry: { attempts: 2, maxElapsedMs: 20_000, tag: 'image:openai-edits' }
   });
 
   if (!res.ok) {
@@ -1706,6 +1720,7 @@ async function runGrsaiImage(opts: GrsaiImageOpts): Promise<string[]> {
   });
 
   // ── 第一步：提交任务 ─────────────
+  // 提交是「拿任务 id」的轻量 POST（真正生成在上游异步跑）：网络瞬断重发安全，放宽到 30s 窗
   const submitInit = {
     method: 'POST',
     headers: {
@@ -1713,7 +1728,8 @@ async function runGrsaiImage(opts: GrsaiImageOpts): Promise<string[]> {
       Authorization: `Bearer ${apiKey}`
     },
     body: JSON.stringify(submitBody),
-    signal: opts.signal
+    signal: opts.signal,
+    retry: { attempts: 2, maxElapsedMs: 30_000, tag: 'image:grsai-submit' }
   } as const;
   let submitRes = await chromiumFetch(submitUrl, submitInit);
   // 官方 /v1/draw/nano-banana 在该中转站不存在 → 回退旧端点 api/generate（不硬退化）
@@ -2000,6 +2016,7 @@ async function runApimartImage(opts: ApimartImageOpts): Promise<string[]> {
   });
 
   // ── 第一步：提交，拿 task_id ─────────────
+  // 异步提交（真正生成在上游跑）：网络瞬断重发安全
   const submitRes = await chromiumFetch(submitUrl, {
     method: 'POST',
     headers: {
@@ -2007,7 +2024,8 @@ async function runApimartImage(opts: ApimartImageOpts): Promise<string[]> {
       Authorization: `Bearer ${apiKey}`
     },
     body: JSON.stringify(submitBody),
-    signal: opts.signal
+    signal: opts.signal,
+    retry: { attempts: 2, maxElapsedMs: 30_000, tag: 'image:apimart-submit' }
   });
 
   if (!submitRes.ok) {

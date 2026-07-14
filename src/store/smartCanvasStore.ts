@@ -39,6 +39,13 @@ function rid(): string {
   }
 }
 
+/** 清掉连线的选中态。框选会把「两端节点都被选中」的连线也标成 selected —— 复制/粘贴把选中态
+ *  移交给副本时，原有连线的 selected 必须一起清掉，否则随后按 Delete 删副本，React Flow 会把
+ *  这些仍选中的**原有连线**一并删除（历史 P0：Alt 拖动复制后删副本 → 原工作流连线全没了）。 */
+function deselectEdges(edges: Edge[]): Edge[] {
+  return edges.map((e) => (e.selected ? { ...e, selected: false } : e));
+}
+
 /** 节点的绝对坐标（分组子节点 position 是相对父级；仅一层嵌套）。 */
 export function absPosition(node: Node, nodes: Node[]): { x: number; y: number } {
   if (node.parentId) {
@@ -92,24 +99,41 @@ function findFreePosition(
 
 /** 「自动连接」邻居的槽位排布：在锚点左/右侧铺 4 列网格——一行最多 4 个、排满换下一行（向下）。
  *  取代原「贴锚点 + 纯 y 顺延」的单列堆叠（多次拖入会在一列上无限拉高，观感差）。
- *  index = 该侧已有的连接数（第 N 个邻居进第 N 个槽）；调用方再用 findFreePosition 兜底防重叠。 */
+ *  2026-07-14 修「间隙忽大忽小/过宽」：列偏移按**该侧已有邻居的真实宽度**累加（同一行排在前面的
+ *  是谁就让开多宽），不再用被放节点自身宽度均摊——邻居宽窄不一时那会放出 100px+ 的怪间隙；
+ *  间距同时收紧（64→32），拖上去自动连线的节点现在紧凑贴排。
+ *  index = 该侧已有的连接数（第 N 个邻居进第 N 个槽）；neighborDims = 该侧已有邻居的尺寸（按连接
+ *  顺序 = 槽位顺序）；调用方再用 findFreePosition 兜底防重叠。 */
 function sideSlotPosition(
   anchorAbs: { x: number; y: number },
   anchorW: number,
   side: 'left' | 'right',
   index: number,
   w: number,
-  h: number
+  h: number,
+  neighborDims: Array<{ w: number; h: number }> = []
 ): { x: number; y: number } {
-  const GAPX = 64;
-  const GAPY = 40;
+  // GAPX/GAPY 必须 ≥ findFreePosition 的 MARGIN(28)，否则槽位永远被判「碰撞」而被顺延
+  const GAPX = 32;
+  const GAPY = 28;
   const PER_ROW = 4;
   const col = index % PER_ROW;
   const row = Math.floor(index / PER_ROW);
+  // 同一行里排在前面（更靠近锚点）的邻居实际宽度之和
+  const aheadW = neighborDims.slice(row * PER_ROW, row * PER_ROW + col).reduce((a, d) => a + d.w, 0);
+  // 行 y 偏移：前几行按「该行邻居的最大实际高度」让位（无记录时退回本节点高度）
+  let y = anchorAbs.y;
+  for (let r = 0; r < row; r++) {
+    const rowDims = neighborDims.slice(r * PER_ROW, (r + 1) * PER_ROW);
+    y += (rowDims.length ? Math.max(...rowDims.map((d) => d.h)) : h) + GAPY;
+  }
   return {
-    // 左侧：第 1 个贴锚点、往左铺列；右侧对称往右铺
-    x: side === 'left' ? anchorAbs.x - (col + 1) * (w + GAPX) : anchorAbs.x + anchorW + GAPX + col * (w + GAPX),
-    y: anchorAbs.y + row * (h + GAPY)
+    // 左侧：贴着锚点往左让开「同行前面邻居总宽 + 间距」；右侧对称
+    x:
+      side === 'left'
+        ? anchorAbs.x - aheadW - (col + 1) * GAPX - w
+        : anchorAbs.x + anchorW + (col + 1) * GAPX + aheadW,
+    y
   };
 }
 
@@ -563,8 +587,10 @@ interface SmartCanvasState {
   /** 排布：网格 / 按类型分组 / 对齐选中 / 均分选中（只动顶层非分组节点） */
   arrangeGrid: (cols: number, gap: number) => void;
   arrangeByType: (gap: number) => void;
-  /** 智能排布：按连线识别工作流走向，分层左→右铺开（上游在左、下游在右），层内按上游 barycenter 减少交叉并整体居中。 */
-  arrangeSmart: (gap: number) => void;
+  /** 智能排布：按连线识别工作流走向，分层左→右铺开（上游在左、下游在右），层内按 barycenter 多轮扫描减少交叉。
+   *  互不相连的工作流各成一块垂直堆叠；孤立节点收进末尾网格块。
+   *  opts.selectedOnly=true → 只排布选中的节点（区域排布，锚定原选区左上角，不动其它节点）。 */
+  arrangeSmart: (gap: number, opts?: { selectedOnly?: boolean }) => void;
   alignSelected: (edge: AlignEdge) => void;
   distributeSelected: (axis: 'h' | 'v') => void;
   /** 方向键微调选中节点位置（dx/dy px）；一次连续微调只进一次撤销栈。 */
@@ -1009,68 +1035,152 @@ export const useSmartCanvasStore = create<SmartCanvasState>()((set, get) => ({
       };
     }),
 
-  arrangeSmart: (gap) =>
+  arrangeSmart: (gap, opts) =>
     set((s) => {
-      const movable = movableNodes(s.nodes); // 顶层、非分组
-      if (!movable.length) return {};
-      const ids = new Set(movable.map((n) => n.id));
-      const adj = new Map<string, string[]>();
-      const preds = new Map<string, string[]>();
-      movable.forEach((n) => {
-        adj.set(n.id, []);
-        preds.set(n.id, []);
-      });
-      for (const e of s.edges) {
-        if (e.source !== e.target && ids.has(e.source) && ids.has(e.target)) {
+      // 排布范围：全部顶层非分组节点，或（区域排布）其中被选中的那部分
+      const all = movableNodes(s.nodes);
+      const selectedOnly = !!opts?.selectedOnly;
+      const scope = selectedOnly ? all.filter((n) => n.selected) : all;
+      if (scope.length < (selectedOnly ? 2 : 1)) return {};
+      const ids = new Set(scope.map((n) => n.id));
+      // 只看「两端都在范围内」的连线：区域排布时与外部节点的连线不影响布局
+      const scopeEdges = s.edges.filter((e) => e.source !== e.target && ids.has(e.source) && ids.has(e.target));
+
+      // ── 弱连通分量：互不相连的工作流各自独立排布、垂直堆叠——不再挤进同一批列里互相拉扯 ──
+      const dsu = new Map<string, string>();
+      scope.forEach((n) => dsu.set(n.id, n.id));
+      const find = (x: string): string => {
+        let r = x;
+        while (dsu.get(r) !== r) r = dsu.get(r) as string;
+        let c = x;
+        while (dsu.get(c) !== r) {
+          const nx = dsu.get(c) as string;
+          dsu.set(c, r);
+          c = nx;
+        }
+        return r;
+      };
+      for (const e of scopeEdges) dsu.set(find(e.source), find(e.target));
+      const compMap = new Map<string, Node[]>();
+      for (const n of scope) {
+        const r = find(n.id);
+        const arr = compMap.get(r);
+        if (arr) arr.push(n);
+        else compMap.set(r, [n]);
+      }
+      // 有连线的工作流块（≥2 节点）按原位置 y 排序（保持视觉稳定）；孤立节点收进末尾网格块
+      const flows: Node[][] = [];
+      const singles: Node[] = [];
+      for (const arr of compMap.values()) {
+        if (arr.length > 1) flows.push(arr);
+        else singles.push(arr[0]);
+      }
+      flows.sort((a, b) => Math.min(...a.map((n) => n.position.y)) - Math.min(...b.map((n) => n.position.y)));
+      singles.sort((a, b) => a.position.y - b.position.y || a.position.x - b.position.x);
+
+      const g = Math.max(0, gap);
+      const gapX = g + 48;
+      const gapY = Math.max(24, g);
+      const BLOCK_GAP = Math.max(56, g + 24); // 工作流块之间的垂直间距
+      // 原点：区域排布锚定原选区左上角（排完还在原地附近，不动别的节点）；全局排布固定 (80,80)
+      const originX = selectedOnly ? Math.min(...scope.map((n) => n.position.x)) : 80;
+      const originY = selectedOnly ? Math.min(...scope.map((n) => n.position.y)) : 80;
+
+      const pos = new Map<string, { x: number; y: number }>();
+      let blockY = originY;
+
+      for (const comp of flows) {
+        const compIds = new Set(comp.map((n) => n.id));
+        const compEdges = scopeEdges.filter((e) => compIds.has(e.source) && compIds.has(e.target));
+        const adj = new Map<string, string[]>();
+        const preds = new Map<string, string[]>();
+        comp.forEach((n) => {
+          adj.set(n.id, []);
+          preds.set(n.id, []);
+        });
+        for (const e of compEdges) {
           adj.get(e.source)?.push(e.target);
           preds.get(e.target)?.push(e.source);
         }
-      }
-      // 最长路径分层：上游在前（小层号=左），环节点附末尾不影响主流向
-      const topo = topoSorted(movable, s.edges);
-      const layer = new Map<string, number>();
-      movable.forEach((n) => layer.set(n.id, 0));
-      for (const n of topo) {
-        const l = layer.get(n.id) ?? 0;
-        for (const t of adj.get(n.id) ?? []) layer.set(t, Math.max(layer.get(t) ?? 0, l + 1));
-      }
-      const maxLayer = Math.max(...movable.map((n) => layer.get(n.id) ?? 0));
-      const layers: Node[][] = Array.from({ length: maxLayer + 1 }, () => []);
-      for (const n of movable) layers[layer.get(n.id) ?? 0].push(n);
-      // 层内排序：第 0 层按当前 y；其后按「上游在上一层的序号均值」(barycenter) 减少连线交叉
-      const orderIndex = new Map<string, number>();
-      const bary = (n: Node): number => {
-        const ps = (preds.get(n.id) ?? [])
-          .map((p) => orderIndex.get(p))
-          .filter((x): x is number => x != null);
-        return ps.length ? ps.reduce((a, b) => a + b, 0) / ps.length : n.position.y / 100;
-      };
-      layers.forEach((col, li) => {
-        if (li === 0) col.sort((a, b) => a.position.y - b.position.y);
-        else col.sort((a, b) => bary(a) - bary(b));
-        col.forEach((n, i) => orderIndex.set(n.id, i));
-      });
-      // 列 x：每层最大宽 + 横向间距累加；层内纵向堆叠并整体居中（视觉平衡）
-      const g = Math.max(0, gap);
-      const gapX = g + 56;
-      const gapY = Math.max(24, g);
-      const colW = layers.map((col) => Math.max(1, ...col.map(nodeW)));
-      const colX: number[] = [];
-      let x = 80;
-      for (let li = 0; li <= maxLayer; li++) {
-        colX[li] = x;
-        x += colW[li] + gapX;
-      }
-      const colH = layers.map((col) => col.reduce((a, n) => a + nodeH(n), 0) + Math.max(0, col.length - 1) * gapY);
-      const maxColH = Math.max(1, ...colH);
-      const pos = new Map<string, { x: number; y: number }>();
-      layers.forEach((col, li) => {
-        let y = 80 + (maxColH - colH[li]) / 2;
-        for (const n of col) {
-          pos.set(n.id, { x: colX[li], y });
-          y += nodeH(n) + gapY;
+        // 1) 最长路径分层：上游在前（小层号=左），环节点附末尾不影响主流向
+        const topo = topoSorted(comp, compEdges);
+        const layer = new Map<string, number>();
+        comp.forEach((n) => layer.set(n.id, 0));
+        for (const n of topo) {
+          const l = layer.get(n.id) ?? 0;
+          for (const t of adj.get(n.id) ?? []) layer.set(t, Math.max(layer.get(t) ?? 0, l + 1));
         }
-      });
+        // 2) 根节点右拉：无上游的节点贴到「其最早消费者的前一层」——素材/提示词紧挨用它的节点，
+        //    不再全部顶到第 0 列拉出横穿全图的长线
+        for (const n of comp) {
+          const outs = adj.get(n.id) ?? [];
+          if (!(preds.get(n.id) ?? []).length && outs.length) {
+            layer.set(n.id, Math.min(...outs.map((t) => layer.get(t) ?? 1)) - 1);
+          }
+        }
+        // 压缩空层（根右拉后某些层可能被腾空）：层号重映射成连续 0..k，不留空列
+        const used = Array.from(new Set(comp.map((n) => layer.get(n.id) ?? 0))).sort((a, b) => a - b);
+        const remap = new Map(used.map((v, i) => [v, i]));
+        comp.forEach((n) => layer.set(n.id, remap.get(layer.get(n.id) ?? 0) as number));
+        const maxLayer = used.length - 1;
+        const layers: Node[][] = Array.from({ length: maxLayer + 1 }, () => []);
+        for (const n of comp) layers[layer.get(n.id) ?? 0].push(n);
+        // 3) 层内排序：先按原 y 铺底，再 barycenter 来回扫描（下行看上游、上行看下游）减少连线交叉
+        const orderIndex = new Map<string, number>();
+        layers.forEach((col) => {
+          col.sort((a, b) => a.position.y - b.position.y);
+          col.forEach((n, i) => orderIndex.set(n.id, i));
+        });
+        const baryBy = (n: Node, neigh: Map<string, string[]>): number => {
+          const xs = (neigh.get(n.id) ?? [])
+            .map((p) => orderIndex.get(p))
+            .filter((x): x is number => x != null);
+          return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : orderIndex.get(n.id) ?? 0;
+        };
+        for (let sweep = 0; sweep < 4; sweep++) {
+          const forward = sweep % 2 === 0;
+          const neigh = forward ? preds : adj;
+          const seq = forward
+            ? layers.map((_, i) => i).slice(1)
+            : layers.map((_, i) => i).slice(0, -1).reverse();
+          for (const li of seq) {
+            layers[li].sort((a, b) => baryBy(a, neigh) - baryBy(b, neigh));
+            layers[li].forEach((n, i) => orderIndex.set(n.id, i));
+          }
+        }
+        // 4) 列 x 累加（每层最大宽）；层内纵向堆叠并按块内最高列垂直居中
+        const colW = layers.map((col) => Math.max(1, ...col.map(nodeW)));
+        const colX: number[] = [];
+        let x = originX;
+        for (let li = 0; li <= maxLayer; li++) {
+          colX[li] = x;
+          x += colW[li] + gapX;
+        }
+        const colH = layers.map((col) => col.reduce((a, n) => a + nodeH(n), 0) + Math.max(0, col.length - 1) * gapY);
+        const maxColH = Math.max(1, ...colH);
+        layers.forEach((col, li) => {
+          let y = blockY + (maxColH - colH[li]) / 2;
+          for (const n of col) {
+            pos.set(n.id, { x: colX[li], y });
+            y += nodeH(n) + gapY;
+          }
+        });
+        blockY += maxColH + BLOCK_GAP;
+      }
+
+      // 孤立节点（范围内没有任何连线）：收进末尾网格块，每行 4 个
+      if (singles.length) {
+        const PER_ROW = 4;
+        const cellW = Math.max(...singles.map(nodeW));
+        const cellH = Math.max(...singles.map(nodeH));
+        singles.forEach((n, i) => {
+          pos.set(n.id, {
+            x: originX + (i % PER_ROW) * (cellW + gapX),
+            y: blockY + Math.floor(i / PER_ROW) * (cellH + gapY)
+          });
+        });
+      }
+
       return {
         ...commitHistory(s._past, s.nodes, s.edges),
         nodes: s.nodes.map((n) => (pos.has(n.id) ? { ...n, position: pos.get(n.id) as { x: number; y: number } } : n))
@@ -1252,16 +1362,17 @@ export const useSmartCanvasStore = create<SmartCanvasState>()((set, get) => ({
         id: rid(),
         source: idMap.get(e.source) as string,
         target: idMap.get(e.target) as string,
-        type: 'deletable'
+        type: 'deletable',
+        selected: false
       }));
-      // 分组父节点排前（React Flow 要求父先于子）；旧选区取消选中
+      // 分组父节点排前（React Flow 要求父先于子）；旧选区取消选中（节点与连线都要清）
       const groups = made.filter((n) => n.type === 'group');
       const rest = made.filter((n) => n.type !== 'group');
       const cleared = s.nodes.map((n) => (n.selected ? { ...n, selected: false } : n));
       return {
         ...commitHistory(s._past, s.nodes, s.edges),
         nodes: [...groups, ...cleared, ...rest],
-        edges: [...s.edges, ...newEdges],
+        edges: [...deselectEdges(s.edges), ...newEdges],
         _spawn: s._spawn + made.length
       };
     });
@@ -1287,18 +1398,26 @@ export const useSmartCanvasStore = create<SmartCanvasState>()((set, get) => ({
         const side: 'left' | 'right' = movedId === source ? 'left' : 'right';
         const anchor = s.nodes.find((n) => n.id === anchorId);
         if (anchor) {
-          const idx = s.edges.filter((e) =>
-            side === 'left'
-              ? e.target === anchorId && e.source !== movedId
-              : e.source === anchorId && e.target !== movedId
-          ).length;
+          // 该侧已有邻居（连接顺序 = 槽位顺序）：数量定槽位，真实尺寸定偏移
+          const neighborIds = s.edges
+            .filter((e) =>
+              side === 'left'
+                ? e.target === anchorId && e.source !== movedId
+                : e.source === anchorId && e.target !== movedId
+            )
+            .map((e) => (side === 'left' ? e.source : e.target));
+          const neighborDims = neighborIds
+            .map((nid) => s.nodes.find((n) => n.id === nid))
+            .filter((n): n is Node => !!n)
+            .map((n) => ({ w: nodeW(n), h: nodeH(n) }));
           const desired = sideSlotPosition(
             absPosition(anchor, s.nodes),
             nodeW(anchor),
             side,
-            idx,
+            neighborIds.length,
             nodeW(moved),
-            nodeH(moved)
+            nodeH(moved),
+            neighborDims
           );
           free = findFreePosition(desired, nodeW(moved), nodeH(moved), s.nodes, movedId);
         } else {
@@ -1320,8 +1439,14 @@ export const useSmartCanvasStore = create<SmartCanvasState>()((set, get) => ({
       const w = size.width ?? 220;
       const h = size.height ?? 120;
       // 槽位排布（与 linkAndMove 同规则）：第 N 个邻居进第 N 个槽，一行 4 个排满换行
-      const idx = s.edges.filter((e) => (side === 'left' ? e.target === anchorId : e.source === anchorId)).length;
-      const desired = sideSlotPosition(abs, aw, side, idx, w, h);
+      const neighborIds = s.edges
+        .filter((e) => (side === 'left' ? e.target === anchorId : e.source === anchorId))
+        .map((e) => (side === 'left' ? e.source : e.target));
+      const neighborDims = neighborIds
+        .map((nid) => s.nodes.find((n) => n.id === nid))
+        .filter((n): n is Node => !!n)
+        .map((n) => ({ w: nodeW(n), h: nodeH(n) }));
+      const desired = sideSlotPosition(abs, aw, side, neighborIds.length, w, h, neighborDims);
       const pos = findFreePosition(desired, w, h, s.nodes);
       const node: Node = {
         id,
@@ -1432,7 +1557,8 @@ export const useSmartCanvasStore = create<SmartCanvasState>()((set, get) => ({
           id: rid(),
           source: idMap.get(e.source) as string,
           target: idMap.get(e.target) as string,
-          type: 'deletable'
+          type: 'deletable',
+          selected: false
         }));
       const groups = made.filter((n) => n.type === 'group');
       const rest = made.filter((n) => n.type !== 'group');
@@ -1481,11 +1607,13 @@ export const useSmartCanvasStore = create<SmartCanvasState>()((set, get) => ({
           id: rid(),
           source: idMap.get(e.source) as string,
           target: idMap.get(e.target) as string,
-          type: 'deletable'
+          type: 'deletable',
+          selected: false
         }));
       const groups = made.filter((n) => n.type === 'group');
       const rest = made.filter((n) => n.type !== 'group');
-      // 原节点各自回到拖动起点（连线原样不动）并取消选中——选中态移交给整套副本
+      // 原节点各自回到拖动起点（连线原样不动）并取消选中——选中态移交给整套副本；
+      // 原有连线的选中态同样必须清掉（deselectEdges 注释里的 P0 教训）
       const baseNodes = s.nodes.map((n) => {
         const origin = originById.get(n.id);
         if (origin) return { ...n, position: origin, selected: false };
@@ -1494,7 +1622,7 @@ export const useSmartCanvasStore = create<SmartCanvasState>()((set, get) => ({
       return {
         ...commitHistory(s._past, s.nodes, s.edges),
         nodes: [...groups, ...baseNodes, ...rest],
-        edges: [...s.edges, ...newEdges],
+        edges: [...deselectEdges(s.edges), ...newEdges],
         _spawn: s._spawn + made.length
       };
     }),
@@ -1505,7 +1633,9 @@ export const useSmartCanvasStore = create<SmartCanvasState>()((set, get) => ({
     if (!sel.length) return null;
     const ids = new Set(sel.map((n) => n.id));
     const nodes = sel.map((n) => sanitizeTemplateNode(structuredClone({ ...n, selected: false })));
-    const edges = s.edges.filter((e) => ids.has(e.source) && ids.has(e.target)).map((e) => structuredClone(e));
+    const edges = s.edges
+      .filter((e) => ids.has(e.source) && ids.has(e.target))
+      .map((e) => ({ ...structuredClone(e), selected: false }));
     return { nodes, edges };
   },
 
@@ -1533,7 +1663,8 @@ export const useSmartCanvasStore = create<SmartCanvasState>()((set, get) => ({
         id: rid(),
         source: idMap.get(e.source) as string,
         target: idMap.get(e.target) as string,
-        type: 'deletable'
+        type: 'deletable',
+        selected: false
       }));
       const groups = made.filter((n) => n.type === 'group');
       const rest = made.filter((n) => n.type !== 'group');
@@ -1541,7 +1672,7 @@ export const useSmartCanvasStore = create<SmartCanvasState>()((set, get) => ({
       return {
         ...commitHistory(s._past, s.nodes, s.edges),
         nodes: [...groups, ...cleared, ...rest],
-        edges: [...s.edges, ...newEdges],
+        edges: [...deselectEdges(s.edges), ...newEdges],
         _spawn: s._spawn + made.length
       };
     }),

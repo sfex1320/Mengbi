@@ -574,7 +574,7 @@ export function CanvasViewport(): JSX.Element {
           const ta = absPosition(hit, st.nodes);
           const td = dim(hit, 220, 120);
           const onLeft = hp.x < ta.x + td.w / 2;
-          const GAP = 48;
+          const GAP = 32; // 兜底落位间距（正常路径由 linkAndMove 的槽位排布决定，与其 GAPX 保持一致）
           const source = onLeft ? node.id : hit.id;
           const dest = onLeft ? hit.id : node.id;
           const sk = onLeft ? cur.type : hit.type;
@@ -902,7 +902,14 @@ export function CanvasViewport(): JSX.Element {
             { label: '垂直均分', onClick: () => st.distributeSelected('v') }
           ]
         },
-        { label: '智能排布', onClick: () => st.arrangeSmart(40) }
+        {
+          // 区域智能排布：只重排选中的这几个节点（锚定原选区位置），画布上其它节点一律不动
+          label: `智能排布所选 (${groupable.length})`,
+          onClick: () => {
+            useSmartCanvasStore.getState().arrangeSmart(40, { selectedOnly: true });
+            toast.success('已排布所选节点', '只调整了选中的节点，其它节点未动');
+          }
+        }
       ]
     });
     return true;
@@ -1042,9 +1049,13 @@ export function CanvasViewport(): JSX.Element {
         case 'arrange-type':
           arrangeByType(48);
           break;
-        case 'arrange-smart':
-          useSmartCanvasStore.getState().arrangeSmart(48);
+        case 'arrange-smart': {
+          // 选中 ≥2 个节点时快捷键只排布选中（区域排布）；否则排布全画布
+          const stt = useSmartCanvasStore.getState();
+          const selCount = stt.nodes.filter((n) => n.selected && !n.parentId && n.type !== 'group').length;
+          stt.arrangeSmart(48, selCount >= 2 ? { selectedOnly: true } : undefined);
           break;
+        }
         case 'align-left':
           useSmartCanvasStore.getState().alignSelected('left');
           break;

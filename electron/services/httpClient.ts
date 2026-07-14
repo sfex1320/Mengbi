@@ -9,6 +9,27 @@
  * 从 electron/ipc/generate.ts 抽出，供生图链路与 ComfyUI 编排器共用（不重复实现）。
  */
 import { net } from 'electron';
+import { logger } from './logger';
+
+/**
+ * 网络级瞬断自动重试（2026-07-14，弱网容错）。
+ * 只重试「连接被掐/网络抖动」这类 Chromium 网络错误（isTransientNetError），
+ * 不重试 HTTP 状态错误（那是业务层的事）、不重试用户主动取消（AbortError）。
+ */
+export interface ChromiumFetchRetryOpts {
+  /** 额外重试次数（不含首次尝试），默认 2 */
+  attempts?: number;
+  /** 首次重试前等待毫秒数，之后按 ×3 指数递增（默认 1000 → 1s/3s/9s…） */
+  baseDelayMs?: number;
+  /**
+   * 非幂等请求（生成类 POST）的安全窗：单次尝试已经跑了超过此毫秒数才失败的，
+   * **不再重试**——上游很可能已经开工，盲目重发会重复扣费。
+   * 缺省不限（适合 GET 下载/轮询这类幂等请求）。
+   */
+  maxElapsedMs?: number;
+  /** 日志标签（定位是哪条链路在重试） */
+  tag?: string;
+}
 
 export interface ChromiumFetchInit {
   method?: string;
@@ -21,6 +42,12 @@ export interface ChromiumFetchInit {
    * 设置后 response.text() / arrayBuffer() 返回空（数据已经全部走了 onChunk）。
    */
   onChunk?: (chunk: Buffer) => void;
+  /**
+   * 网络级瞬断自动重试（可选，默认不重试保持历史行为）。
+   * 流式请求（onChunk）只在「一个 chunk 都没收到」时才会重试——
+   * 数据已经流给调用方的连接中断没法安全重放。
+   */
+  retry?: ChromiumFetchRetryOpts;
 }
 
 export interface ChromiumFetchResponse {
@@ -47,7 +74,87 @@ export class ChromiumNetError extends Error {
   }
 }
 
+/** 「网络瞬断/连接被掐」类错误——重试有意义；鉴权/证书配置错这类重试无意义的不算。 */
+export function isTransientNetError(e: unknown): boolean {
+  if (!(e instanceof ChromiumNetError)) return false;
+  return /ERR_(CONNECTION_(RESET|CLOSED|ABORTED|REFUSED|TIMED_OUT|FAILED)|TIMED_OUT|NETWORK_CHANGED|NETWORK_IO_SUSPENDED|INTERNET_DISCONNECTED|NAME_NOT_RESOLVED|EMPTY_RESPONSE|RESPONSE_ABORTED|SOCKET_NOT_CONNECTED|ADDRESS_UNREACHABLE|HTTP2_PROTOCOL_ERROR|HTTP2_SERVER_REFUSED_STREAM|QUIC_PROTOCOL_ERROR|SSL_PROTOCOL_ERROR|(PROXY|TUNNEL)_CONNECTION_FAILED)/.test(
+    e.code
+  );
+}
+
+function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = (): void => {
+      clearTimeout(t);
+      const e = new Error('Aborted');
+      e.name = 'AbortError';
+      reject(e);
+    };
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 export async function chromiumFetch(
+  url: string,
+  init: ChromiumFetchInit = {}
+): Promise<ChromiumFetchResponse> {
+  const retry = init.retry;
+  const attempts = Math.max(0, retry?.attempts ?? (retry ? 2 : 0));
+  if (!retry || attempts === 0) return chromiumFetchOnce(url, init);
+
+  const baseDelay = Math.max(100, retry.baseDelayMs ?? 1000);
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= attempts; attempt++) {
+    // 流式守卫：本次尝试是否已有 chunk 流给调用方（有 → 中断后不可安全重放）
+    let chunkDelivered = false;
+    const attemptInit: ChromiumFetchInit = {
+      ...init,
+      retry: undefined,
+      onChunk: init.onChunk
+        ? (c) => {
+            chunkDelivered = true;
+            init.onChunk?.(c);
+          }
+        : undefined
+    };
+    const attemptStart = Date.now();
+    try {
+      return await chromiumFetchOnce(url, attemptInit);
+    } catch (e) {
+      lastErr = e;
+      const elapsed = Date.now() - attemptStart;
+      const retryable =
+        attempt < attempts &&
+        !init.signal?.aborted &&
+        (e as Error)?.name !== 'AbortError' &&
+        isTransientNetError(e) &&
+        !chunkDelivered &&
+        (retry.maxElapsedMs == null || elapsed <= retry.maxElapsedMs);
+      if (!retryable) throw e;
+      const delay = baseDelay * Math.pow(3, attempt);
+      logger.warn('chromiumFetch 网络瞬断，自动重试', {
+        tag: retry.tag ?? '',
+        attempt: attempt + 1,
+        maxAttempts: attempts,
+        delayMs: delay,
+        elapsedMs: elapsed,
+        code: e instanceof ChromiumNetError ? e.code : String((e as Error)?.message ?? e)
+      });
+      await sleepAbortable(delay, init.signal);
+    }
+  }
+  throw lastErr;
+}
+
+async function chromiumFetchOnce(
   url: string,
   init: ChromiumFetchInit = {}
 ): Promise<ChromiumFetchResponse> {

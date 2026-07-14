@@ -5,9 +5,11 @@
  *   参考图列表不变时提示词节点不重渲（否则整画布拖动每帧全量重渲提示词节点 = 卡顿元凶）。
  * - AtRefStrip：参考图缩略条（图1..图N），点击往输入框插入 `@图N`。
  * - AtRefPicker：输入 `@` 时弹出的选图浮层（点击补全成 `@图N`）。
- * - AtRefOverlay：镜像测量 textarea 里每个 `@图N` 标记的位置，在「图N」文字后面同一行贴一张小图
- *   （带底部深色编号标注）。2026-07-14：从「悬浮在标记上方」改为行内跟随——悬浮会遮住上一行文字。
- *   两者都以「textarea 的定位祖先」（.mb-sc-area / .mb-sc-plist-row）为参照绝对定位、按 ta.offset* 偏移——
+ * - AtRefOverlay：镜像测量 textarea 里每个 `@图N` 标记的位置与宽度，用一枚**红框芯片**
+ *   （缩略图 + 编号）精确盖在标记自己的行内 footprint 上——插入标记时自带一个全角占位空格
+ *   （lib/promptImageRefs.ts），芯片就「像正常文字一样占位」，不遮任何其它文字。
+ *   （历史：悬浮在标记上方会遮上一行；跟在文字后面会遮后续文字——2026-07-14 定稿为占位芯片。）
+ *   以「textarea 的定位祖先」（.mb-sc-area / .mb-sc-plist-row）为参照绝对定位、按 ta.offset* 偏移——
  *   **不额外包 wrapper**，不动提示词节点原有布局/自适应（历史教训：包一层 host 曾破坏输入框高度与节点自适应）。
  * 标记只在 UI 层带 @；发给模型前由 promptNodeOutputs 统一剥成「图N」（lib/promptImageRefs.ts）。
  */
@@ -105,13 +107,14 @@ export function AtRefPicker({
 interface Mark {
   left: number;
   top: number;
+  width: number;
   index: number;
 }
 
 /**
- * @ 标记的行内小图层：用「镜像 div」复刻 textarea 的排版（同字体/宽度/内边距/换行），
- * 把每个 `@图N` 包成 span 量出坐标 → 在「图N」文字**后面同一行**贴一张 22px 小图，
- * 小图底部叠一个深色编号标注（图N）。
+ * @ 标记的占位芯片层：用「镜像 div」复刻 textarea 的排版（同字体/宽度/内边距/换行），
+ * 把每个 `@图N　` 包成 span 量出坐标与宽度 → 盖一枚红框芯片（缩略图 + 编号），
+ * 芯片宽高严格等于标记自身的行内 footprint（宽 = span 实测宽，高 = 行高）——不遮其它文字。
  * 层覆盖整个定位祖先（inset:0），坐标已含 ta.offset* 偏移；纯展示（pointer-events:none）。
  */
 export function AtRefOverlay({
@@ -124,6 +127,7 @@ export function AtRefOverlay({
   images: string[];
 }): JSX.Element | null {
   const [marks, setMarks] = useState<Mark[]>([]);
+  const [lineH, setLineH] = useState(20);
   const [scrollTop, setScrollTop] = useState(0);
   const [sizeTick, setSizeTick] = useState(0);
 
@@ -179,15 +183,19 @@ export function AtRefOverlay({
     }
     mirror.appendChild(document.createTextNode(text.slice(last)));
     document.body.appendChild(mirror);
+    // 行高：芯片的高度基准（"normal" 时按字号 ×1.4 估）
+    const lhRaw = parseFloat(cs.lineHeight);
+    const lh = Number.isFinite(lhRaw) ? lhRaw : parseFloat(cs.fontSize) * 1.4;
     // 坐标换算进定位祖先坐标系（+ ta.offset*），overlay 层 inset:0 直接用
     const baseX = ta.offsetLeft;
     const baseY = ta.offsetTop;
     const out: Mark[] = [];
     mirror.querySelectorAll('span').forEach((sp) => {
-      // left = 标记右缘（小图跟在「图N」文字后面），top = 标记所在行顶
-      out.push({ left: baseX + sp.offsetLeft + sp.offsetWidth, top: baseY + sp.offsetTop, index: Number(sp.dataset.i) });
+      // left/top = 标记自身占位的左上角，width = 标记实测宽（含占位空格）——芯片盖在这块 footprint 上
+      out.push({ left: baseX + sp.offsetLeft, top: baseY + sp.offsetTop, width: sp.offsetWidth, index: Number(sp.dataset.i) });
     });
     document.body.removeChild(mirror);
+    setLineH(lh);
     setMarks(out);
   }, [ta, text, images.length, sizeTick]);
 
@@ -203,16 +211,16 @@ export function AtRefOverlay({
         return (
           <span
             key={i}
-            className={`mb-sc-atref-inline${src ? '' : ' is-miss'}`}
-            style={{ left: m.left + 3, top: top - 2 }}
+            className={`mb-sc-atref-chip${src ? '' : ' is-miss'}`}
+            style={{ left: m.left, top, width: m.width, height: lineH }}
             title={src ? `引用 图${m.index}` : `没有第 ${m.index} 张参考图`}
           >
             {src ? (
               <img src={thumbUrl(src)} alt={`图${m.index}`} draggable={false} />
             ) : (
-              <span className="mb-sc-atref-inline-q">?</span>
+              <span className="mb-sc-atref-chip-q">?</span>
             )}
-            <span className="mb-sc-atref-inline-no">图{m.index}</span>
+            <span className="mb-sc-atref-chip-no">图{m.index}</span>
           </span>
         );
       })}
